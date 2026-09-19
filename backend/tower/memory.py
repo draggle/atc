@@ -121,7 +121,7 @@ class NullMemory(Memory):
 class ElasticMemory(Memory):
     """Memory on an Elasticsearch cluster. `client` is an `elasticsearch.Elasticsearch` or any
     object with the same `indices.create`, `bulk`/`helpers.bulk` and `search` surface (tests
-    inject a fake). `sync=True` writes on the calling thread and waits for the refresh, for tests and scripts."""
+    inject a fake). `sync=True` writes on the calling thread, for tests and scripts; call `flush()` before searching."""
 
     enabled = True
     label = "Elasticsearch"
@@ -226,7 +226,8 @@ class ElasticMemory(Memory):
             if w.get("lat") is not None and w.get("lon") is not None:
                 doc["pos"] = {"lat": w["lat"], "lon": w["lon"]}
             actions.append(self._action("waypoints", doc, doc_id=str(w.get("name"))))
-        self._bulk(actions, refresh=True)
+        self._bulk(actions)
+        self.refresh("waypoints")
 
     def _action(self, kind: str, doc: dict[str, Any], doc_id: str | None = None) -> dict[str, Any]:
         doc = {k: v for k, v in doc.items() if v is not None}
@@ -239,26 +240,32 @@ class ElasticMemory(Memory):
     def _put(self, kind: str, doc: dict[str, Any], doc_id: str | None = None) -> None:
         action = self._action(kind, doc, doc_id)
         if self.sync:
-            self._bulk([action], refresh=True)
+            self._bulk([action])
         else:
             self._q.put((kind, action))
 
-    def _helpers_bulk(self, actions: list[dict[str, Any]], refresh: bool = False) -> int:
-        """Background batches do not wait for a refresh (new docs become searchable within the
-        cluster's refresh interval, a few seconds). Synchronous writes wait, so a script or test
-        can search what it just wrote."""
+    def _helpers_bulk(self, actions: list[dict[str, Any]]) -> int:
         from elasticsearch import helpers
-        ok, _ = helpers.bulk(self.client, actions, raise_on_error=False, request_timeout=10,
-                             refresh="wait_for" if refresh else False)
+        ok, _ = helpers.bulk(self.client, actions, raise_on_error=False, request_timeout=10)
         return int(ok)
 
-    def _bulk(self, actions: list[dict[str, Any]], refresh: bool = False) -> None:
+    def _bulk(self, actions: list[dict[str, Any]]) -> None:
         if not actions:
             return
         try:
-            self.docs_indexed += int(self._bulk_fn(actions, refresh))
+            self.docs_indexed += int(self._bulk_fn(actions))
         except Exception as e:  # noqa: BLE001
             self._fail(f"bulk: {e}")
+
+    def refresh(self, *kinds: str) -> None:
+        """Make everything written so far searchable now. New documents otherwise become visible
+        within the cluster's refresh interval, a few seconds on Serverless, which the background
+        stream accepts. Scripts, tests and the waypoint index at load call this."""
+        index = ",".join(index_name(k) for k in kinds) if kinds else f"{INDEX_PREFIX}-*"
+        try:
+            self.client.options(ignore_status=404, request_timeout=10).indices.refresh(index=index)
+        except Exception as e:  # noqa: BLE001
+            self._fail(f"refresh: {e}")
 
     def _writer(self) -> None:
         batch: list[dict[str, Any]] = []
@@ -278,12 +285,13 @@ class ElasticMemory(Memory):
                 batch, last = [], time.monotonic()
 
     def flush(self) -> None:
-        if self.sync:
-            return
-        deadline = time.monotonic() + 3.0
-        while not self._q.empty() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        time.sleep(FLUSH_EVERY_S + 0.1)
+        """Wait for queued writes to reach the cluster, then refresh so they are searchable."""
+        if not self.sync:
+            deadline = time.monotonic() + 3.0
+            while not self._q.empty() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            time.sleep(FLUSH_EVERY_S + 0.1)
+        self.refresh()
 
     def close(self) -> None:
         if self._thread is not None:

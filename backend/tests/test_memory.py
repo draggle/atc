@@ -61,8 +61,10 @@ class FakeES:
     def info(self) -> dict[str, Any]:
         return {"version": {"number": "fake"}}
 
-    def bulk_actions(self, actions: list[dict[str, Any]], refresh: bool = False) -> int:
-        self.refreshes = getattr(self, "refreshes", 0) + int(refresh)
+    def refresh(self, index: str) -> None:  # indices.refresh
+        self.refreshes = getattr(self, "refreshes", 0) + 1
+
+    def bulk_actions(self, actions: list[dict[str, Any]]) -> int:
         for a in actions:
             idx = self.store.setdefault(a["_index"], {})
             doc_id = a.get("_id") or f"auto-{len(idx)}"
