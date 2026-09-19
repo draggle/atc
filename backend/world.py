@@ -156,6 +156,9 @@ class World:
 
     def _load_scenario(self, sc: Scenario) -> None:
         """Build the world and its plan. Does not start the clock: lifecycle becomes "ready"."""
+        # Plan first: if the planner raises on a scenario, the world it was replacing stays whole.
+        baseline = PL.baseline(sc)
+        plan = PL.plan(sc, sc.waypoints, sc.zones, sc.separation_buffer_nm, time_budget_s=1.0)
         self._base_scenario = sc.model_copy(deep=True)
         self.world_id += 1
         self.lifecycle = "ready"
@@ -180,8 +183,8 @@ class World:
         self.disruption_count = 0
         self.buffer_nm = sc.separation_buffer_nm
         self.noise = sc.noise_level
-        self.baseline = PL.baseline(sc)
-        self.plan = PL.plan(sc, sc.waypoints, sc.zones, self.buffer_nm, time_budget_s=1.0)
+        self.baseline = baseline
+        self.plan = plan
         # Planned savings are frozen at the initial plan: after a replan the plan holds remaining
         # distance while the baseline holds full routes, so a live difference would be wrong.
         self.planned_miles_saved = self.baseline.total_distance_nm - self.plan.total_distance_nm

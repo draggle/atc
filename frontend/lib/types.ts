@@ -298,8 +298,8 @@ export interface ScenarioMeta {
   live?: boolean;
   /** when the snapshot was taken, ISO-8601 */
   snapshot_utc?: string;
-  /** the live feed was down, so this is the last snapshot the backend saved */
-  fallback?: "saved_snapshot";
+  /** the live feed was down: "saved_snapshot" is the last snapshot the backend saved (still `live`), "replay" is a recorded hour */
+  fallback?: "saved_snapshot" | "replay";
 }
 
 /** A region live mode can take a snapshot of. */

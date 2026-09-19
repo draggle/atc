@@ -60,14 +60,16 @@ MIN_REMAINING_NM = 20.0   # an inside flight closer than this to its exit is abo
 MIN_CHORD_NM = 40.0       # an inbound flight that crosses less than this only grazes the region
 MAX_ENTRY_S = 1800.0      # inbound flights further out than this are not in the scenario
 MIN_FLIGHTS = 5
-DROP_REASONS = ("no_callsign", "not_airline", "low", "not_level", "stale", "speed", "no_position",
+MAX_ALT_FT = 60000.0      # above any airliner: a corrupt altitude, not a flight to draw
+DROP_REASONS = ("no_callsign", "not_airline", "low", "too_high", "not_level", "stale", "speed", "no_position",
                 "duplicate", "not_inbound", "graze", "late", "leaving")
 
 ATTRIBUTION = "Flight data: adsb.lol, ODbL 1.0 and CC0. Gate names are ours."
 CAVEATS = ("Each flight's route is its current track projected straight to the region boundary, so miles saved "
            "is zero by construction in live mode (slightly negative once the plan adds a dogleg to resolve a "
            "conflict). Efficiency numbers come from the replay scenarios. Levels and speeds are held at the "
-           "snapshot values.")
+           "snapshot values, so any conflict or loss of separation shown here belongs to the simulator's "
+           "projection, not to the real flights.")
 
 
 class LiveFeedError(RuntimeError):
@@ -149,7 +151,9 @@ def _candidate(ac: Any, reg: regions.Region, frame: GeoFrame, seen: set[str]) ->
     alt = ac.get("alt_baro")  # an int, or the string "ground"
     if not _num(alt) or alt < reg.floor_ft:
         return "low"
-    rate = ac.get("baro_rate") if _num(ac.get("baro_rate")) else ac.get("geom_rate")
+    if alt > MAX_ALT_FT:
+        return "too_high"
+    rate =ac.get("baro_rate") if _num(ac.get("baro_rate")) else ac.get("geom_rate")
     if _num(rate) and abs(rate) > LEVEL_FPM:
         return "not_level"
     if _num(ac.get("seen_pos")) and ac["seen_pos"] > MAX_SEEN_POS_S:
@@ -299,6 +303,7 @@ def _load(world: World, region_key: str, max_flights: int | None, raw: dict[str,
     Returns "live", "saved_snapshot" or "replay", or None if nothing could be loaded (the world is
     then untouched and the screen has an error notice).
     """
+    why = f"Live feed unavailable ({_reason(error)})." if error is not None else ""
     if error is None:
         try:
             sc = build_scenario(raw, region_key, max_flights=max_flights)
@@ -307,8 +312,7 @@ def _load(world: World, region_key: str, max_flights: int | None, raw: dict[str,
             return "live"
         except Exception as exc:  # noqa: BLE001 - whatever went wrong, fall back
             log.warning("live snapshot of %s unusable: %s", region_key, exc)
-            error = exc
-    why = f"Live feed unavailable ({_reason(error)})."
+            why = f"Live snapshot unusable ({_reason(exc)})."  # the feed answered: do not blame it
 
     saved = latest_snapshot(region_key)
     if saved is not None:
@@ -386,7 +390,7 @@ async def load_into_async(world: World, region_key: str, max_flights: int | None
             except Exception as exc:  # noqa: BLE001
                 error = exc
             if world.world_id != world_id:
-                world.notice("Live snapshot dropped: another scenario was loaded while it was on its way.", "info")
+                world.notice("Live snapshot dropped: the world was loaded or reset while it was on its way.", "info")
                 return None
             return _load(world, reg.key, max_flights, raw, error)
         finally:

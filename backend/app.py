@@ -82,9 +82,9 @@ def _configure_live(data: dict[str, Any]) -> None:
     """
     try:
         cap = int(data.get("max_flights") or 0) or None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: JSON 1e999 parses to inf
         cap = None
-    task = asyncio.create_task(LIVE.load_into_async(world, str(data.get("region") or ""), cap))
+    task =asyncio.create_task(LIVE.load_into_async(world, str(data.get("region") or ""), cap))
     _background.add(task)
     task.add_done_callback(_background.discard)
 

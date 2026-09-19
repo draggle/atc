@@ -15,7 +15,9 @@ function Stat({ label, value, tone = "fg" }: { label: string; value: string; ton
 const fmt = (n: number | null | undefined, d = 1, suffix = "") => (n === null || n === undefined ? "—" : `${n.toFixed(d)}${suffix}`);
 
 export default function ScoreboardPanel() {
-  const { scoreboard: s, stats } = useTowerState();
+  const { scoreboard: s, stats, sim } = useTowerState();
+  // Live snapshot: the standard line is each flight's projected track, so there is nothing to save.
+  const projected = sim?.meta?.live === true;
   return (
     <section className="panel p-2.5 shrink-0">
       <div className="flex items-center justify-between mb-2">
@@ -26,8 +28,8 @@ export default function ScoreboardPanel() {
         <p className="text-xs text-muted text-center py-2">No numbers yet.</p>
       ) : (
         <div className="grid grid-cols-3 gap-1.5">
-          <Stat label="miles saved" value={fmt(s.miles_saved)} tone="ok" />
-          <Stat label="time saved" value={fmt(s.time_saved_s / 60, 1, " min")} tone="ok" />
+          <Stat label="miles saved" value={projected ? "n/a" : fmt(s.miles_saved)} tone={projected ? "fg" : "ok"} />
+          <Stat label="time saved" value={projected ? "n/a" : fmt(s.time_saved_s / 60, 1, " min")} tone={projected ? "fg" : "ok"} />
           <Stat label="loss of sep" value={String(s.losses_of_separation)} tone={s.losses_of_separation > 0 ? "bad" : "ok"} />
           <Stat label="closest" value={fmt(s.closest_approach_nm, 1, " NM")} tone={s.closest_approach_nm !== null && s.closest_approach_nm < 5 ? "bad" : "fg"} />
           <Stat label="errors caught" value={`${s.errors_caught} / ${s.errors_injected}`} tone={s.errors_caught < s.errors_injected ? "warn" : "fg"} />

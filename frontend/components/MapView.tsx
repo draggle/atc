@@ -640,7 +640,11 @@ export default function MapView() {
           <span><span style={{ color: "rgb(34,211,238)" }}>◯</span> watching</span>
         </div>
         <p className="text-[10px] text-muted/80">Drag to pan, scroll to zoom, right-drag to tilt and rotate.</p>
-        {sim?.source === "real" && sim.meta?.live ? (
+        {sim?.source === "real" && sim.meta?.live && state.connection === "mock" ? (
+          <p className="text-[10px] text-muted/80 border-t border-line pt-1.5">
+            Mock snapshot: scripted traffic, not the real sky. Start the backend for a live one.
+          </p>
+        ) : sim?.source === "real" && sim.meta?.live ? (
           <p className="text-[10px] text-muted/80 border-t border-line pt-1.5">
             Real flights, one snapshot{snapshotClock(sim.meta.snapshot_utc) && ` taken ${snapshotClock(sim.meta.snapshot_utc)}`}, flown by the simulator from there.
             {sim.meta.fallback === "saved_snapshot" && " The live feed was unavailable, so this is the saved snapshot from that time."} Dashed lines are each flight&apos;s track projected to the region boundary. Flight data: adsb.lol (ODbL, CC0).{sim.waypoints?.some((w) => w.kind === "gate") && " Gate names are ours."}

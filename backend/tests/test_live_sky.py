@@ -88,6 +88,7 @@ def _build(*extra: dict, **kw) -> Scenario:
     ("low", {"alt_baro": "ground"}),
     ("low", {"alt_baro": 12000}),
     ("low", {"alt_baro": None}),
+    ("too_high", {"alt_baro": 126000}),
     ("not_level", {"baro_rate": 1800}),
     ("not_level", {"baro_rate": None, "geom_rate": -900}),
     ("stale", {"seen_pos": 42.0}),
@@ -475,8 +476,27 @@ def test_too_few_live_flights_also_falls_back_and_is_not_saved(raw):
     w, events = _world()
     thin_sky = {"now": raw["now"] + 5_000, "ac": _crowd(3)}
     assert live.load_into(w, REGION, None, fetcher=lambda key: thin_sky) == "saved_snapshot"
-    assert "only 3" in _notices(events, "warn")[0]["text"]
+    text = _notices(events, "warn")[0]["text"]
+    assert "only 3" in text
+    assert text.startswith("Live snapshot unusable"), "the feed answered, so the notice must not blame it"
     assert live.latest_snapshot(REGION)["now"] == raw["now"], "an unusable snapshot is never the fallback"
+
+
+def test_a_planner_failure_at_every_stage_leaves_the_world_whole(monkeypatch, raw):
+    live.save_snapshot(raw, REGION)
+    w, events = _world()
+    w.load("demo")
+    wid, plan, sim = w.world_id, w.plan, w.sim
+
+    def boom(*a, **kw):
+        raise RuntimeError("planner exploded")
+
+    monkeypatch.setattr("world.PL.plan", boom)
+    n_states = len([e for e in events if e["type"] == "state"])
+    assert live.load_into(w, REGION, 50, fetcher=lambda key: raw) is None
+    assert w.scenario.name == "demo" and w.world_id == wid and w.plan is plan and w.sim is sim
+    assert len([e for e in events if e["type"] == "state"]) == n_states
+    assert _notices(events, "error")
 
 
 def test_nothing_to_fall_back_to_leaves_the_world_alone(monkeypatch):
@@ -571,6 +591,10 @@ def test_configure_live_over_the_websocket(monkeypatch, raw):
             ws.send_text(json.dumps({"type": "configure", "source": "live", "region": "atlantis"}))
             err = _read_until(ws, lambda m: m["type"] == "notice" and m["payload"]["level"] == "error")[-1]
             assert "atlantis" in err["payload"]["text"] and A.world.scenario.name == "live/europe-core"
+
+            # JSON 1e999 parses to inf: the cap is ignored and the socket survives
+            ws.send_text('{"type": "configure", "source": "live", "region": "atlantis", "max_flights": 1e999}')
+            _read_until(ws, lambda m: m["type"] == "notice" and m["payload"]["level"] == "error")
 
             monkeypatch.setattr(live, "fetch", _down)  # feed down, snapshot saved a moment ago: fallback (a)
             ws.send_text(json.dumps({"type": "configure", "source": "live", "region": REGION, "max_flights": "junk"}))
