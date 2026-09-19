@@ -32,6 +32,9 @@ RE_FT_UNIT = re.compile(r"\b(?P<ft>\d{3,5}) (?:feet|ft)\b")
 RE_HDG_TURN = re.compile(r"\b(?:turn(?:ing)?\s+)?(?P<dir>left|right)(?:\s+(?:turn\s+)?heading|\s+to)?\s+(?P<hdg>\d{3})\b")
 RE_HDG = re.compile(r"\b(?:fly\s+|maintain\s+)?heading\s+(?P<hdg>\d{3})\b")
 RE_DIRECT = re.compile(r"\b(?:proceed\s+|cleared\s+)?direct(?:\s+to)?\s+(?P<wpt>[A-Za-z]{3,6})\b")
+# "ESTIR direct": pilots shorten a direct this way. Only when no fix follows "direct", so
+# "proceed direct ESTIR" is never read as a direct to PROCEED.
+RE_DIRECT_POST = re.compile(r"\b(?P<wpt>[A-Za-z]{3,6})\s+direct\b(?!\s+(?:to\s+)?[A-Za-z]{3,6}\b)")
 RE_SPEED = re.compile(
     r"\b(?:(?:reduce|increase|maintain)\s+)?(?:speed|indicated|mach)?\s*(?:to\s+)?(?P<spd>\d{2,3})\s+knots\b"
     r"|\b(?:(?:reduce|increase|maintain)\s+)?speed\s+(?:to\s+)?(?P<spd2>\d{2,3})\b"
@@ -54,6 +57,14 @@ _RWY_ACTIONS = {
     "lineup and wait": "line_up_wait", "cleared to cross": "cross", "cross": "cross",
 }
 _RWY_VERB_WORDS = re.compile(r"\b(cleared to land|cleared for take ?off|hold short|line ?up and wait)\b")
+
+# Words a pilot says next to "direct" that can never be the fix. "unable direct" is a refusal and
+# "say again direct" is a question: neither is a readback of a direct to UNABLE or to AGAIN.
+NOT_A_FIX = {
+    "unable", "say", "again", "negative", "standby", "stand", "by", "request", "requesting", "confirm",
+    "proceed", "proceeding", "cleared", "going", "turning", "climbing", "descending", "maintaining",
+    "when", "able", "expect", "via", "was", "that", "did", "not", "no", "yes",
+}
 
 COMMAND_KEYWORDS: dict[str, str] = {
     "descend": "altitude", "climb": "altitude", "heading": "heading", "direct": "route",
@@ -133,6 +144,13 @@ def _extract_items(span: _Span) -> list[Item]:
     for m in RE_DIRECT.finditer(text):
         wpt = m.group("wpt")
         if wpt.lower() in COMMAND_KEYWORDS or wpt.lower() in FILLER:
+            continue
+        add(m, Item(type="route", value=wpt.upper(), unit=None, action="direct"))
+    for m in RE_DIRECT_POST.finditer(text):
+        wpt = m.group("wpt")
+        if wpt.lower() in COMMAND_KEYWORDS or wpt.lower() in FILLER or wpt.lower() in NOT_A_FIX:
+            continue
+        if span.is_covered_range(m.start(), m.end()):
             continue
         add(m, Item(type="route", value=wpt.upper(), unit=None, action="direct"))
     for m in RE_SPEED.finditer(text):

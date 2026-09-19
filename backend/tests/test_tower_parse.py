@@ -122,3 +122,27 @@ def test_similar_pairs():
     assert ("ACA123", "ACA133") in similar_pairs(["ACA123", "ACA133", "DAL456"])
     assert ("ACA123", "ACA132") in similar_pairs(["ACA123", "ACA132"])
     assert similar_pairs(["ACA123", "DAL456"]) == []
+
+
+def test_fix_before_direct_is_a_direct_too():
+    """Our own pilots shorten "direct ESTIR" to "ESTIR direct" one time in four."""
+    for text in ("estir direct air canada one two three", "air canada one two three estir direct",
+                 "roger estir direct air canada one two three"):
+        e = p(text, "pilot")
+        assert e.callsign == "ACA123", text
+        assert items(e) == [("route", "ESTIR", None, "direct")], text
+
+
+def test_fix_before_direct_does_not_steal_the_ordinary_form():
+    e = p("air canada one two three proceed direct estir")
+    assert items(e) == [("route", "ESTIR", None, "direct")]
+    e = p("air canada one two three cleared direct to estir")
+    assert items(e) == [("route", "ESTIR", None, "direct")]
+    e = p("descend flight level two four zero then direct estir canada one two three", "pilot")
+    assert ("route", "ESTIR", None, "direct") in items(e) and len([i for i in e.items if i.type == "route"]) == 1
+
+
+def test_a_refusal_or_a_question_is_not_a_direct_to_a_fix():
+    for text in ("unable direct air canada one two three", "say again direct air canada one two three",
+                 "negative direct air canada one two three", "wilco direct air canada one two three"):
+        assert [i for i in p(text, "pilot").items if i.type == "route"] == [], text

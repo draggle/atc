@@ -179,6 +179,39 @@ def test_a_pilots_clear_wrong_fix_is_not_snapped_back_to_the_expected_one():
     assert snap_waypoints("direct jigor ENY3812", ["GEGOR", "MANUM", "KITOR"], ["GEGOR"], trust_hint=False) == "direct GEGOR ENY3812"
 
 
+def test_snap_waypoints_reads_the_fix_before_direct_form():
+    from world import snap_waypoints
+    wps = ["WAKOL", "GALTO", "ESTIR", "PIKAR", "CENTA", "TULEK", "ZAMIR"]
+    assert snap_waypoints("estir direct ACA123", wps, ["ESTIR"], trust_hint=False) == "direct ESTIR ACA123"
+    # filler words are not part of a fix name and stay where they were
+    assert snap_waypoints("ACA123 roger at better direct", wps, ["ESTIR"], trust_hint=False) == "ACA123 roger at direct ESTIR"
+    # a wrong fix said this way is still a wrong fix
+    assert snap_waypoints("centa direct UAL210", wps, ["ESTIR"], trust_hint=False) == "direct CENTA UAL210"
+    # a refusal or a question is never rescued into a readback of the expected fix
+    for said in ("say again direct ACA123", "unable direct ACA123", "negative direct ACA123", "request direct ACA123"):
+        assert snap_waypoints(said, wps, ["ESTIR"], trust_hint=False) == said
+    # the ordinary order is left exactly as it was
+    assert snap_waypoints("ACA123 proceed direct estir", wps, ["ESTIR"]) == "ACA123 proceed direct ESTIR"
+    assert snap_waypoints("cleared direct estir ACA123", wps, ["ESTIR"], trust_hint=False) == "cleared direct ESTIR ACA123"
+
+
+@pytest.mark.parametrize("fmt", ["direct {f}, {tel}", "cleared direct {f}, {tel}", "{f} direct, {tel}", "{tel}, {f} direct"])
+def test_every_way_our_pilots_say_a_direct_matches_when_it_is_right(fmt):
+    """An alert must never fire for a correct readback."""
+    from world import _spoken
+    ev = []
+    w = World(ev.append, synthesize=False, realtime=False)
+    w.load("demo"); w.start(); w.fleet.set_error_rate(0.0)
+    a = next(x for x in w.sim.aircraft() if len(w.sim.get(x.callsign).route) >= 2)
+    cs, fix = a.callsign, w.sim.get(a.callsign).route[-1]
+    asyncio.run(w.controller_text(f"{cs} proceed direct {fix}"))
+    tx = w._new_tx(fmt.format(f=fix.lower(), tel=_spoken(cs)), "pilot")
+    events = w.core.on_transmission(tx, list(w.sim.active), w.sim.aircraft())
+    assert not [e for e in events if e["type"] == "alert"], (tx.text_norm, events)
+    upd = [e["payload"] for e in events if e["type"] == "clearance_updated"]
+    assert upd and (upd[-1]["status"] if isinstance(upd[-1], dict) else upd[-1].status) == "matched"
+
+
 def test_wrong_fix_readback_alerts_and_the_plane_goes_to_the_wrong_fix(world):
     w, ev = world
     a = next(x for x in w.sim.aircraft() if len(w.sim.get(x.callsign).route) >= 2)

@@ -1258,6 +1258,8 @@ class World:
 
 
 _DIRECT_RE = re.compile(r"\b(direct(?:\s+to)?)\s+((?:[a-z]+\s?){1,3})")
+# "estir direct": the shortened readback. Only when no fix follows "direct".
+_DIRECT_POST_RE = re.compile(r"\b((?:[a-z]+\s+){1,3})direct\b(?!\s+(?:to\s+)?[A-Za-z]{3,6}\b)")
 
 
 def snap_waypoints(text_norm: str, waypoints: list[str], preferred: list[str] | None = None,
@@ -1283,8 +1285,7 @@ def snap_waypoints(text_norm: str, waypoints: list[str], preferred: list[str] | 
         cands = [heard.replace(" ", "").upper()] + [w.upper() for w in heard.split()]
         return max(fuzz.ratio(c, name) for c in cands)
 
-    def fix(m: "re.Match[str]") -> str:
-        heard = m.group(2).strip()
+    def closest(heard: str) -> str | None:
         pools = ((pref, 30.0), (names, 60.0)) if trust_hint else ((names, 60.0), (pref, 30.0))
         for pool, bar in pools:
             if not pool:
@@ -1292,11 +1293,32 @@ def snap_waypoints(text_norm: str, waypoints: list[str], preferred: list[str] | 
             ranked = sorted(((score(heard, n), n) for n in pool), reverse=True)
             best, runner = ranked[0], (ranked[1] if len(ranked) > 1 else (0.0, ""))
             if best[0] >= bar and (best[0] - runner[0] >= 5 or len(pool) == 1):
-                tail = " " if m.group(2).endswith(" ") else ""
-                return f"{m.group(1)} {best[1]}{tail}"
-        return m.group(0)
+                return best[1]
+        return None
 
-    return _DIRECT_RE.sub(fix, text_norm)
+    def fix(m: "re.Match[str]") -> str:
+        name = closest(m.group(2).strip())
+        if name is None:
+            return m.group(0)
+        tail = " " if m.group(2).endswith(" ") else ""
+        return f"{m.group(1)} {name}{tail}"
+
+    def fix_post(m: "re.Match[str]") -> str:
+        """ "roger estir direct" -> "roger direct ESTIR", the order the parser and checker know."""
+        from tower.parse import COMMAND_KEYWORDS, FILLER, NOT_A_FIX
+        skip = FILLER | set(COMMAND_KEYWORDS) | NOT_A_FIX
+        words = m.group(1).split()
+        kept: list[str] = []
+        while len(words) > 1 and words[0] in skip:
+            kept.append(words.pop(0))  # filler is not part of a fix name: leave it where it was
+        if any(w in skip for w in words):
+            return m.group(0)  # "say again direct", "unable direct": not a fix at all
+        name = closest(" ".join(words))
+        if name is None:
+            return m.group(0)
+        return " ".join([*kept, "direct", name])
+
+    return _DIRECT_POST_RE.sub(fix_post, _DIRECT_RE.sub(fix, text_norm))
 
 
 def _some(names: list[str], limit: int = 4) -> str:
