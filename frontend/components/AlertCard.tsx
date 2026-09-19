@@ -147,6 +147,20 @@ function OneAlert({ a }: { a: ActiveAlert }) {
   const resolving = state.resolving.includes(a.clearance_id);
   const { radar, title, frame, pulse, hover, soft, titleCls } = alertLook(a);
   const show = useShowOnMap(callsign);
+  if (a.resolved) {
+    // The controller said the correction and the pilot read it back right. Closed, and it says so.
+    return (
+      <div className="rounded-lg border border-ok/60 bg-ok/10 px-3 py-2">
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] font-bold tracking-wider text-ok">CORRECTED</span>
+          <span className="font-mono text-xs text-muted">{callsign}</span>
+        </div>
+        <p className="mt-1 text-xs text-fg/90">
+          Wrong readback caught, corrected and read back right in {Math.round(a.resolved.seconds)} s.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div {...show} className={`rounded-lg border-2 p-3 ${frame} ${pulse} ${show ? `${SHOW_CLS} ${hover}` : ""}`}>
@@ -270,7 +284,9 @@ export default function AlertCard() {
   const [muted, setMuted] = useState(false);
   useEffect(() => setMuted(readMute()), []);
   const [latest, ...rest] = alerts;
-  useAlertAutoplay(latest, muted);
+  // Every transmission is now played on the frequency as it happens (lib/radio.ts), so the
+  // alert no longer plays its clip a second time. The clip stays on the card to replay by hand.
+  useAlertAutoplay(undefined, muted);
   const checking = resolving.filter((id) => !alerts.some((a) => a.clearance_id === id));
   if (!latest && checking.length === 0) return null;
   const toggleMute = () => {

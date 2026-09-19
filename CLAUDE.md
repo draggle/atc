@@ -107,7 +107,9 @@ These are proposals. If the team decides otherwise, change them here so every Cl
 - Disruptions (fighter, drone, balloon, emergency, unknown, storm, closed airspace, rocket) come from one table, `backend/disruptions.py`: speed, size, levels, lifetime, planner buffer, Random weight. A new kind is one entry there plus a glyph or colour in `frontend/components/MapView.tsx`.
 - Real traffic: `backend/scenarios/real/*.json`, built by `backend/tools/real_extract.py` then `real_build.py` from an adsb.lol archive. Hidden waypoints (`kind: "hidden"`) are vertices of a really-flown track: the sim flies them, nobody says or sees them.
 - The turn rate (1.5 deg/s) lives in three places that must agree: `backend/sim/engine.py`, `backend/planner/trajectory.py` and `backend/tower/conform.py`. The planner plans the curves the simulator flies (`flyable`); change one and aircraft drift off their own plans and get replanned every few seconds.
-- Aircraft only move when an instruction is issued. Manual: the human says the card. Auto: `World._auto_dispatch` says it or sends it by data link. If planes ignore a replan, check the Manual / Auto switch before suspecting the planner.
+- Aircraft only move when an instruction is issued. **Voice off**: Tower sends every card by data link, instantly (`World._auto_links`). **Voice on**: the controller says the card and the plane turns on the pilot's readback. If planes ignore a replan, look at the Voice switch before suspecting the planner.
+- The AI pilot is a test fixture. It is given the clearance as data and chooses to read it back right or wrong; it never listens to the controller. The validator only gets the pilot's audio. Do not "improve" the pilot by making it hear: we would lose the ground truth behind errors caught / injected.
+- A new backend event must be added in three places on the screen or it is dropped without a word: the whitelist in `frontend/lib/ws.ts`, `EventMap` in `lib/types.ts`, and the reducer in `lib/store.tsx`.
 - Live sky: `backend/sim/live.py` takes one snapshot of adsb.lol for a region (`backend/sim/regions.py`) and loads it as a scenario named `live/<region>`. A snapshot, not a stream. Routes are straight projections of the current track, so miles saved is zero by construction there. Falls back to a saved snapshot in `data/live/`, then to a committed replay. Tests never touch the network.
 - Audio is 16 kHz mono everywhere.
 - Positions: the simulator and planner stay in flat NM (`x_nm`, `y_nm`). Real-world `lat` and `lon` are added at the edge by `backend/sim/geoframe.py`. Never do planner math in degrees, and never draw the map from `x_nm`. Arrays are `[lon, lat]`, named fields are `lat` and `lon`.
@@ -117,7 +119,7 @@ These are proposals. If the team decides otherwise, change them here so every Cl
 
 ```bash
 cd backend && uv venv .venv && uv pip install -e ".[dev]"   # once
-cd backend && .venv/bin/pytest -q                              # 335 tests
+cd backend && .venv/bin/pytest -q                              # 344 tests
 cd backend && .venv/bin/uvicorn app:app --port 8000            # backend, starts idle: load and Start from the screen
 cd frontend && npm install && npm run dev                      # screen at http://localhost:3000, mock mode if no backend
 cd frontend && NEXT_DIST_DIR=.next-verify npm run build        # production build. NEVER plain `npm run build` while `npm run dev` is running: it overwrites .next and the dev page loses its CSS

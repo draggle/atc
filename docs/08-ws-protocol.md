@@ -130,3 +130,20 @@ In Auto, Tower issues pending cards itself: one voice exchange at a time, the re
 - `InstructionCard.minor`: a shortcut too small to be worth a transmission. Never sent to the screen. In silent Auto it is applied quietly by data link.
 - `scoreboard` gained `rerouted`, `reaction_s`, `datalink_sent`, `in_zone_now`, `zone_incursions`.
 
+## Voice on, voice off
+
+`{"type":"set_voice","enabled":bool}` is the one switch (`state.voice`; `state.auto_speak` is its opposite and `set_auto_speak` still works). On sets the clock to 1x. Off sends anything still pending by data link at once.
+
+| Event | Payload | When |
+|---|---|---|
+| `radio_audio` | `{speaker: "pilot"\|"controller", callsign, audio_ref, duration_s}` | a clip is on the air, sent before it is transcribed. Play `GET /audio/<audio_ref>`, one at a time, in order. The human's own mic recording is not sent back |
+| `said_check` | `{clearance_id, card_id, callsign, heard, expected, detail}` | what the controller said conflicts with the card. Nothing went to the pilot. The card carries `heard_instead` until it is resolved |
+| `alert_resolved` | `{clearance_id, callsign, by: "correction", seconds}` | the correction was read back right: close that alert |
+
+| Client message | Effect |
+|---|---|
+| `{"type":"confirm_heard","clearance_id"}` | the controller meant what Tower heard: issue it as heard. The card stays open |
+| `{"type":"set_next_readback","mode"}` | `random`, `correct`, `wrong_value`, `wrong_aircraft`, `omitted_item`, `missing_readback`. One shot, reported in `state.next_readback` |
+
+**The screen drops unknown event types.** `frontend/lib/ws.ts` has a whitelist. Add new events there, in `EventMap`, and in the reducer.
+
