@@ -822,7 +822,8 @@ export default function MapView() {
       </MapGL>
 
       {/* Disrupt: one control. Random puts something where it will matter; Choose lets you place a kind. */}
-      <div className="pointer-events-none absolute left-2 top-[68px] bottom-[330px] w-[336px] flex flex-col gap-2 overflow-y-auto scroll-thin">
+      {/* z-10: the deck.gl overlay canvas paints above unstacked siblings, so traffic drew over these panels */}
+      <div className="pointer-events-none absolute z-10 left-2 top-[68px] bottom-[330px] w-[336px] flex flex-col gap-2 overflow-y-auto scroll-thin">
       <div className="glass pointer-events-auto px-2.5 py-2">
         <div className="flex items-center gap-2">
           <span className="eyebrow">Disrupt</span>
@@ -882,7 +883,7 @@ export default function MapView() {
       </div>
 
       {/* view */}
-      <div className="glass absolute left-2 bottom-[196px] flex flex-col gap-2 px-2.5 py-2 w-[320px]">
+      <div className="glass absolute z-10 left-2 bottom-[196px] flex flex-col gap-2 px-2.5 py-2 w-[320px]">
         <div className="flex items-center gap-2">
           <span className="eyebrow">View</span>
           <button className={chip(false)} onClick={() => fit(52, -14)}>Tilt</button>
