@@ -10,11 +10,13 @@ import type {
   Disruption,
   InstructionCard,
   Item,
+  Lifecycle,
   OpenClearance,
   PathSample,
   Plan,
   PlannedPath,
   ResolverStep,
+  ScenarioInfo,
   Scoreboard,
   SimState,
   TowerEvent,
@@ -31,6 +33,10 @@ export interface MockHandle {
 type Emit = (ev: TowerEvent) => void;
 
 const SECTOR = 200;
+let MOCK_WORLD_ID = 0;
+const MOCK_SCENARIOS: ScenarioInfo[] = [
+  { name: "demo", description: "Scripted mock traffic. Start the backend for the real simulator.", flights: 8, source: "sim" },
+];
 const TICK_MS = 1000; // 1 Hz like the backend, so client-side interpolation is exercised
 const DT_S = 4; // sim seconds per tick, so motion is visible
 
@@ -77,13 +83,18 @@ function item(type: Item["type"], value: string | number, unit: Item["unit"], ac
   return { type, value, unit, action, mandatory: true };
 }
 
-export function startMock(emit: Emit): MockHandle {
+export function startMock(emit: Emit, scenarioName?: string): MockHandle {
+  MOCK_WORLD_ID += 1;
   const timers = new Set<ReturnType<typeof setTimeout>>();
   let stopped = false;
   let simT = 0;
+  // Same lifecycle as the backend: the mock loads "ready" and nothing moves until start.
+  let lifecycle: Lifecycle = "ready";
+  let speed = 1;
+  let scriptStarted = false;
   let towerEnabled = true;
   let autoSpeak = false;
-  let scenario = "Toronto FIR, 16:00 local";
+  let scenario = scenarioName ?? "Toronto FIR, 16:00 local";
   const zones: Zone[] = [{ id: "storm-1", x_nm: 40, y_nm: 30, radius_nm: 14, kind: "storm" }];
   const flights: Flight[] = FLIGHTS.map((f) => {
     const a = WP[f.route[0]];
@@ -110,7 +121,12 @@ export function startMock(emit: Emit): MockHandle {
   const after = (ms: number, fn: () => void) => {
     const h = setTimeout(() => {
       timers.delete(h);
-      if (!stopped) fn();
+      if (stopped) return;
+      if (lifecycle === "paused") {
+        after(300, fn); // the scripted story waits while the clock is paused
+        return;
+      }
+      fn();
     }, ms);
     timers.add(h);
   };
@@ -128,6 +144,10 @@ export function startMock(emit: Emit): MockHandle {
     zones,
     sector_nm: SECTOR,
     watching: Array.from(watching),
+    lifecycle,
+    speed,
+    world_id: MOCK_WORLD_ID,
+    scenarios: MOCK_SCENARIOS,
   });
 
   // ------------------------------------------------------------------ plan
@@ -170,8 +190,11 @@ export function startMock(emit: Emit): MockHandle {
   const directSet = new Set<string>(["ACA123", "DAL88", "JZA221", "UAL1592"]);
 
   // ------------------------------------------------------------------ radar
-  const tick = () => {
-    simT += DT_S;
+  const tick = (force = false) => {
+    // Only a running world moves. `force` sends one frame so a ready world is visible.
+    const dt = lifecycle === "running" ? DT_S * speed : 0;
+    if (dt === 0 && !force) return;
+    simT += dt;
     for (const f of flights) {
       if (!f.isIntruder && f.idx < f.route.length) {
         const w = WP[f.route[f.idx]];
@@ -188,11 +211,11 @@ export function startMock(emit: Emit): MockHandle {
         const nw = WP[f.route[Math.min(f.idx, f.route.length - 1)]];
         f.hdg = hdgTo(f.x, f.y, nw.x_nm, nw.y_nm) % 360;
       }
-      const step = (f.gs / 3600) * DT_S;
+      const step = (f.gs / 3600) * dt;
       f.x += Math.sin((f.hdg * Math.PI) / 180) * step;
       f.y += Math.cos((f.hdg * Math.PI) / 180) * step;
       if (f.alt !== f.targetAlt) {
-        const da = Math.sign(f.targetAlt - f.alt) * Math.min(Math.abs(f.targetAlt - f.alt), 30 * DT_S);
+        const da = Math.sign(f.targetAlt - f.alt) * Math.min(Math.abs(f.targetAlt - f.alt), 30 * dt);
         f.alt += da;
       }
       if (f.isIntruder && (Math.abs(f.x) > SECTOR / 2 + 10 || Math.abs(f.y) > SECTOR / 2 + 10)) {
@@ -218,7 +241,7 @@ export function startMock(emit: Emit): MockHandle {
     }));
     send({ type: "radar", payload: { aircraft: list, t: simT, watching: Array.from(watching) }, t: simT });
   };
-  const interval = setInterval(tick, TICK_MS);
+  const interval = setInterval(() => tick(), TICK_MS);
 
   // ------------------------------------------------------------------ helpers
   let txCounter = 0;
@@ -503,8 +526,7 @@ export function startMock(emit: Emit): MockHandle {
   after(50, () => send({ type: "state", payload: stateEvent(), t: simT }));
   after(150, () => send({ type: "plan", payload: buildPlan("initial", directSet), t: simT }));
   after(300, scoreboard);
-  after(400, () => tick());
-  runScript();
+  after(400, () => tick(true));
 
   // ------------------------------------------------------------------ client messages
   const handle = (msg: ClientMessage) => {
@@ -540,6 +562,29 @@ export function startMock(emit: Emit): MockHandle {
       case "radio_text":
         send({ type: "transcript", payload: transmission("controller", msg.text.toLowerCase(), 1.0), t: simT });
         return;
+      case "start":
+        if (lifecycle === "ready" || lifecycle === "paused") {
+          lifecycle = "running";
+          send({ type: "state", payload: stateEvent(), t: simT });
+          if (!scriptStarted) {
+            scriptStarted = true;
+            runScript();
+          }
+        }
+        return;
+      case "pause":
+        if (lifecycle === "running") {
+          lifecycle = "paused";
+          send({ type: "state", payload: stateEvent(), t: simT });
+        }
+        return;
+      case "set_speed":
+        speed = Math.min(120, Math.max(0.25, msg.speed));
+        send({ type: "state", payload: stateEvent(), t: simT });
+        return;
+      case "reset":
+      case "configure":
+        return; // handled in ws.ts by restarting the mock
       case "ptt_start":
       case "ptt_stop":
       case "set_sliders":

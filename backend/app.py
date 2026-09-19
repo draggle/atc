@@ -73,20 +73,38 @@ world = World(hub.emit, synthesize=SYNTH)
 
 
 async def clock() -> None:
-    period = 1.0 / max(SPEED, 0.01)
+    """Drive the world. Speed is world.speed (sim seconds per real second), set from the screen.
+
+    At 1x and below: one 1 s tick per period, as before. Above 1x: four ticks a second, each
+    advancing speed/4 sim seconds, so the radar stays smooth without flooding the socket.
+    """
+    loop = asyncio.get_event_loop()
     while True:
-        t0 = asyncio.get_event_loop().time()
+        t0 = loop.time()
+        speed = max(0.05, world.speed)
+        if speed <= 1.0:
+            period, dt = 1.0 / speed, 1.0
+        else:
+            period, dt = 0.25, speed * 0.25
         try:
-            await world.tick(1.0)
+            await world.tick(dt)
         except Exception:
             log.exception("tick failed")
-        dt = asyncio.get_event_loop().time() - t0
-        await asyncio.sleep(max(0.05, period - dt))
+        await asyncio.sleep(max(0.02, period - (loop.time() - t0)))
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    world.load(os.environ.get("TOWER_SCENARIO", "demo"))
+    # Nothing runs until the screen sends "start". TOWER_SCENARIO only preloads a world (ready,
+    # not running); TOWER_AUTOSTART=1 restores the old behaviour for headless runs.
+    world.speed = SPEED
+    preload = os.environ.get("TOWER_SCENARIO")
+    if preload:
+        world.load(preload)
+        if os.environ.get("TOWER_AUTOSTART") == "1":
+            world.start()
+    else:
+        world.emit_state()
     tasks = [asyncio.create_task(hub.pump()), asyncio.create_task(clock())]
     if SYNTH:
         asyncio.create_task(asyncio.to_thread(_warm_asr))
@@ -111,6 +129,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 @app.get("/health")
 async def health() -> dict[str, Any]:
     return {"ok": True, "scenario": world.scenario.name if world.scenario else None, "t": world.sim.t,
+            "lifecycle": world.lifecycle, "speed": world.speed,
             "asr": type(world.asr).__name__ if world.asr else None, "clients": len(hub.clients)}
 
 
@@ -142,6 +161,13 @@ async def ws_endpoint(ws: WebSocket) -> None:
         await ws.send_text(json.dumps(hub.last_plan, default=_json_default))
     for card in world.cards.values():
         await ws.send_text(json.dumps({"type": "instruction_card", "payload": card.model_dump(), "t": world.sim.t}))
+    if world.scenario is not None:
+        # A screen that connects to a loaded-but-not-started world still needs to see the aircraft.
+        await ws.send_text(json.dumps({"type": "radar", "t": world.sim.t, "payload": {
+            "aircraft": [a.model_dump() for a in world.sim.aircraft()], "t": world.sim.t,
+            "watching": world.watching()}}, default=_json_default))
+        await ws.send_text(json.dumps({"type": "scoreboard", "t": world.sim.t,
+                                       "payload": world.scoreboard().model_dump()}, default=_json_default))
     ptt_channel: str | None = None
     buf: list[bytes] = []
     try:
@@ -178,8 +204,27 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 asyncio.create_task(world.agent_request(str(data.get("text", ""))))
             elif typ == "radio_text":
                 asyncio.create_task(world.controller_text(str(data.get("text", ""))))
-            elif typ == "load_scenario":
-                world.load(str(data.get("name", "demo")))
+            elif typ in ("load_scenario", "configure"):
+                # configure: {source: "sim", scenario, density}. Real traffic arrives in phase 4.
+                name = str(data.get("scenario") or data.get("name") or "demo")
+                density = float(data.get("density") or 1.0)
+                try:
+                    if name not in SC.list_scenarios():
+                        raise ValueError(f"unknown scenario {name}")
+                    world.load(name)
+                    if abs(density - 1.0) > 1e-6:
+                        world.tool_multiply_traffic(density)
+                except Exception as exc:  # noqa: BLE001 - tell the screen, keep the socket
+                    log.exception("configure failed")
+                    world.notice(f"Could not load {name}: {exc}", "error")
+            elif typ == "start":
+                if not world.start():
+                    world.notice("Nothing to start. Load a scenario first.", "warn")
+            elif typ == "pause":
+                world.pause()
+            elif typ == "reset":
+                if not world.reset():
+                    world.notice("Nothing to reset. Load a scenario first.", "warn")
             elif typ == "set_tower":
                 world.set_tower(bool(data.get("enabled", True)))
             elif typ == "set_auto_speak":
@@ -192,7 +237,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
             elif typ == "set_sliders":
                 world.set_sliders(data.get("buffer_nm"), data.get("error_rate"), data.get("noise"))
             elif typ == "set_speed":
-                world.speed = float(data.get("speed", 1.0))
+                world.set_speed(float(data.get("speed", 1.0)))
     except WebSocketDisconnect:
         pass
     finally:

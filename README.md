@@ -56,7 +56,7 @@ Three terminals. Python 3.11 or newer, Node 20 or newer, `uv`, `ffmpeg`.
 # 1. backend
 cd backend
 uv venv .venv && uv pip install -e ".[dev]"
-.venv/bin/pytest -q                      # 145 tests
+.venv/bin/pytest -q                      # 154 tests
 .venv/bin/uvicorn app:app --port 8000    # first start downloads whisper base.en, about 150 MB
 
 # 2. frontend
@@ -71,7 +71,7 @@ uv venv .venv && uv pip install -r requirements.txt
 .venv/bin/pytest tests -q
 ```
 
-Then in the browser: click "Say it" on a card, or hold Space and read the card into the mic, or type in the radio box. The pilot answers in a few seconds. Drag the pilot error rate slider up to see red cards. Type "put a fighter jet through the middle" in the headset box to see a replan. Toggle Tower off and repeat a wrong readback to watch the plane fly it.
+Then in the browser: the setup panel opens. Pick a scenario and press Load, look over the plan, then press **Start**. Nothing moves and the radio is closed until you do. Speed is 1x, 5x, 20x, or 60x, and voice only keeps up at 1x. Then click "Say it" on a card, or hold Space and read the card into the mic, or type in the radio box. The pilot answers in a few seconds. Drag the pilot error rate slider up to see red cards. Type "put a fighter jet through the middle" in the headset box to see a replan. Toggle Tower off and repeat a wrong readback to watch the plane fly it.
 
 Environment variables, all optional, in `.env` (copy `.env.example`):
 
@@ -82,7 +82,7 @@ Environment variables, all optional, in `.env` (copy `.env.example`):
 | `ASR_LOCAL_MODEL` | faster-whisper size or a CTranslate2 directory, default `base.en`. The tuned model exports to `data/checkpoints/whisper-tiny-atc-ct2` |
 | `CHECKER_MODEL_URL` | Cross-encoder endpoint, see `training/serve_checker.py`. Without it, rules only |
 | `ELEVENLABS_API_KEY` | Pilot voices. Without it, macOS `say` |
-| `TOWER_SCENARIO`, `TOWER_SIM_SPEED`, `TOWER_SYNTHESIZE=0` | Startup scenario, clock speed, disable audio entirely |
+| `TOWER_SCENARIO`, `TOWER_AUTOSTART=1`, `TOWER_SIM_SPEED`, `TOWER_SYNTHESIZE=0` | Preload a scenario to ready, also start it (headless runs), initial clock speed, disable audio entirely |
 
 Other commands:
 

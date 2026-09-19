@@ -22,7 +22,7 @@ export interface TowerClient {
 
 const EVENT_TYPES = new Set<string>([
   "transcript", "clearance_opened", "clearance_updated", "alert", "resolver_step", "stats",
-  "radar", "plan", "plan_update", "instruction_card", "disruption", "scoreboard", "agent_reply", "state",
+  "radar", "plan", "plan_update", "instruction_card", "disruption", "scoreboard", "agent_reply", "state", "notice",
 ]);
 
 function parseEvent(raw: string): TowerEvent | null {
@@ -104,6 +104,12 @@ export function connectTower(opts: {
 
   return {
     send(msg) {
+      if (mock && (msg.type === "reset" || msg.type === "configure" || msg.type === "load_scenario")) {
+        // The mock is a scripted closure: a new world means a new mock.
+        mock.stop();
+        mock = startMock(opts.onEvent, msg.type === "reset" ? undefined : ("scenario" in msg ? msg.scenario : msg.name));
+        return;
+      }
       if (mock) mock.send(msg);
       else if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
     },

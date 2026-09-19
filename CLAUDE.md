@@ -48,6 +48,7 @@ Read `docs/01-project.md` first, whatever you are working on. Then:
 | The WebSocket protocol the screen and backend speak | `docs/08-ws-protocol.md` |
 | Things the overnight build learned that the spec did not know | `docs/09-overnight-findings.md` |
 | What is missing before judging, and the three teammate TRDs | `docs/trd/` |
+| **The working roadmap: Start button, real map, real traffic, disruptions, Manual and Auto. Wins over `06-plan.md` and the TRDs** | `docs/10-roadmap.md` |
 
 Each of `backend/`, `training/`, and `frontend/` has its own short `CLAUDE.md` with that component's contract.
 
@@ -109,9 +110,10 @@ These are proposals. If the team decides otherwise, change them here so every Cl
 
 ```bash
 cd backend && uv venv .venv && uv pip install -e ".[dev]"   # once
-cd backend && .venv/bin/pytest -q                              # 145 tests
-cd backend && .venv/bin/uvicorn app:app --port 8000            # backend, first run downloads whisper base.en
+cd backend && .venv/bin/pytest -q                              # 154 tests
+cd backend && .venv/bin/uvicorn app:app --port 8000            # backend, starts idle: load and Start from the screen
 cd frontend && npm install && npm run dev                      # screen at http://localhost:3000, mock mode if no backend
+cd frontend && NEXT_DIST_DIR=.next-verify npm run build        # production build. NEVER plain `npm run build` while `npm run dev` is running: it overwrites .next and the dev page loses its CSS
 cd backend && .venv/bin/python -m eval.run_eval --scenario demo --runs 20   # Monte Carlo table
 cd training && uv venv .venv && uv pip install -r requirements.txt && .venv/bin/pytest tests -q
 ```

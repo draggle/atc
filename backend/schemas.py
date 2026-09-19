@@ -229,7 +229,7 @@ class Scoreboard(BaseModel):
 EventType = Literal[
     "transcript", "clearance_opened", "clearance_updated", "alert", "resolver_step", "stats",
     "radar", "plan", "plan_update", "instruction_card", "disruption", "scoreboard",
-    "agent_reply", "state",
+    "agent_reply", "state", "notice",
 ]
 
 

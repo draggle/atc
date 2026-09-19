@@ -19,7 +19,7 @@ runtime = Runtime(
     environment_variables={
         # Which base model and how long. Override here before pushing.
         "WHISPER_BASE": "openai/whisper-small",
-        "RUN_LABEL": "baseten-h100-whisper-small",
+        "RUN_LABEL": "k7-small",
         # Optional: cap steps for a first end-to-end job, e.g. "300". Empty means full epochs.
         "MAX_STEPS": "",
     },
@@ -29,4 +29,4 @@ job = TrainingJob(
     compute=Compute(accelerator=AcceleratorSpec(accelerator="H100", count=1)),
     runtime=runtime,
 )
-project = TrainingProject(name="tower-whisper-atc", job=job)
+project = TrainingProject(name="k7-run", job=job)

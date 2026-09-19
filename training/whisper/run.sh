@@ -21,6 +21,11 @@ fi
 CKPT="${BT_CHECKPOINT_DIR:-$DATA/checkpoints/whisper-atc}"
 EXTRA=""
 if [ -n "${MAX_STEPS:-}" ]; then EXTRA="--max-steps $MAX_STEPS"; fi
+# Optional overrides, mainly so a short proving job still exercises evaluation on the GPU.
+if [ -n "${EVAL_STEPS:-}" ]; then EXTRA="$EXTRA --eval-steps $EVAL_STEPS"; fi
+if [ -n "${WARMUP_STEPS:-}" ]; then EXTRA="$EXTRA --warmup-steps $WARMUP_STEPS"; fi
+if [ -n "${BATCH_SIZE:-}" ]; then EXTRA="$EXTRA --batch-size $BATCH_SIZE"; fi
+if [ -n "${VAL_LIMIT:-}" ]; then EXTRA="$EXTRA --val-limit $VAL_LIMIT"; fi
 
 python "$TRAIN_DIR/finetune_whisper.py" \
   --model "${WHISPER_BASE:-openai/whisper-small}" \

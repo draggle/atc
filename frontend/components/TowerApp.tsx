@@ -13,6 +13,8 @@ import Transcript from "./Transcript";
 import ScoreboardPanel from "./ScoreboardPanel";
 import SlidersPanel from "./SlidersPanel";
 import PushToTalk from "./PushToTalk";
+import SetupPanel from "./SetupPanel";
+import Notices from "./Notices";
 
 interface ClientApi {
   send(msg: ClientMessage): void;
@@ -53,14 +55,24 @@ function ClientProvider({ children }: { children: ReactNode }) {
 }
 
 function Screen() {
-  const { alerts, resolving } = useTowerState();
+  const { alerts, resolving, sim } = useTowerState();
+  const lifecycle = sim?.lifecycle ?? (sim?.scenario ? "running" : "idle");
   return (
-    <div className="h-screen w-screen flex flex-col gap-2 p-2 bg-bg text-fg">
+    <div className="relative h-screen w-screen flex flex-col gap-2 p-2 bg-bg text-fg">
+      <SetupPanel />
+      <Notices />
       <TopBar />
       <div className="flex-1 min-h-0 grid gap-2" style={{ gridTemplateColumns: "minmax(0,1fr) 400px" }}>
         <div className="min-h-0 flex flex-col gap-2">
-          <div className="flex-1 min-h-0">
+          <div className="relative flex-1 min-h-0">
             <Radar />
+            {(lifecycle === "ready" || lifecycle === "paused" || lifecycle === "ended") && (
+              <div className="pointer-events-none absolute bottom-10 left-1/2 -translate-x-1/2 rounded-md border border-line bg-panel/90 px-4 py-2 text-sm text-muted">
+                {lifecycle === "ready" && <>World loaded. Look over the plan, then press <span className="text-ok font-medium">Start</span>.</>}
+                {lifecycle === "paused" && <>Paused. Press <span className="text-ok font-medium">Resume</span> to continue.</>}
+                {lifecycle === "ended" && <>Every flight has left the sector. Press <span className="text-fg font-medium">Reset</span> to run it again.</>}
+              </div>
+            )}
           </div>
           <div className="h-48 shrink-0">
             <Transcript />

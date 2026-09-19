@@ -16,6 +16,7 @@ def world():
     events, emit = collect()
     w = World(emit, synthesize=False, realtime=False)
     w.load("demo")
+    w.start()  # nothing moves, and the radio is closed, until the world is started
     return w, events
 
 
@@ -130,3 +131,90 @@ def test_snap_waypoints_uses_route_prior():
     assert snap_waypoints("ACA123 proceed direct at better", wps, ["ESTIR", "CENTA"]) == "ACA123 proceed direct ESTIR"
     assert snap_waypoints("direct pick are UAL210", wps) == "direct PIKAR UAL210"
     assert snap_waypoints("climb flight level 350", wps) == "climb flight level 350"
+
+
+# --- lifecycle: nothing runs until Start ------------------------------------------------------
+
+
+def fresh():
+    events = []
+    return World(events.append, synthesize=False, realtime=False), events
+
+
+def last_state(events):
+    return [e for e in events if e["type"] == "state"][-1]["payload"]
+
+
+def test_new_world_is_idle_and_does_not_tick():
+    w, ev = fresh()
+    assert w.lifecycle == "idle"
+    asyncio.run(w.tick(1.0))
+    assert w.sim.t == 0 and not ev
+    assert not w.start() and not w.reset()
+
+
+def test_load_is_ready_with_plan_and_aircraft_but_clock_stays_at_zero():
+    w, ev = fresh()
+    w.load("demo")
+    st = last_state(ev)
+    assert st["lifecycle"] == "ready" and st["world_id"] == 1
+    assert {s["name"] for s in st["scenarios"]} >= {"demo", "dense", "intruder"}
+    assert w.plan is not None and w.cards
+    radar = [e for e in ev if e["type"] == "radar"][-1]["payload"]
+    assert radar["aircraft"], "aircraft due at t=0 must be visible before Start"
+    for _ in range(5):
+        asyncio.run(w.tick(1.0))
+    assert w.sim.t == 0
+
+
+def test_start_pause_resume_reset():
+    w, ev = fresh()
+    w.load("demo")
+    assert w.start() and last_state(ev)["lifecycle"] == "running"
+    asyncio.run(w.tick(1.0)); asyncio.run(w.tick(1.0))
+    assert w.sim.t == 2
+    assert w.pause() and last_state(ev)["lifecycle"] == "paused"
+    asyncio.run(w.tick(1.0))
+    assert w.sim.t == 2
+    assert w.start()
+    asyncio.run(w.tick(1.0))
+    assert w.sim.t == 3
+    assert w.reset()
+    st = last_state(ev)
+    assert st["lifecycle"] == "ready" and st["world_id"] == 2 and w.sim.t == 0
+    assert all(c.status == "pending" for c in w.cards.values())
+
+
+def test_fast_clock_substeps_and_sends_one_radar_frame():
+    w, ev = fresh()
+    w.load("demo"); w.start(); w.set_speed(20)
+    assert last_state(ev)["speed"] == 20
+    ev.clear()
+    asyncio.run(w.tick(5.0))
+    assert w.sim.t == 5
+    assert len([e for e in ev if e["type"] == "radar"]) == 1
+    w.set_speed(100000)
+    assert w.speed == 120.0
+
+
+def test_radio_is_closed_until_running():
+    w, ev = fresh()
+    w.load("demo")
+    cs = w.sim.aircraft()[0].callsign
+    ev.clear()
+    asyncio.run(w.controller_text(f"{cs} descend and maintain flight level two four zero"))
+    assert "clearance_opened" not in types(ev)
+    assert any(e["type"] == "notice" and "Start" in e["payload"]["text"] for e in ev)
+
+
+def test_world_ends_when_every_flight_has_left():
+    w, ev = fresh()
+    w.load("demo"); w.start()
+    for _ in range(400):
+        asyncio.run(w.tick(30.0))
+        if w.lifecycle == "ended":
+            break
+    assert w.lifecycle == "ended" and last_state(ev)["lifecycle"] == "ended"
+    t_end = w.sim.t
+    asyncio.run(w.tick(30.0))
+    assert w.sim.t == t_end

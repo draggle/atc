@@ -2,6 +2,7 @@
 
 import { useTowerDispatch, useTowerState } from "@/lib/store";
 import { useClient } from "./TowerApp";
+import LifecycleControls from "./LifecycleControls";
 
 function fmtClock(t: number): string {
   const s = Math.max(0, Math.floor(t));
@@ -54,12 +55,14 @@ export default function TopBar() {
   const badge = connBadge[connection];
 
   return (
-    <header className="panel h-12 shrink-0 flex items-center gap-3 px-3">
+    <header className="panel min-h-12 shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1">
       <div className="flex items-baseline gap-2 min-w-0">
         <span className="text-lg font-semibold tracking-tight">Tower</span>
         <span className="text-xs text-muted truncate">{sim?.scenario ?? "No scenario"}</span>
       </div>
       <span className="font-mono text-sm text-fg/90 tabular-nums">{fmtClock(sim?.t ?? 0)}</span>
+
+      <LifecycleControls />
 
       <div className="h-6 w-px bg-line" />
 

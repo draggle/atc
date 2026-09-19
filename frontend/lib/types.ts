@@ -218,10 +218,31 @@ export interface AgentReply {
   actions: string[];
 }
 
+/** Nothing moves until "running". idle = no world loaded, ready = loaded and previewable. */
+export type Lifecycle = "idle" | "ready" | "running" | "paused" | "ended";
+
+export interface ScenarioInfo {
+  name: string;
+  description: string;
+  flights: number;
+  source: "sim" | "real";
+}
+
+export interface Notice {
+  text: string;
+  level: "info" | "warn" | "error";
+}
+
 export interface SimState {
-  scenario: string;
+  scenario: string | null;
   tower_enabled: boolean;
   auto_speak: boolean;
+  lifecycle?: Lifecycle;
+  /** sim seconds per real second */
+  speed?: number;
+  /** bumps on every load or reset, so the screen drops the previous world's state */
+  world_id?: number;
+  scenarios?: ScenarioInfo[];
   t: number;
   waypoints: Waypoint[];
   zones: Zone[];
@@ -249,6 +270,7 @@ export type EventMap = {
   scoreboard: Scoreboard;
   agent_reply: AgentReply;
   state: SimState;
+  notice: Notice;
 };
 
 export type EventType = keyof EventMap;
@@ -269,6 +291,11 @@ export type ClientMessage =
   | { type: "agent_text"; text: string }
   | { type: "radio_text"; text: string }
   | { type: "load_scenario"; name: string }
+  | { type: "configure"; source: "sim" | "real"; scenario: string; density?: number }
+  | { type: "start" }
+  | { type: "pause" }
+  | { type: "reset" }
+  | { type: "set_speed"; speed: number }
   | { type: "set_tower"; enabled: boolean }
   | { type: "set_auto_speak"; enabled: boolean }
   | { type: "add_disruption"; kind: "intruder" | "storm"; x_nm: number; y_nm: number }

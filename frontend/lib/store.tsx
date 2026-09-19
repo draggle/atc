@@ -7,6 +7,7 @@ import type {
   AlertPayload,
   Disruption,
   InstructionCard,
+  Notice,
   OpenClearance,
   Plan,
   ResolverStep,
@@ -36,6 +37,11 @@ export interface Track {
   curAt: number;
   prev: AircraftState | null;
   prevAt: number;
+}
+
+export interface ActiveNotice extends Notice {
+  id: number;
+  at: number; // ms wall clock
 }
 
 export interface Sliders {
@@ -68,6 +74,9 @@ export interface TowerState {
   stats: Stats | null;
   disruptions: Record<string, Disruption>;
   chat: ChatLine[];
+  notices: ActiveNotice[];
+  /** the setup panel is open */
+  setupOpen: boolean;
   sliders: Sliders;
   planView: "today" | "tower";
   showStock: boolean;
@@ -92,6 +101,8 @@ export const initialState: TowerState = {
   stats: null,
   disruptions: {},
   chat: [],
+  notices: [],
+  setupOpen: false,
   sliders: { buffer_nm: 3, error_rate: 0.1, noise: 0.2 },
   planView: "tower",
   showStock: false,
@@ -106,10 +117,36 @@ export type Action =
   | { type: "set_plan_view"; view: "today" | "tower" }
   | { type: "toggle_stock" }
   | { type: "local_toggle"; key: "tower_enabled" | "auto_speak"; value: boolean }
+  | { type: "dismiss_notice"; id: number }
+  | { type: "set_setup_open"; open: boolean }
   | { type: "reset" };
 
 const TRANSCRIPT_CAP = 200;
 const FLASH_MS = 4000;
+
+let noticeSeq = 0;
+
+/** Drop everything that belonged to the previous world. Settings and chat survive. */
+function clearWorld(state: TowerState): TowerState {
+  return {
+    ...state,
+    aircraft: {},
+    tracks: {},
+    watching: [],
+    plan: null,
+    flashUntil: {},
+    cards: [],
+    cardT: {},
+    clearances: {},
+    alerts: [],
+    steps: {},
+    resolving: [],
+    transcript: [],
+    scoreboard: null,
+    stats: null,
+    disruptions: {},
+  };
+}
 
 function upsertClearance(state: TowerState, c: OpenClearance): TowerState {
   return { ...state, clearances: { ...state.clearances, [c.id]: c } };
@@ -117,8 +154,20 @@ function upsertClearance(state: TowerState, c: OpenClearance): TowerState {
 
 function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
   switch (ev.type) {
-    case "state":
-      return { ...state, sim: ev.payload, watching: ev.payload.watching ?? state.watching };
+    case "state": {
+      const prevWorld = state.sim?.world_id;
+      const nextWorld = ev.payload.world_id;
+      const base = prevWorld !== undefined && nextWorld !== undefined && prevWorld !== nextWorld ? clearWorld(state) : state;
+      // A freshly loaded world closes the setup panel; an idle backend opens it.
+      const setupOpen = ev.payload.lifecycle === "idle" ? true : nextWorld !== prevWorld ? false : base.setupOpen;
+      return { ...base, sim: ev.payload, watching: ev.payload.watching ?? base.watching, setupOpen };
+    }
+
+    case "notice": {
+      noticeSeq += 1;
+      const notices = [...state.notices, { ...ev.payload, id: noticeSeq, at: Date.now() }].slice(-4);
+      return { ...state, notices };
+    }
 
     case "radar": {
       const list = Array.isArray(ev.payload) ? ev.payload : ev.payload.aircraft;
@@ -232,6 +281,10 @@ export function reducer(state: TowerState, action: Action): TowerState {
       return { ...state, showStock: !state.showStock };
     case "local_toggle":
       return state.sim ? { ...state, sim: { ...state.sim, [action.key]: action.value } } : state;
+    case "dismiss_notice":
+      return { ...state, notices: state.notices.filter((n) => n.id !== action.id) };
+    case "set_setup_open":
+      return { ...state, setupOpen: action.open };
     case "reset":
       return { ...initialState, connection: state.connection };
   }

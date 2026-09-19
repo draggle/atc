@@ -53,6 +53,25 @@ CARD_VERIFY_S = 30.0  # a matched clearance with no radar alert for this long is
 Emit = Callable[[dict[str, Any]], None]
 
 
+_CATALOG: list[dict[str, Any]] | None = None
+
+
+def scenario_catalog() -> list[dict[str, Any]]:
+    """Name, description and size of every built-in scenario, for the setup panel. Cached."""
+    global _CATALOG
+    if _CATALOG is None:
+        out = []
+        for name in SC.list_scenarios():
+            try:
+                sc = SC.load(name)
+                out.append({"name": name, "description": sc.description, "flights": len(sc.flights),
+                            "source": "sim"})
+            except Exception:  # a broken file must not take the screen down
+                log.exception("scenario %s failed to load", name)
+        _CATALOG = out
+    return _CATALOG
+
+
 class World:
     def __init__(self, emit: Emit, *, synthesize: bool = True, asr: ASR | None = None,
                  realtime: bool = True) -> None:
@@ -88,6 +107,10 @@ class World:
         self.errors_injected = 0
         self.errors_caught = 0
         self.speed = 1.0
+        # Lifecycle: nothing moves until start(). idle -> ready -> running <-> paused -> ended.
+        self.lifecycle: str = "idle"
+        self.world_id = 0  # bumps on every load so the screen can drop the previous world's state
+        self._base_scenario: Scenario | None = None  # what reset() returns to
         self._lock = asyncio.Lock()
         AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -98,6 +121,14 @@ class World:
         self._load_scenario(sc)
 
     def _load_scenario(self, sc: Scenario) -> None:
+        """Build the world and its plan. Does not start the clock: lifecycle becomes "ready"."""
+        self._base_scenario = sc.model_copy(deep=True)
+        self.world_id += 1
+        self.lifecycle = "ready"
+        self.alert_latencies.clear()
+        self.tier1_latencies.clear()
+        self.transmissions = self.matches = self.alerts = self.false_alarms = 0
+        self.errors_injected = self.errors_caught = 0
         self.scenario = sc
         self.sim = Simulator(sc)
         self.core = TowerCore(waypoints={w.name: (w.x_nm, w.y_nm) for w in sc.waypoints})
@@ -139,6 +170,9 @@ class World:
             "sector_nm": sc.sector_nm if sc else 200.0,
             "buffer_nm": self.buffer_nm, "error_rate": self.error_rate, "noise": self.noise,
             "speed": self.speed,
+            "lifecycle": self.lifecycle,
+            "world_id": self.world_id,
+            "scenarios": scenario_catalog(),
             "watching": self.watching(),
         }, t=self.sim.t))
 
@@ -230,6 +264,45 @@ class World:
         self.card_by_clearance[clearance_id] = card.id
         self.emit(event("instruction_card", card, t=self.sim.t))
 
+    # ------------------------------------------------------------------ lifecycle
+
+    def start(self) -> bool:
+        """ready or paused -> running. Returns False if there is nothing to run."""
+        if self.scenario is None or self.lifecycle not in ("ready", "paused"):
+            return False
+        self.lifecycle = "running"
+        self.emit_state()
+        return True
+
+    def pause(self) -> bool:
+        if self.lifecycle != "running":
+            return False
+        self.lifecycle = "paused"
+        self.emit_state()
+        return True
+
+    def reset(self) -> bool:
+        """Back to the world as it was loaded: clock at zero, nothing issued, nothing moving."""
+        if self._base_scenario is None:
+            return False
+        self._load_scenario(self._base_scenario.model_copy(deep=True))
+        return True
+
+    def set_speed(self, speed: float) -> None:
+        self.speed = float(min(120.0, max(0.25, speed)))
+        self.emit_state()
+
+    def notice(self, text: str, level: str = "info") -> None:
+        self.emit(event("notice", {"text": text, "level": level}, t=self.sim.t))
+
+    def _radio_open(self) -> bool:
+        """The frequency only works while the clock runs; otherwise pilots could never answer."""
+        if self.lifecycle == "running":
+            return True
+        self.notice("Press Start first. The radio only works while the simulation is running."
+                    if self.lifecycle in ("ready", "paused") else "Load a scenario first.", "warn")
+        return False
+
     # ------------------------------------------------------------------ settings
 
     def set_tower(self, enabled: bool) -> None:
@@ -254,25 +327,41 @@ class World:
     # ------------------------------------------------------------------ the clock
 
     async def tick(self, dt: float = 1.0) -> None:
-        if self.scenario is None:
+        """Advance the world by dt sim seconds. A no-op unless the lifecycle is "running".
+
+        dt may be large when the clock runs fast: the sim still steps at most 1 s at a time so
+        separation monitoring and the core's timeouts never skip, and one radar frame is sent
+        at the end.
+        """
+        if self.scenario is None or self.lifecycle != "running":
             return
         async with self._lock:
-            self.sim.step(dt)
+            remaining = float(dt)
+            while remaining > 1e-9:
+                step = min(1.0, remaining)
+                remaining -= step
+                self.sim.step(step)
+                now = self.sim.t
+                self.monitor.observe(list(self.sim.active.values()), now)
+                states = self.sim.aircraft()
+                self._emit_core_events(self.core.tick(now, states))
+                for cid, t_match in list(self.matched_at.items()):
+                    if now - t_match >= CARD_VERIFY_S and not self.core.conformance.watching(
+                            self.core.store.get(cid).callsign if self.core.store.get(cid) else ""):
+                        self._set_card_status(cid, "verified")
+                        del self.matched_at[cid]
+                if now - self.last_replan_t >= REPLAN_EVERY_S:
+                    self._replan("periodic")
             now = self.sim.t
-            self.monitor.observe(list(self.sim.active.values()), now)
             states = self.sim.aircraft()
             self.emit(event("radar", {"aircraft": [a.model_dump() for a in states], "t": now,
                                       "watching": self.watching()}, t=now))
-            self._emit_core_events(self.core.tick(now, states))
-            for cid, t_match in list(self.matched_at.items()):
-                if now - t_match >= CARD_VERIFY_S and not self.core.conformance.watching(
-                        self.core.store.get(cid).callsign if self.core.store.get(cid) else ""):
-                    self._set_card_status(cid, "verified")
-                    del self.matched_at[cid]
-            if now - self.last_replan_t >= REPLAN_EVERY_S:
-                self._replan("periodic")
-            if int(now) % 5 == 0:
+            if int(now) % 5 == 0 or dt > 1.0:
                 self.emit_scoreboard()
+            if self.sim.done() and not self.pending:
+                self.lifecycle = "ended"
+                self.emit_scoreboard()
+                self.emit_state()
         # run due pilot responses outside the lock: they do TTS and ASR
         due = [f for (t, f) in self.pending if t <= now]
         self.pending = [(t, f) for (t, f) in self.pending if t > now]
@@ -349,6 +438,8 @@ class World:
 
     async def controller_audio(self, samples: np.ndarray, sr: int = 16000) -> None:
         """A controller utterance from the mic: transcribe, then treat as controller text."""
+        if not self._radio_open():
+            return
         ref = f"ctl-{uuid.uuid4().hex[:8]}.wav"
         float_to_wav(AUDIO_DIR / ref, samples, sr)
         text, conf, n_best, stock, lat = await self._transcribe(samples)
@@ -356,6 +447,8 @@ class World:
                                duration_s=len(samples) / sr, asr_latency=lat)
 
     async def controller_text(self, text: str) -> None:
+        if not self._radio_open():
+            return
         await self._controller(text)
 
     async def _controller(self, text: str, *, audio_ref: str = "", conf: float = 1.0,
@@ -408,7 +501,7 @@ class World:
     async def speak_card(self, card_id: str) -> None:
         """Tower speaks the card itself (auto-speak) through TTS and its own ears."""
         card = self.cards.get(card_id)
-        if card is None:
+        if card is None or not self._radio_open():
             return
         if self.tts is None or self.asr is None and not self.synthesize:
             await self._controller(card.phrase, card=card)
