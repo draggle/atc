@@ -8,7 +8,7 @@ For the teammate who owns training, serving, and the LLM calls. Read `README.md`
 |---|---|
 | Dataset | jacktol/atc-dataset downloaded and prepared under `data/asr/`: 11,268 train, 593 val, 2,926 held-out test. Manifests in `data/asr/manifests/` |
 | Stock WER | Measured on 100 real held-out clips: tiny 1.04, base 0.92, small 0.67. Greedy, both sides normalized with `training/text_norm.py` |
-| Whisper fine-tune script | `training/finetune_whisper.py`, follows the recipe in docs 04. Smoke-tested on tiny. A laptop run of whisper-tiny on the full train set was launched overnight; check `training/results/wer_comparison.json` and `RUNS.md` for whether it finished and what it scored |
+| Whisper fine-tune | `training/finetune_whisper.py`, recipe from docs 04. Laptop run done: whisper-tiny, 1,200 steps, 62 min, **0.217 WER on 300 real held-out clips vs 1.18 / 1.11 / 0.69 for stock tiny / base / small**. Checkpoint `data/checkpoints/whisper-tiny-atc/best`, CT2 export `whisper-tiny-atc-ct2`. Caveat: worse than stock on the synthetic `say` pilot voices (domain shift), so it is not tier 1 locally yet |
 | Baseten training config | `training/whisper/config.py` and `run.sh`, `training/checker/config.py` and `run.sh`, exactly per docs 07 section 11. Never submitted, no key |
 | Checker | `training/gen_checker_data.py` produces balanced 8-class pairs. `finetune_checker.py` trained distilroberta-base on 12k pairs in 10 minutes on the laptop: accuracy 0.894, false alarms 0.085, detection 0.908 on 5,000 synthetic held-out pairs. Checkpoint under `data/checkpoints/checker-laptop/best`. `serve_checker.py` serves `POST /predict {controller, pilot} -> {label, confidence}` |
 | Backend clients | `backend/tower/asr.py` BasetenWhisper (request shape assumed, see the file), `backend/tower/check.py` RemoteChecker, `backend/tower/llm.py` LLM with 429 backoff. All fall back to local or mock when their env var is unset |
@@ -38,9 +38,9 @@ For the teammate who owns training, serving, and the LLM calls. Read `README.md`
 - Test the combination logic: a correct readback stays silent, a wrong value alerts, and a disagreement between rules and model goes to the resolver. Watch the false alarm counter on the scoreboard over 20 exchanges at 0 percent pilot error rate. It must stay at 0.
 - Report per-type accuracy from `eval_checker.py`. wrong_aircraft is the weak class; say so.
 
-### 4. Synthetic audio augmentation, if time
+### 4. Synthetic audio augmentation, needed for the tuned model to serve the live demo
 
-- Every pilot response writes a wav and a ground-truth line under `data/`. `prep_data.py --synthetic` also generates clips with `say`. Mix a few thousand into training as augmentation. Keep the real test split untouched. Report real-clip WER only.
+- The tuned model mis-hears the demo's synthetic voices ("air china" for "air canada"). Every pilot response writes a wav and a ground-truth line under `data/`, and `prep_data.py --synthetic` generates more with `say`. Mix a few thousand into the Baseten training run. Keep the real test split untouched and report real-clip WER separately from synthetic-clip WER. Once the tuned model beats stock base.en on the synthetic voices too, set `ASR_LOCAL_MODEL` or `ASR_MODEL_URL` to it for tier 1.
 
 ## Numbers you owe the scoreboard
 

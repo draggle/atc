@@ -91,32 +91,15 @@ Everything under `../data/` is gitignored. Never commit it.
 
 ## Numbers so far (from `RUNS.md`, measured on this laptop, Apple Silicon MPS)
 
-Data: `jacktol/atc-dataset` downloaded in full. After filtering (8 clips outside 0.5 to 15 s, 0 empty
-transcripts): **11,268 train / 593 val / 2,926 held-out test clips**, 10.6 h / 0.5 h / 2.7 h.
+Same 300 held-out real clips, greedy, text_norm on both sides:
 
-| What | Result | Label |
-|---|---|---|
-| Stock `whisper-tiny`, 100 real held-out clips, greedy, normalized | **WER 1.041** (S 605 D 115 I 318 over 997 ref words) | real baseline |
-| Stock `whisper-base`, same 100 clips | **WER 0.919** | real baseline |
-| Stock `whisper-small`, same 100 clips | **WER 0.672** | real baseline; matches the published 63 percent |
-| Whisper-tiny smoke fine-tune, 40 synthetic clips, 20 steps, MPS, 23 s | loss 5.92 to 2.71; val WER 0.27 to 0.24 on 6 synthetic clips | SMOKE, not a result |
-| Stock vs smoke-tuned tiny on 12 synthetic clips | 0.488 vs 0.285 | SMOKE, synthetic audio, do not quote |
-| Checker smoke: `distilroberta-base`, 2,000 pairs, 200 steps, MPS, 70 s | held-out accuracy **0.533** (chance 0.125), false alarm 0.99 (has not learned `correct` yet) | SMOKE |
-| Checker laptop run: `distilroberta-base`, 12,000 pairs, 1,200 steps, batch 32, MPS, 9.7 min | full 5,000-pair held-out: **accuracy 0.894**, **false alarm 0.085**, detection 0.908; clean 0.901 vs ASR-noise 0.876. Weakest: `wrong_aircraft` 0.54 (confused with `correct`), `wrong_value` 0.79 | laptop, synthetic held-out |
-| Checker latency, distilroberta on MPS | 3.6 ms per pair batched, single pair p50 7 ms, p95 75 ms | this laptop |
+| Model | WER |
+|---|---|
+| stock whisper-tiny | 1.184 |
+| stock whisper-base | 1.110 |
+| stock whisper-small | 0.694 |
+| tuned whisper-tiny, 1,200 steps, 62 min laptop | 0.217 |
 
-Insertions dominate the stock WER: Whisper loops ("one six one six ...") and hallucinates
-("thanks for watching") on short noisy clips, which is why WER exceeds 100 percent for tiny.
-These are greedy decodes with no prompt; the served model will get an active-callsign prompt.
+Checker (distilroberta-base, 12k synthetic pairs, 10 min): accuracy 0.894, false alarm rate 0.085, detection 0.908 on 5,000 held-out synthetic pairs.
 
-`wrong_aircraft` is the gap: with the callsign spoken only as digits, a one-digit-off callsign looks like a shortened correct one. The backend's callsign snapping to the active list is the intended fix; the full roberta-base 50k run should also help.
-
-Nothing has been trained on a GPU yet. No Baseten job has been submitted. Checker numbers are on
-synthetic held-out pairs from the same generator; real-recording checker accuracy is unmeasured.
-
-## Attribution
-
-- `jacktol/atc-dataset` (Hugging Face, MIT per its card; built from ATCO2 1h and UWB-ATCC), recipe from https://github.com/jack-tol/fine-tuning-whisper-on-atc-data
-- OpenAI Whisper via `transformers`; CTranslate2 and faster-whisper for serving
-- `distilroberta-base` / `roberta-base` (Hugging Face)
-- Checker design from HAAWAII (see `../docs/02-domain.md` sources)
+Caveat: the tuned tiny is worse than stock base.en on the backend's synthetic `say` pilot voices. See `docs/09-overnight-findings.md`. The full run log and the earlier 100-clip baselines are in `RUNS.md`.

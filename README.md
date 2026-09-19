@@ -24,7 +24,7 @@ Built overnight Sept 19 to 20 on branch `joey/overnight-build`. Everything below
 | Next.js screen: radar, plan toggle, cards, alerts, agent trace, transcript, scoreboard, sliders, push-to-talk, mock mode | Done | `frontend/`, builds clean |
 | Monte Carlo evaluation: three arms, LoS per flight hour, closest approach, miles saved | Done | `backend/eval`, numbers below |
 | Training: data prep on the real public dataset, Whisper fine-tune, WER eval, checker data generation, cross-encoder train and serve, Baseten job configs | Scripts done and smoke-tested; laptop runs only | `training/`, `training/RUNS.md` |
-| Whisper fine-tuned on Baseten H100 | Not started, no key | `docs/trd/02-models-and-baseten.md` |
+| Whisper fine-tuned | Laptop run done: tuned tiny beats stock small on real clips. Baseten H100 run not started, no key | `training/RUNS.md`, `docs/trd/02-models-and-baseten.md` |
 | Real ADS-B traffic, replay comparison | Not started | `docs/trd/03-planner-data-eval.md` |
 | ElevenLabs voices, demo script, backup video, Devpost | Not started | `docs/trd/04-screen-pilots-demo.md` |
 
@@ -43,8 +43,9 @@ All measured by us on this laptop. Say which is which on stage.
 | Density sweep, dense scenario 1x to 2.5x traffic | Fixed routes 0.63 to 1.60 LoS per flight hour; Tower with validation 0 to 0.011; 6 to 8 percent fewer miles at every density | `python -m eval.sweep`, chart in `docs/img/density-sweep.png`, 4 runs per point |
 | Dense scenario at 5 percent errors, 20 runs | fixed 154 LoS, Tower without validation 1 LoS, Tower with validation 0 | `python -m eval.run_eval --scenario dense --runs 20 --error-rate 0.05` |
 | Checker cross-encoder, synthetic held-out 5,000 pairs | accuracy 0.894, false alarm rate 0.085, detection 0.908, 7 ms per pair | distilroberta-base, 12k pairs, 10 min on the laptop GPU |
-| Stock Whisper word error rate on 100 real held-out ATC clips | tiny 1.04, base 0.92, small 0.67 | jacktol/atc-dataset test split, greedy, both sides normalized. Matches the published 63 percent for small |
-| Fine-tuned Whisper word error rate | See `training/results/wer_comparison.json` if the overnight laptop run finished | whisper-tiny on 11k real clips, laptop GPU |
+| Stock Whisper word error rate on 300 real held-out ATC clips | tiny 1.18, base 1.11, small 0.69 | jacktol/atc-dataset test split, greedy, both sides normalized. Matches the published 63 percent for small |
+| **Fine-tuned Whisper, same 300 real held-out clips** | **tuned tiny 0.217** vs stock tiny 1.18, stock base 1.11, stock small 0.69 | whisper-tiny, 11k real clips, 1,200 steps, 62 min on the laptop GPU. `training/results/wer_comparison.json`, `training/RUNS.md`. Beats all three stock sizes on real radio and is the fastest |
+| Fine-tuned Whisper on the synthetic pilot voices | Worse than stock base.en ("air china" for "air canada") | Domain shift: the dataset is European radio, the demo voices are macOS `say`. Tier 1 stays on stock base.en locally; the tuned model is the real-clip comparison. Fix is TRD 02 task 4, mixing simulator audio into training |
 | Tier 1 latency | about 0.8 s after speech recognition, 1.2 to 1.5 s for local Whisper per clip | Live session |
 
 ## Run it
@@ -78,7 +79,7 @@ Environment variables, all optional, in `.env` (copy `.env.example`):
 |---|---|
 | `BASETEN_API_KEY`, `EXTRACTOR_MODEL`, `RESOLVER_MODEL` | Real LLM for the resolver, extractor fallback, and world builder. Without it, deterministic mocks |
 | `ASR_MODEL_URL`, `ASR_STOCK_MODEL_URL` | Baseten Whisper endpoints. Without them, local faster-whisper |
-| `ASR_LOCAL_MODEL` | faster-whisper size or a CTranslate2 directory, default `base.en` |
+| `ASR_LOCAL_MODEL` | faster-whisper size or a CTranslate2 directory, default `base.en`. The tuned model exports to `data/checkpoints/whisper-tiny-atc-ct2` |
 | `CHECKER_MODEL_URL` | Cross-encoder endpoint, see `training/serve_checker.py`. Without it, rules only |
 | `ELEVENLABS_API_KEY` | Pilot voices. Without it, macOS `say` |
 | `TOWER_SCENARIO`, `TOWER_SIM_SPEED`, `TOWER_SYNTHESIZE=0` | Startup scenario, clock speed, disable audio entirely |

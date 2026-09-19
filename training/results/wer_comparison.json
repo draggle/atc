@@ -1,0 +1,297 @@
+{
+ "rows": [
+  {
+   "model": "stock:openai/whisper-tiny",
+   "wer": 1.1841,
+   "n_clips": 300,
+   "S": 1821,
+   "D": 365,
+   "I": 1313,
+   "seconds_per_clip": 0.052,
+   "decoding": "greedy, no prompt, text_norm on ref and hyp",
+   "notes": "laptop, MPS, first 300 clips of test.jsonl",
+   "worst_10": [
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000152.wav",
+     "ref": "sky travel six one eight ready in seque",
+     "hyp": "id like to have a six one eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight",
+     "wer": 7.875
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000155.wav",
+     "ref": "cimber three five two five reduce speed two fo",
+     "hyp": "can be three five five five six five six five six five six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six",
+     "wer": 6.888888888888889
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000141.wav",
+     "ref": "one two one zero five five lufthansa six tango yankee have good night bye thank you thank you",
+     "hyp": "one two zero five five two one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero one zero",
+     "wer": 6.555555555555555
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000187.wav",
+     "ref": "three five eight zero roger contact ruzyne tower one one eight decimal one good bye",
+     "hyp": "three decimal five zero or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a joint or a",
+     "wer": 6.266666666666667
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000264.wav",
+     "ref": "one two five nine six five malev six six one",
+     "hyp": "one two five nine six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six",
+     "wer": 5.7
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000298.wav",
+     "ref": "seven one five praha on one three five one three five good bye",
+     "hyp": "no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no no",
+     "wer": 4.923076923076923
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000057.wav",
+     "ref": "csa six nine zero ruzyne tower line up runway one three cleared for takeoff wind one five zero degrees four knots lining up and cleared for",
+     "hyp": "precise one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six one six",
+     "wer": 4.769230769230769
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000189.wav",
+     "ref": "easy two five eight quebec contact radar one two zero two seven five by",
+     "hyp": "easy to fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight fight",
+     "wer": 4.571428571428571
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000281.wav",
+     "ref": "hotel bravo kilo golf november berne tower hello qnh one zero two seven enter via route zulu runway three two in use traffic rega helicopter just abeam gerzensee leaving direction thun indicating four thousand five hundred feet not verified opposite",
+     "hyp": "at brake in the gulf of amper we have a total of one zero two zero zero two zero zero two zero zero two zero zero two zero zero two zero zero two zero zero we have a total of one five zero zero zero zero we have a total of one five zero zero zero zero we have a total of one five zero zero zero zero we have a total of one five zero zero zero zero we have a total of one five zero zero zero zero we have a total of one five zero zero zero zero we have a total of one five zero zero zero zero we have a total of one five zero zero zero zero we have a total of one five zero zero zero zero we have a total of one five zero zero zero zero we have a total of one five zero",
+     "wer": 3.7
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000119.wav",
+     "ref": "baltu four",
+     "hyp": "for more information visit www mortipolar com",
+     "wer": 3.5
+    }
+   ]
+  },
+  {
+   "model": "tuned:../data/checkpoints/whisper-tiny-atc/best",
+   "wer": 0.2166,
+   "n_clips": 300,
+   "S": 360,
+   "D": 85,
+   "I": 195,
+   "seconds_per_clip": 0.04,
+   "decoding": "greedy, no prompt, text_norm on ref and hyp",
+   "notes": "laptop, MPS, first 300 clips of test.jsonl",
+   "worst_10": [
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000193.wav",
+     "ref": "sierra papa sierra",
+     "hyp": "sierra papa sierra p p hotel is reaching at the squawk two",
+     "wer": 3.0
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000119.wav",
+     "ref": "baltu four",
+     "hyp": "more to full air malta",
+     "wer": 2.5
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000013.wav",
+     "ref": "expediting",
+     "hyp": "xtrot heading",
+     "wer": 2.0
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000112.wav",
+     "ref": "cept localizer runway",
+     "hyp": "level up flight level zero ni",
+     "wer": 2.0
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000089.wav",
+     "ref": "oscar kilo bravo yankee romeo",
+     "hyp": "reduce the wind to five zero bravo kilo bravo hotel tango",
+     "wer": 1.8
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000037.wav",
+     "ref": "starting holding over tango",
+     "hyp": "passing level three four echo what vectoring",
+     "wer": 1.75
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000200.wav",
+     "ref": "jetstar nine twelve",
+     "hyp": "heli flight level two alfa",
+     "wer": 1.6666666666666667
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000291.wav",
+     "ref": "sierra five",
+     "hyp": "thank you agar",
+     "wer": 1.5
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000064.wav",
+     "ref": "aero flot on",
+     "hyp": "line up aero flot one nine",
+     "wer": 1.3333333333333333
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000058.wav",
+     "ref": "changing ground runway vacated",
+     "hyp": "changing ground ahoj traffic is okay to",
+     "wer": 1.25
+    }
+   ]
+  },
+  {
+   "model": "stock-base",
+   "wer": 1.1096,
+   "n_clips": 300,
+   "S": 1601,
+   "D": 327,
+   "I": 1351,
+   "seconds_per_clip": 0.12,
+   "decoding": "greedy, no prompt, text_norm on ref and hyp",
+   "notes": "laptop, MPS, first 300 clips of test.jsonl",
+   "worst_10": [
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000146.wav",
+     "ref": "climb flight level three three zero singapore three two five",
+     "hyp": "you can go to the back you can go to the back you can go to the back you can go to the back you can go to the back you can go to the back you can go to the back you can go to the back you can go to the back you can go to the back you can go to the back you can go to the back you can go to the back you can go to the back you can go to the back you can go to the back you can go to the back you can go to the back you can",
+     "wer": 11.0
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000232.wav",
+     "ref": "three one csa four nine three",
+     "hyp": "three one four five six eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight eight",
+     "wer": 10.333333333333334
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000144.wav",
+     "ref": "air malta five three eight radar hello radar contact after maintain high speed",
+     "hyp": "im a very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very very",
+     "wer": 9.76923076923077
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000188.wav",
+     "ref": "vinair one zero bravo praha radar good evening radar contact",
+     "hyp": "im very glad to hear that good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening good evening",
+     "wer": 8.4
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000242.wav",
+     "ref": "praha two bravo good day inbound lagar level one hundr",
+     "hyp": "im a good student im a good student im a good student im a good student im a good student im a good student im a good student im a good student im a good student im a good student im a good student im a good student im a good student im a good student im a good student im a good student im a good student im a good student im a good student im a good student im a good student im",
+     "wer": 8.4
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000055.wav",
+     "ref": "hotel quebec mike i confirm cleared to land runway one four",
+     "hyp": "i can confirm that there is a run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run over run",
+     "wer": 8.0
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000021.wav",
+     "ref": "lufthansa five alfa hotel climb level three one ze",
+     "hyp": "so from the five alphotelic level three one two three four five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five five",
+     "wer": 6.777777777777778
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000118.wav",
+     "ref": "lot five two five radar radar contact descend flight level one zero zero kilo information in three minutes expect shortcut",
+     "hyp": "the final five to five to three to three to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to five to",
+     "wer": 6.3
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000197.wav",
+     "ref": "five zero nine descend four thousand feet qnh one zero one nine and you may proceed visually to final of runway",
+     "hyp": "the final is a four zero zero zero feet quenched panzer of an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an an",
+     "wer": 6.0
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000220.wav",
+     "ref": "one three four four four zero csa seven two si",
+     "hyp": "one three four four zero zero six seven two six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six six",
+     "wer": 5.7
+    }
+   ]
+  },
+  {
+   "model": "stock-small",
+   "wer": 0.6937,
+   "n_clips": 300,
+   "S": 1148,
+   "D": 309,
+   "I": 593,
+   "seconds_per_clip": 0.394,
+   "decoding": "greedy, no prompt, text_norm on ref and hyp",
+   "notes": "laptop, MPS, first 300 clips of test.jsonl",
+   "worst_10": [
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000060.wav",
+     "ref": "by rape direct rapet thai nine two two",
+     "hyp": "my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop my rop",
+     "wer": 8.0
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000275.wav",
+     "ref": "lot four one two six maintaining flight level two nine zero",
+     "hyp": "i got a one two six one two three nine zero four seven eight nine zero seven eight nine zero seven eight nine zero seven eight nine zero seven eight nine zero seven eight nine zero seven eight nine zero seven eight nine zero seven eight nine zero seven eight nine zero seven eight nine zero seven eight nine zero seven eight nine zero seven eight",
+     "wer": 5.545454545454546
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000211.wav",
+     "ref": "four thousand",
+     "hyp": "seven zero zero zero four zero zero zero four zero zero zero",
+     "wer": 5.5
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000013.wav",
+     "ref": "expediting",
+     "hyp": "thanks but i think",
+     "wer": 4.0
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000213.wav",
+     "ref": "oscar kilo hotel uniform u",
+     "hyp": "in the car the car is on the left the car is on the right so its on the left",
+     "wer": 4.0
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000170.wav",
+     "ref": "jobair zero six two runway one three cleared to land wind zero two zero degrees six knots",
+     "hyp": "chobers zero six to run with on three call it one two zero two zero two zero two zero two zero two zero two zero two zero two zero two zero two zero two zero two zero two zero two zero two zero two zero two zero two zero two zero two zero two zero two zero two zero two zero two zero two zero two zero two",
+     "wer": 3.6470588235294117
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000089.wav",
+     "ref": "oscar kilo bravo yankee romeo",
+     "hyp": "im going to turn the camera off and ill be back in a minute",
+     "wer": 2.8
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000097.wav",
+     "ref": "zero and intercept localizer runway three one",
+     "hyp": "zero im in the centre i just got out of the road im in the middle of the river",
+     "wer": 2.5714285714285716
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000142.wav",
+     "ref": "jobair zero five papa",
+     "hyp": "im going to go back to the front bye bye",
+     "wer": 2.5
+    },
+    {
+     "path": "/Users/josephbarbosa/Desktop/htn/data/asr/jacktol/test/jacktol_test_000233.wav",
+     "ref": "csa six",
+     "hyp": "id say if you could",
+     "wer": 2.5
+    }
+   ]
+  }
+ ],
+ "source": "results/wer_test300_stock_vs_tuned_tiny.json"
+}

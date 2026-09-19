@@ -13,6 +13,9 @@ Saturday night Sept 19 to Sunday Sept 20. Things the spec did not know that a te
 
 ## Training on the laptop
 
+- **The fine-tune works and the number is real.** whisper-tiny, 1,200 steps, 62 minutes on the laptop GPU: 0.217 WER on 300 never-seen real clips, against 1.18 for stock tiny, 1.11 for stock base, and 0.69 for stock small on the same clips. Table in `training/RUNS.md`.
+- **The tuned model is worse on our synthetic pilot voices.** It hears "air canada" as "air china" and drops waypoints, because it learned European radio and the demo voices are macOS `say` through a filter. Stock base.en stays as tier 1 for the local demo; the tuned model is the real-clip comparison. The fix is to mix simulator audio into training (the ground-truth log under `data/` already exists for this), or to use ElevenLabs voices that sound more like the training set. Say this on stage: it is the honest version of "sim audio is not real radio."
+
 - The full public dataset downloads in about a minute with plain HTTPS, no token. 11,268 train, 593 val, 2,926 test after filtering.
 - A 16 GB MacBook Air cannot fine-tune whisper-base at batch 8: the process reaches 11 GB and swaps. whisper-tiny fits. Anything bigger is a Baseten job.
 - The checker cross-encoder trains in 10 minutes on the laptop GPU to 0.89 accuracy on synthetic pairs. The weak class is wrong_aircraft, because a one-digit-off callsign looks like a shortened correct one. That is exactly why the backend snaps callsigns against the active list before the checker sees them.
