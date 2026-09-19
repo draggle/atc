@@ -3,6 +3,7 @@
  * with payloads shaped exactly like backend/schemas.py, and reacts to client messages
  * so every view can be exercised without a backend.
  */
+import { DEFAULT_FRAME, nmToLatLon } from "./geo";
 import type {
   AircraftState,
   AlertPayload,
@@ -11,6 +12,7 @@ import type {
   InstructionCard,
   Item,
   Lifecycle,
+  LonLatAlt,
   OpenClearance,
   PathSample,
   Plan,
@@ -134,14 +136,32 @@ export function startMock(emit: Emit, scenarioName?: string): MockHandle {
     if (!stopped) emit(ev);
   };
 
+  // ------------------------------------------------------------------ geography
+  // The mock sits where the backend's default scenarios sit, so the map can be built against it.
+  const ll = (x: number, y: number) => {
+    const [lat, lon] = nmToLatLon(DEFAULT_FRAME, x, y);
+    return { lat: Math.round(lat * 1e5) / 1e5, lon: Math.round(lon * 1e5) / 1e5 };
+  };
+  const half = SECTOR / 2;
+  const corners = [ll(-half, -half), ll(half, half), ll(-half, half), ll(half, -half)];
+  const geo = {
+    ...DEFAULT_FRAME,
+    half_nm: half,
+    bounds: [
+      [Math.min(...corners.map((c) => c.lon)), Math.min(...corners.map((c) => c.lat))],
+      [Math.max(...corners.map((c) => c.lon)), Math.max(...corners.map((c) => c.lat))],
+    ] as [[number, number], [number, number]],
+  };
+
   // ------------------------------------------------------------------ state
   const stateEvent = (): SimState => ({
     scenario,
     tower_enabled: towerEnabled,
     auto_speak: autoSpeak,
     t: simT,
-    waypoints: WAYPOINTS,
-    zones,
+    waypoints: WAYPOINTS.map((w) => ({ ...w, ...ll(w.x_nm, w.y_nm) })),
+    zones: zones.map((z) => ({ ...z, ...ll(z.x_nm, z.y_nm) })),
+    geo,
     sector_nm: SECTOR,
     watching: Array.from(watching),
     lifecycle,
@@ -170,7 +190,11 @@ export function startMock(emit: Emit, scenarioName?: string): MockHandle {
       }
       samples.push([t, pts[i].x, pts[i].y, f.alt]);
     }
-    return { callsign: f.callsign, samples, cost: dist, changes: [], distance_nm: dist, time_s: t - simT };
+    const lonlat: LonLatAlt[] = samples.map(([st, sx, sy, salt]) => {
+      const p = ll(sx, sy);
+      return [p.lon, p.lat, salt, st];
+    });
+    return { callsign: f.callsign, samples, cost: dist, changes: [], distance_nm: dist, time_s: t - simT, lonlat };
   };
   const buildPlan = (trigger: string, direct: Set<string>): Plan => {
     const paths = flights.filter((f) => !f.isIntruder).map((f) => pathFor(f, direct.has(f.callsign)));
@@ -238,6 +262,7 @@ export function startMock(emit: Emit, scenarioName?: string): MockHandle {
       actype: f.actype,
       is_intruder: f.isIntruder,
       t: simT,
+      ...ll(f.x, f.y),
     }));
     send({ type: "radar", payload: { aircraft: list, t: simT, watching: Array.from(watching) }, t: simT });
   };
@@ -481,13 +506,16 @@ export function startMock(emit: Emit, scenarioName?: string): MockHandle {
         const d = (gs / 3600) * s;
         predicted.push([simT + s, x + Math.sin((hdg * Math.PI) / 180) * d, y + Math.cos((hdg * Math.PI) / 180) * d]);
       }
-      const d: Disruption = { id, kind, x_nm: x, y_nm: y, radius_nm: 8, hdg_deg: hdg, gs_kt: gs, predicted_path: predicted };
+      const d: Disruption = {
+        id, kind, x_nm: x, y_nm: y, radius_nm: 8, hdg_deg: hdg, gs_kt: gs, predicted_path: predicted, ...ll(x, y),
+        predicted_lonlat: predicted.map(([pt, px, py]) => { const p = ll(px, py); return [p.lon, p.lat, pt] as [number, number, number]; }),
+      };
       send({ type: "disruption", payload: d, t: simT });
     } else {
       const z: Zone = { id, x_nm: x, y_nm: y, radius_nm: 12, kind: "storm" };
       zones.push(z);
       send({ type: "state", payload: stateEvent(), t: simT });
-      const d: Disruption = { id, kind, x_nm: x, y_nm: y, radius_nm: 12, hdg_deg: null, gs_kt: null, predicted_path: [] };
+      const d: Disruption = { id, kind, x_nm: x, y_nm: y, radius_nm: 12, hdg_deg: null, gs_kt: null, predicted_path: [], ...ll(x, y) };
       send({ type: "disruption", payload: d, t: simT });
     }
     after(600, () => {

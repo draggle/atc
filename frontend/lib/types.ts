@@ -119,13 +119,33 @@ export interface AircraftState {
   actype: string;
   is_intruder: boolean;
   t: number;
+  /** Real-world position, degrees. Present from backends with a GeoFrame (phase 2 onward). */
+  lat?: number;
+  lon?: number;
 }
 
 export interface Waypoint {
   name: string;
   x_nm: number;
   y_nm: number;
+  lat?: number;
+  lon?: number;
 }
+
+/** Where on Earth the flat simulator plane sits. Azimuthal equidistant around (lat0, lon0). */
+export interface GeoFrame {
+  lat0: number;
+  lon0: number;
+  projection: "aeqd";
+  name: string;
+  /** half the sector width, NM */
+  half_nm?: number;
+  /** [[west, south], [east, north]] covering the sector, for fitting the map */
+  bounds?: [[number, number], [number, number]];
+}
+
+/** [lon, lat, alt_ft, t]: GeoJSON order, simplified for drawing. */
+export type LonLatAlt = [number, number, number, number];
 
 export type ZoneKind = "storm" | "closed" | "intruder_buffer";
 
@@ -135,6 +155,8 @@ export interface Zone {
   y_nm: number;
   radius_nm: number;
   kind: ZoneKind;
+  lat?: number;
+  lon?: number;
 }
 
 /** (t, x, y, alt) */
@@ -147,6 +169,8 @@ export interface PlannedPath {
   changes: string[];
   distance_nm: number;
   time_s: number;
+  /** The same path for the map: fewer points than samples, corners and level changes kept. */
+  lonlat?: LonLatAlt[];
 }
 
 export interface Plan {
@@ -191,6 +215,10 @@ export interface Disruption {
   gs_kt: number | null;
   /** (t, x, y) */
   predicted_path: [number, number, number][];
+  lat?: number;
+  lon?: number;
+  /** [lon, lat, t] */
+  predicted_lonlat?: [number, number, number][];
 }
 
 export interface Scoreboard {
@@ -243,6 +271,7 @@ export interface SimState {
   /** bumps on every load or reset, so the screen drops the previous world's state */
   world_id?: number;
   scenarios?: ScenarioInfo[];
+  geo?: GeoFrame;
   t: number;
   waypoints: Waypoint[];
   zones: Zone[];

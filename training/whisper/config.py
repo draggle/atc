@@ -29,4 +29,4 @@ job = TrainingJob(
     compute=Compute(accelerator=AcceleratorSpec(accelerator="H100", count=1)),
     runtime=runtime,
 )
-project = TrainingProject(name="k7-run", job=job)
+project = TrainingProject(name="k7-t13", job=job)

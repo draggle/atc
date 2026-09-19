@@ -163,9 +163,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
         await ws.send_text(json.dumps({"type": "instruction_card", "payload": card.model_dump(), "t": world.sim.t}))
     if world.scenario is not None:
         # A screen that connects to a loaded-but-not-started world still needs to see the aircraft.
-        await ws.send_text(json.dumps({"type": "radar", "t": world.sim.t, "payload": {
-            "aircraft": [a.model_dump() for a in world.sim.aircraft()], "t": world.sim.t,
-            "watching": world.watching()}}, default=_json_default))
+        await ws.send_text(json.dumps({"type": "radar", "t": world.sim.t, "payload": world.radar_payload()},
+                                      default=_json_default))
         await ws.send_text(json.dumps({"type": "scoreboard", "t": world.sim.t,
                                        "payload": world.scoreboard().model_dump()}, default=_json_default))
     ptt_channel: str | None = None

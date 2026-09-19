@@ -37,6 +37,11 @@ Domain rules:
   frequency (ACA123 / ACA133) cause real errors: check active_aircraft before deciding wrong_aircraft.
 - Speech recognition mishears digits. Never alert on a value if the expected value appears in any
   relisten hypothesis; prefer watch(callsign, seconds) so radar settles what the aircraft actually does.
+- Waypoint (fix) names are made-up five-letter words such as ESTIR or PIKAR. Speech recognition
+  almost never hears them and writes ordinary words instead ("to 6", "at better"). If the pilot
+  clearly read back a "direct" or "proceed" routing but the fix name is garbled, do NOT alert:
+  use watch(callsign, seconds) and let radar show whether the aircraft turns toward the cleared fix.
+  Alert only if the pilot named a different real fix, or read back no routing at all.
 - False alarms cost trust. Alert only when the evidence says the readback was wrong.
 
 Budget: at most 4 tool calls total, about 5 seconds. Use relisten, active_aircraft,

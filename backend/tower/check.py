@@ -6,6 +6,8 @@ speech hypothesis. Layer 3 asks an optional CheckerModel and marks disagreement 
 """
 from __future__ import annotations
 
+import re
+
 import os
 from typing import Protocol
 
@@ -241,6 +243,27 @@ def correction_phrase(clearance: OpenClearance, verdict: Verdict) -> str:
     return f"{spoken_callsign(clearance.callsign)}, negative, {body}"
 
 
+_ROUTE_CUE = re.compile(r"\b(direct|proceed|proceeding|routing|route)\b")
+
+
+def route_fix_unheard(verdict: Verdict, text_norm: str) -> Item | None:
+    """The pilot audibly read back a routing, but speech recognition lost the fix name.
+
+    Waypoint names are made-up five-letter words ("ESTIR"), and speech recognition turns them into
+    ordinary words ("to 6", "at better"). When the only thing missing from a readback is a route
+    fix, and the pilot did say "direct" or "proceed", the honest reading is "I could not hear the
+    name", not "the pilot left it out". That is a case for the resolver and the radar, never an
+    alert on its own. A pilot who names a different, recognisable fix is still a wrong value.
+    """
+    if verdict.error_type != "omitted_item" or not _ROUTE_CUE.search(text_norm or ""):
+        return None
+    heard_types = {h.type for h in verdict.heard}
+    unheard = [e for e in verdict.expected if e.type not in heard_types]
+    if unheard and all(e.type == "route" for e in unheard):
+        return unheard[0]
+    return None
+
+
 def check(clearance: OpenClearance, readback: Extraction, tx: Transmission,
           model: CheckerModel | None = None, active: list[str] | None = None) -> Verdict:
     """Rules, then the n-best rule, then the optional cross-encoder. Never raises."""
@@ -256,6 +279,14 @@ def check(clearance: OpenClearance, readback: Extraction, tx: Transmission,
         v.result = "ambiguous"
         v.confidence = 0.5
         v.reason = f"{v.reason}; but hypothesis '{hyp}' contains the expected reading"
+        return v
+
+    fix = route_fix_unheard(v, text)
+    if fix is not None:
+        v.result = "ambiguous"
+        v.confidence = 0.5
+        v.reason = (f"Pilot read back a routing but the fix name was not understood "
+                    f"(heard \"{text.strip()}\"); expected direct {fix.value}")
         return v
 
     if tx.asr_confidence < LOW_ASR_CONFIDENCE:

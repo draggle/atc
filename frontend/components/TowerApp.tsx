@@ -35,6 +35,7 @@ function ClientProvider({ children }: { children: ReactNode }) {
       forceMock,
       onEvent: (event) => dispatch({ type: "event", event }),
       onStatus: (connection) => dispatch({ type: "connection", connection }),
+      onLive: () => dispatch({ type: "reset" }),
     });
     ref.current = client;
     return () => {

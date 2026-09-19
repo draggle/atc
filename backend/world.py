@@ -31,9 +31,21 @@ C = importlib.import_module("planner.cards")
 PL = importlib.import_module("planner.plan")
 from planner.conflicts import closest_approach
 from schemas import (
-    AircraftState, Disruption, FlightSpec, InstructionCard, OpenClearance, Plan, Scenario,
-    Scoreboard, SimCommand, Transmission, Waypoint, event,
+    AircraftState,
+    Disruption,
+    FlightSpec,
+    GeoFrame,
+    InstructionCard,
+    OpenClearance,
+    Plan,
+    Scenario,
+    Scoreboard,
+    SimCommand,
+    Transmission,
+    Waypoint,
+    event,
 )
+from sim import geoframe as GEO
 from sim import scenarios as SC
 from sim.engine import Simulator
 from sim.monitor import SeparationMonitor
@@ -153,8 +165,42 @@ class World:
         self.emit_plan(self.plan, trigger="initial")
         for card in C.cards_from_plan(self.plan, None, now_t=0.0, states=self.sim.aircraft()):
             self._add_card(card)
-        self.emit(event("radar", {"aircraft": [a.model_dump() for a in self.sim.aircraft()], "t": 0.0}, t=0.0))
+        self.emit(event("radar", self.radar_payload(), t=0.0))
         self.emit_scoreboard()
+
+    # ------------------------------------------------------------------ geography
+
+    @property
+    def frame(self) -> GeoFrame:
+        """Where on Earth the flat sector sits. See sim/geoframe.py."""
+        return self.scenario.geo if self.scenario is not None else GEO.DEFAULT_FRAME
+
+    def _with_latlon(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Add lat and lon to dicts that carry x_nm and y_nm. The flat values stay."""
+        if not items:
+            return items
+        lat, lon = GEO.to_latlon(self.frame, [i["x_nm"] for i in items], [i["y_nm"] for i in items])
+        for item, la, lo in zip(items, np.atleast_1d(lat), np.atleast_1d(lon)):
+            item["lat"], item["lon"] = round(float(la), 5), round(float(lo), 5)
+        return items
+
+    def radar_payload(self, states: list[AircraftState] | None = None) -> dict[str, Any]:
+        states = self.sim.aircraft() if states is None else states
+        return {"aircraft": self._with_latlon([a.model_dump() for a in states]), "t": self.sim.t,
+                "watching": self.watching()}
+
+    def geo_payload(self) -> dict[str, Any]:
+        half = (self.scenario.sector_nm if self.scenario else 200.0) / 2.0
+        return {**self.frame.model_dump(), "half_nm": half, "bounds": GEO.bounds(self.frame, half)}
+
+    def _disruption_payload(self, d: Disruption) -> dict[str, Any]:
+        out = self._with_latlon([d.model_dump()])[0]
+        if d.predicted_path:
+            arr = np.asarray(d.predicted_path, dtype=float)
+            lat, lon = GEO.to_latlon(self.frame, arr[:, 1], arr[:, 2])
+            out["predicted_lonlat"] = [[round(float(lo), 5), round(float(la), 5), round(float(t), 1)]
+                                       for lo, la, t in zip(np.atleast_1d(lon), np.atleast_1d(lat), arr[:, 0])]
+        return out
 
     # ------------------------------------------------------------------ emitters
 
@@ -165,8 +211,9 @@ class World:
             "tower_enabled": self.tower_enabled,
             "auto_speak": self.auto_speak,
             "t": self.sim.t,
-            "waypoints": [w.model_dump() for w in (sc.waypoints if sc else [])],
-            "zones": [z.model_dump() for z in self.sim.zones],
+            "waypoints": self._with_latlon([w.model_dump() for w in (sc.waypoints if sc else [])]),
+            "zones": self._with_latlon([z.model_dump() for z in self.sim.zones]),
+            "geo": self.geo_payload(),
             "sector_nm": sc.sector_nm if sc else 200.0,
             "buffer_nm": self.buffer_nm, "error_rate": self.error_rate, "noise": self.noise,
             "speed": self.speed,
@@ -184,6 +231,9 @@ class World:
         payload = plan.model_dump()
         if self.baseline is not None:
             payload["baseline_paths"] = [p.model_dump() for p in self.baseline.paths]
+        frame = self.frame
+        for path in payload["paths"] + payload.get("baseline_paths", []):
+            path["lonlat"] = GEO.path_lonlat(frame, path["samples"])
         payload["trigger"] = trigger
         if changed is None:
             self.emit(event("plan", payload, t=self.sim.t))
@@ -354,8 +404,7 @@ class World:
                     self._replan("periodic")
             now = self.sim.t
             states = self.sim.aircraft()
-            self.emit(event("radar", {"aircraft": [a.model_dump() for a in states], "t": now,
-                                      "watching": self.watching()}, t=now))
+            self.emit(event("radar", self.radar_payload(states), t=now))
             if int(now) % 5 == 0 or dt > 1.0:
                 self.emit_scoreboard()
             if self.sim.done() and not self.pending:
@@ -408,7 +457,7 @@ class World:
             d = Disruption(id=f"STORM{len(self.sim.zones) + 1}", kind="storm", x_nm=x_nm, y_nm=y_nm,
                            radius_nm=15.0)
         self.sim.add_disruption(d)
-        self.emit(event("disruption", d, t=self.sim.t))
+        self.emit(event("disruption", self._disruption_payload(d), t=self.sim.t))
         self.emit_state()
         self._replan(f"{kind} added", disruption=d)
         return d

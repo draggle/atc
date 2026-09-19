@@ -74,8 +74,10 @@ Done Saturday afternoon. Verified in a browser against a live backend: idle, loa
 
 ### Phase 2. Geographic frame. About 1 hour
 `GeoFrame` on `Scenario`. Projection helpers with round-trip tests. `AircraftState`, plan samples, waypoints, zones, and disruptions carry lat and lon in events. The three existing scenarios get a frame so they sit somewhere real (default: centred on Toronto Pearson).
-- [ ] Round-trip error under 0.1 NM across a 600 NM region in tests
-- [ ] Every position-bearing event includes lat and lon, documented in `08-ws-protocol.md`
+- [x] Round-trip error under 0.1 NM across a 600 NM region in tests (measured about 1e-12 NM)
+- [x] Every position-bearing event includes lat and lon, documented in `08-ws-protocol.md`
+
+Done Saturday afternoon. `backend/sim/geoframe.py`, 8 new tests, 165 passing. Pairwise distance error inside a 600 NM region is at most 0.17 percent, better than the 1 percent we planned for. Mock mode emits the same fields, and `frontend/lib/geo.ts` mirrors the projection, so phase 3 can be built against mock data. Nothing changes on screen yet.
 
 ### Phase 3. The map. About 4 to 5 hours. Can run in parallel with phases 1 and 2 against mock events
 Replace the canvas radar with deck.gl on MapLibre. Build to parity first, then add depth.

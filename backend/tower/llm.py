@@ -238,6 +238,11 @@ class MockLLM:
                 return call("raise_alert", reason=f"{heard_cs or 'another aircraft'} read back a clearance issued to {callsign}")
             return call("raise_alert", reason=f"another aircraft read back a clearance issued to {callsign}")
 
+        if "fix name was not understood" in (verdict.get("reason") or ""):
+            if "watch" not in done:
+                return call("watch", callsign=callsign, seconds=60)
+            return call("mark_uncertain", reason="fix name unintelligible; radar will confirm the routing")
+
         if verdict.get("result") == "partial" or error in ("omitted_item", "ack_only"):
             history = done.get("frequency_history")
             if isinstance(history, list) and any(

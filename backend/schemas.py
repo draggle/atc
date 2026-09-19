@@ -125,6 +125,14 @@ class Waypoint(BaseModel):
     y_nm: float
 
 
+class GeoFrame(BaseModel):
+    """Pins the flat simulator plane to the Earth. See sim/geoframe.py."""
+    lat0: float = 43.6777  # default: Toronto Pearson
+    lon0: float = -79.6248
+    projection: Literal["aeqd"] = "aeqd"  # azimuthal equidistant, centred on (lat0, lon0)
+    name: str = "Toronto Pearson (CYYZ)"
+
+
 class FlightSpec(BaseModel):
     callsign: str
     actype: str = "A320"
@@ -159,6 +167,7 @@ class Scenario(BaseModel):
     noise_level: float = 0.2
     traffic_multiplier: float = 1.0
     description: str = ""
+    geo: GeoFrame = Field(default_factory=GeoFrame)  # where on Earth this flat sector sits
 
 
 class Sim(Protocol):

@@ -50,3 +50,13 @@ Demo scenario, 20 runs, 2 percent readback errors, buffer 3 NM: fixed routes 0.3
 | 2.5x (55) | 1.60 | 0 to 0.009 | 0 to 0.009 | -7.2 to -8.1% |
 
 Fixed routes degrade linearly with density. Tower holds at zero through 1.5x and leaks single events at 2x and above. Those leaks are not readback errors slipping through; they come from the 60 s replan cadence and frozen window when 44 or more aircraft need repair. The planner reported zero unresolved conflicts at every point, so the knee where it fails to find candidates is beyond 2.5x. Four runs per point is thin; rerun at 10 runs before quoting on a slide.
+
+## Found when the real keys went in, Saturday Sept 19 afternoon
+
+- **ElevenLabs free accounts cannot call the older "library" voices through the API.** Six of the eight default voice ids returned 402, and the client turned each failure into a cached beep with no log line. Defaults are now eight premade voices a free account can use, the beep is never cached under the real phrase, and failures are logged.
+- **Tower's own voice was a macOS voice name ("Alex").** That is a 404 on ElevenLabs, and Alex is not installed on recent macOS either. `TTS.controller_voice()` now returns a voice valid for the active backend.
+- **macOS voices needed ffmpeg.** They now fall back to `afconvert`, which ships with macOS.
+- **The page could get stuck in mock mode with a healthy backend.** Browsers resolve `localhost` to IPv6 first and uvicorn binds IPv4, which costs about 600 ms per connection. Under page load that beat the 1.5 s timeout, and mock mode never retried. The screen now connects to `127.0.0.1`, waits 4 s, and keeps retrying the backend while the mock is showing.
+- **A garbled fix name produced a confident false alarm.** The pilot said "direct estir", Whisper heard "direct to 6", and the rules called it an omitted item at 0.90. If the pilot audibly read back a routing and only the fix name is missing, the verdict is now `ambiguous`. The resolver on GLM-5.3-Fast re-listens and then watches the aircraft on radar, in about 3 s. "Roger" with no routing is still an error, and a different recognisable fix is still a wrong value.
+- **Never run `npm run build` while `npm run dev` is running.** It overwrites `.next` and the dev page loses its CSS. Use `NEXT_DIST_DIR=.next-verify npm run build`.
+- **The resolver runs inline.** With a real model the radar can pause for 1 to 3 s while it thinks. Bounded by a 10 s client timeout. Moving it off the clock's critical path is phase 7.

@@ -47,6 +47,23 @@ Every message is one JSON object `{"type": ..., "payload": {...}, "t": <sim seco
 | `{"type":"speak_card","id"}` | speak one card by TTS now |
 | `{"type":"set_sliders","buffer_nm","error_rate","noise"}` | separation buffer, pilot error rate, radio noise |
 
+## Geography
+
+The simulator and planner work in a flat plane: x east, y north, nautical miles, centred on zero. Every scenario carries a `GeoFrame` that pins that plane to a point on Earth (`backend/sim/geoframe.py`, azimuthal equidistant). The backend converts at the edge, so **every position-bearing payload carries both**:
+
+| Payload | Flat fields | Real-world fields |
+|---|---|---|
+| `radar.aircraft[]` | `x_nm`, `y_nm` | `lat`, `lon` |
+| `state.waypoints[]`, `state.zones[]` | `x_nm`, `y_nm` | `lat`, `lon` |
+| `state.geo` | | `{lat0, lon0, projection: "aeqd", name, half_nm, bounds: [[west, south], [east, north]]}` |
+| `plan.paths[]`, `plan.baseline_paths[]`, and the same in `plan_update` | `samples: [t, x, y, alt][]` | `lonlat: [lon, lat, alt_ft, t][]`, simplified for drawing: first, last, every corner and level change, and at least one point per 5 minutes |
+| `disruption` | `x_nm`, `y_nm`, `predicted_path: [t, x, y][]` | `lat`, `lon`, `predicted_lonlat: [lon, lat, t][]` |
+
+- Order is `[lon, lat]` in arrays, GeoJSON style, which is what deck.gl and MapLibre expect. Named fields are `lat` and `lon`.
+- Client messages still use sector NM (`add_disruption` takes `x_nm`, `y_nm`). To turn a map click into NM use `latLonToNm` in `frontend/lib/geo.ts`, which mirrors the backend projection to 1e-13 degrees.
+- Accuracy: round trips are exact. Pairwise distances inside a 600 NM region differ from the great circle by at most 0.17 percent. Regions much larger than that should say so on screen.
+- The built-in scenarios default to a frame centred on Toronto Pearson. A scenario YAML can set its own: `geo: {lat0: 50.5, lon0: 6.0, name: "Western Europe core"}`.
+
 ## Lifecycle
 
 `idle` (no world) -> `ready` (loaded, previewable, clock at zero) -> `running` <-> `paused` -> `ended` (every flight has left).

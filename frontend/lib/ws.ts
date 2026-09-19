@@ -8,10 +8,12 @@ import { startMock, type MockHandle } from "./mock";
 import type { ClientMessage, TowerEvent } from "./types";
 import type { Connection } from "./store";
 
-export const WS_URL = process.env.NEXT_PUBLIC_TOWER_WS ?? "ws://localhost:8000/ws";
-export const HTTP_URL = process.env.NEXT_PUBLIC_TOWER_HTTP ?? "http://localhost:8000";
+// 127.0.0.1, not localhost: uvicorn binds IPv4 only, and browsers try ::1 first for "localhost",
+// which costs about 600 ms per connection and used to push the first attempt past the timeout.
+export const WS_URL = process.env.NEXT_PUBLIC_TOWER_WS ?? "ws://127.0.0.1:8000/ws";
+export const HTTP_URL = process.env.NEXT_PUBLIC_TOWER_HTTP ?? "http://127.0.0.1:8000";
 
-const CONNECT_TIMEOUT_MS = 1500;
+const CONNECT_TIMEOUT_MS = 4000;
 const RECONNECT_MS = 3000;
 
 export interface TowerClient {
@@ -41,6 +43,8 @@ export function connectTower(opts: {
   forceMock: boolean;
   onEvent: (ev: TowerEvent) => void;
   onStatus: (s: Connection) => void;
+  /** Called when the mock is replaced by the real backend, so the screen can drop mock state. */
+  onLive?: () => void;
 }): TowerClient {
   let ws: WebSocket | null = null;
   let mock: MockHandle | null = null;
@@ -56,7 +60,7 @@ export function connectTower(opts: {
 
   const tryConnect = () => {
     if (closed) return;
-    opts.onStatus("connecting");
+    if (!mock) opts.onStatus("connecting");
     let sock: WebSocket;
     try {
       sock = new WebSocket(WS_URL);
@@ -75,6 +79,12 @@ export function connectTower(opts: {
     sock.onopen = () => {
       clearTimeout(timeout);
       everOpened = true;
+      if (mock) {
+        // The backend came up while we were showing the mock. Drop the mock and go live.
+        mock.stop();
+        mock = null;
+        opts.onLive?.();
+      }
       opts.onStatus("live");
     };
     sock.onmessage = (m: MessageEvent<string | ArrayBuffer>) => {
@@ -90,12 +100,13 @@ export function connectTower(opts: {
       if (closed) return;
       ws = null;
       if (!everOpened) {
-        // Backend not reachable: fall back to the scripted mock so the screen is never blank.
+        // Backend not reachable yet: show the scripted mock so the screen is never blank, and keep
+        // knocking. The mock is a stand-in, never a dead end.
         startMockMode();
       } else {
         opts.onStatus("closed");
-        reconnectTimer = setTimeout(tryConnect, RECONNECT_MS);
       }
+      reconnectTimer = setTimeout(tryConnect, RECONNECT_MS);
     };
   };
 

@@ -168,3 +168,35 @@ def test_items_to_sim_command_from_readback():
     assert items_to_sim_command(ext.items).value == "BOSOX"
     ext, _ = readback("one two four six five air canada one two three")
     assert items_to_sim_command(ext.items).kind == "none"
+
+
+# --- a garbled fix name is not an omission (found live, Sept 19: "direct estir" heard as "direct to 6")
+
+
+def _route_case(pilot_text, heard_items=None):
+    from schemas import Extraction, Item, OpenClearance, Transmission
+    from tower.check import check
+
+    c = OpenClearance(id="c1", callsign="ACA123", issued_at=0.0,
+                      items=[Item(type="route", value="ESTIR", action="direct")])
+    tx = Transmission(id="t2", t_start=5, t_end=7, audio_ref="", text_raw=pilot_text, text_norm=pilot_text,
+                      asr_confidence=0.76, speaker="pilot", n_best=[])
+    ext = Extraction(transmission_id="t2", callsign="ACA123", items=heard_items or [])
+    return check(c, ext, tx, active=["ACA123", "ACA133"])
+
+
+def test_garbled_fix_name_is_ambiguous_not_an_alert():
+    v = _route_case("direct to 6 ACA123")
+    assert v.result == "ambiguous" and "not understood" in v.reason and "ESTIR" in v.reason
+
+
+def test_no_routing_read_back_is_still_an_error():
+    assert _route_case("roger ACA123").result == "mismatch"
+    assert _route_case("climbing ACA123").result == "mismatch"
+
+
+def test_a_different_real_fix_is_still_a_wrong_value():
+    from schemas import Item
+
+    v = _route_case("direct PIKAR ACA123", [Item(type="route", value="PIKAR", action="direct")])
+    assert v.result == "mismatch" and v.error_type == "wrong_value"

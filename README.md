@@ -56,7 +56,7 @@ Three terminals. Python 3.11 or newer, Node 20 or newer, `uv`, `ffmpeg`.
 # 1. backend
 cd backend
 uv venv .venv && uv pip install -e ".[dev]"
-.venv/bin/pytest -q                      # 154 tests
+.venv/bin/pytest -q                      # 165 tests
 .venv/bin/uvicorn app:app --port 8000    # first start downloads whisper base.en, about 150 MB
 
 # 2. frontend
