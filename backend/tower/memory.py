@@ -121,7 +121,7 @@ class NullMemory(Memory):
 class ElasticMemory(Memory):
     """Memory on an Elasticsearch cluster. `client` is an `elasticsearch.Elasticsearch` or any
     object with the same `indices.create`, `bulk`/`helpers.bulk` and `search` surface (tests
-    inject a fake). `sync=True` writes on the calling thread, for tests and scripts."""
+    inject a fake). `sync=True` writes on the calling thread and waits for the refresh, for tests and scripts."""
 
     enabled = True
     label = "Elasticsearch"
@@ -219,34 +219,44 @@ class ElasticMemory(Memory):
                 self._put("radar", doc)
 
     def index_waypoints(self, waypoints: list[dict[str, Any]]) -> None:
+        """Written on the calling thread and refreshed, so closest_waypoint works right after load."""
+        actions = []
         for w in waypoints:
             doc = {"name": w.get("name"), "x_nm": w.get("x_nm"), "y_nm": w.get("y_nm")}
             if w.get("lat") is not None and w.get("lon") is not None:
                 doc["pos"] = {"lat": w["lat"], "lon": w["lon"]}
-            self._put("waypoints", doc, doc_id=str(w.get("name")))
-        self.flush()
+            actions.append(self._action("waypoints", doc, doc_id=str(w.get("name"))))
+        self._bulk(actions, refresh=True)
 
-    def _put(self, kind: str, doc: dict[str, Any], doc_id: str | None = None) -> None:
+    def _action(self, kind: str, doc: dict[str, Any], doc_id: str | None = None) -> dict[str, Any]:
         doc = {k: v for k, v in doc.items() if v is not None}
         doc["session"] = self.session
         action: dict[str, Any] = {"_index": index_name(kind), "_source": doc}
         if doc_id:
             action["_id"] = f"{self.session}:{doc_id}"
+        return action
+
+    def _put(self, kind: str, doc: dict[str, Any], doc_id: str | None = None) -> None:
+        action = self._action(kind, doc, doc_id)
         if self.sync:
-            self._bulk([action])
+            self._bulk([action], refresh=True)
         else:
             self._q.put((kind, action))
 
-    def _helpers_bulk(self, actions: list[dict[str, Any]]) -> int:
+    def _helpers_bulk(self, actions: list[dict[str, Any]], refresh: bool = False) -> int:
+        """Background batches do not wait for a refresh (new docs become searchable within the
+        cluster's refresh interval, a few seconds). Synchronous writes wait, so a script or test
+        can search what it just wrote."""
         from elasticsearch import helpers
-        ok, _ = helpers.bulk(self.client, actions, raise_on_error=False, request_timeout=5)
+        ok, _ = helpers.bulk(self.client, actions, raise_on_error=False, request_timeout=10,
+                             refresh="wait_for" if refresh else False)
         return int(ok)
 
-    def _bulk(self, actions: list[dict[str, Any]]) -> None:
+    def _bulk(self, actions: list[dict[str, Any]], refresh: bool = False) -> None:
         if not actions:
             return
         try:
-            self.docs_indexed += int(self._bulk_fn(actions))
+            self.docs_indexed += int(self._bulk_fn(actions, refresh))
         except Exception as e:  # noqa: BLE001
             self._fail(f"bulk: {e}")
 

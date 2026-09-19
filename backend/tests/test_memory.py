@@ -61,7 +61,8 @@ class FakeES:
     def info(self) -> dict[str, Any]:
         return {"version": {"number": "fake"}}
 
-    def bulk_actions(self, actions: list[dict[str, Any]]) -> int:
+    def bulk_actions(self, actions: list[dict[str, Any]], refresh: bool = False) -> int:
+        self.refreshes = getattr(self, "refreshes", 0) + int(refresh)
         for a in actions:
             idx = self.store.setdefault(a["_index"], {})
             doc_id = a.get("_id") or f"auto-{len(idx)}"
@@ -271,10 +272,11 @@ def test_track_reports_the_altitude_trend(mem: ElasticMemory):
     assert mem.track("ACA123", seconds=5)["samples"] == 1
 
 
-def test_closest_waypoint_fuzzy_matches_a_misheard_fix(mem: ElasticMemory):
+def test_closest_waypoint_fuzzy_matches_a_misheard_fix(mem: ElasticMemory, fake: FakeES):
     mem.index_waypoints([{"name": "ESTIR", "x_nm": 0, "y_nm": 0}, {"name": "PIKAR", "x_nm": 10, "y_nm": 0},
                          {"name": "BOSOX", "x_nm": 20, "y_nm": 0}])
     assert mem.closest_waypoint("estor")["name"] == "ESTIR"
+    assert fake.refreshes >= 1  # waypoints are searchable as soon as index_waypoints returns
     assert mem.closest_waypoint("pikar")["name"] == "PIKAR"
     assert mem.closest_waypoint("")is None
     miss = mem.closest_waypoint("zzzzzzz")
