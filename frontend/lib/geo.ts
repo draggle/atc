@@ -1,4 +1,4 @@
-/** Sector NM <-> canvas pixel mapping. x east, y north, origin bottom-left of the sector square. */
+/** Sector NM <-> canvas pixel mapping. x east, y north, sector square centred on the origin (NM from -sector/2 to +sector/2). */
 export interface Projection {
   size: number; // px of the square
   ox: number; // px offset of the square within the canvas
@@ -14,12 +14,14 @@ export function makeProjection(width: number, height: number, sector: number): P
 
 export function toPx(p: Projection, xNm: number, yNm: number): [number, number] {
   const s = p.size / p.sector;
-  return [p.ox + xNm * s, p.oy + p.size - yNm * s];
+  const h = p.sector / 2;
+  return [p.ox + (xNm + h) * s, p.oy + p.size - (yNm + h) * s];
 }
 
 export function toNm(p: Projection, xPx: number, yPx: number): [number, number] {
   const s = p.sector / p.size;
-  return [(xPx - p.ox) * s, (p.oy + p.size - yPx) * s];
+  const h = p.sector / 2;
+  return [(xPx - p.ox) * s - h, (p.oy + p.size - yPx) * s - h];
 }
 
 export const nmToPx = (p: Projection, nm: number) => (nm * p.size) / p.sector;

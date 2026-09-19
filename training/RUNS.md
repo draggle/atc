@@ -82,3 +82,12 @@ Appended automatically by `runlog.log_run`. Every entry is a run that actually e
 - duration: 9.7 min
 - hardware: mps: arm64 (Josephs-MacBook-Air.local)
 - result: `{"best_dir": "../data/checkpoints/checker-laptop/best", "chance": 0.125, "first_loss": 2.095775146484375, "heldout_accuracy": 0.89, "heldout_false_alarm_rate": 0.1181, "last_loss": 0.2772675514221191, "steps": 1200}`
+
+## 2026-09-19 04:47 EDT | checker_eval | laptop-distilroberta-12k-1200steps
+
+- base model: `../data/checkpoints/checker-laptop/best`
+- data: `{"data": "../data/checker/heldout.jsonl", "n": 5000}`
+- hyperparameters: `{"batch_size": 64}`
+- duration: 0.3 min
+- hardware: mps: arm64 (Josephs-MacBook-Air.local)
+- result: `{"accuracy": 0.8938, "detection_rate": 0.9079, "false_alarm_rate": 0.0854, "latency_ms": {"batched_per_pair": 3.564, "single_pair": {"p50": 7.07, "p95": 74.93}}}`

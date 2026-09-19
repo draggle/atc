@@ -102,12 +102,14 @@ transcripts): **11,268 train / 593 val / 2,926 held-out test clips**, 10.6 h / 0
 | Whisper-tiny smoke fine-tune, 40 synthetic clips, 20 steps, MPS, 23 s | loss 5.92 to 2.71; val WER 0.27 to 0.24 on 6 synthetic clips | SMOKE, not a result |
 | Stock vs smoke-tuned tiny on 12 synthetic clips | 0.488 vs 0.285 | SMOKE, synthetic audio, do not quote |
 | Checker smoke: `distilroberta-base`, 2,000 pairs, 200 steps, MPS, 70 s | held-out accuracy **0.533** (chance 0.125), false alarm 0.99 (has not learned `correct` yet) | SMOKE |
-| Checker laptop run: `distilroberta-base`, 12,000 pairs, 1,200 steps, batch 32, MPS | see `RUNS.md` entry `laptop-distilroberta-12k-1200steps` | laptop, synthetic held-out |
-| Checker latency, distilroberta on MPS | 7 ms per pair batched, single pair p50 29 ms | this laptop |
+| Checker laptop run: `distilroberta-base`, 12,000 pairs, 1,200 steps, batch 32, MPS, 9.7 min | full 5,000-pair held-out: **accuracy 0.894**, **false alarm 0.085**, detection 0.908; clean 0.901 vs ASR-noise 0.876. Weakest: `wrong_aircraft` 0.54 (confused with `correct`), `wrong_value` 0.79 | laptop, synthetic held-out |
+| Checker latency, distilroberta on MPS | 3.6 ms per pair batched, single pair p50 7 ms, p95 75 ms | this laptop |
 
 Insertions dominate the stock WER: Whisper loops ("one six one six ...") and hallucinates
 ("thanks for watching") on short noisy clips, which is why WER exceeds 100 percent for tiny.
 These are greedy decodes with no prompt; the served model will get an active-callsign prompt.
+
+`wrong_aircraft` is the gap: with the callsign spoken only as digits, a one-digit-off callsign looks like a shortened correct one. The backend's callsign snapping to the active list is the intended fix; the full roberta-base 50k run should also help.
 
 Nothing has been trained on a GPU yet. No Baseten job has been submitted. Checker numbers are on
 synthetic held-out pairs from the same generator; real-recording checker accuracy is unmeasured.

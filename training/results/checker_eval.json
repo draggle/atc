@@ -1,0 +1,107 @@
+{
+  "ckpt": "../data/checkpoints/checker-laptop/best",
+  "data": "../data/checker/heldout.jsonl",
+  "n": 5000,
+  "device": "mps",
+  "accuracy": 0.8938,
+  "chance": 0.125,
+  "false_alarm_rate": 0.0854,
+  "detection_rate": 0.9079,
+  "accuracy_clean": 0.9011,
+  "accuracy_asr_noise": 0.8764,
+  "per_type": {
+    "correct": {
+      "n": 656,
+      "accuracy": 0.9146
+    },
+    "wrong_value": {
+      "n": 616,
+      "accuracy": 0.7922
+    },
+    "wrong_runway": {
+      "n": 611,
+      "accuracy": 0.9656
+    },
+    "wrong_direction": {
+      "n": 620,
+      "accuracy": 0.9935
+    },
+    "wrong_unit": {
+      "n": 633,
+      "accuracy": 0.9905
+    },
+    "omitted_item": {
+      "n": 624,
+      "accuracy": 0.976
+    },
+    "ack_only": {
+      "n": 589,
+      "accuracy": 0.9949
+    },
+    "wrong_aircraft": {
+      "n": 651,
+      "accuracy": 0.5422
+    }
+  },
+  "latency_ms": {
+    "batched_per_pair": 3.564,
+    "single_pair": {
+      "p50": 7.07,
+      "p95": 74.93
+    }
+  },
+  "confusion": {
+    "wrong_aircraft": {
+      "wrong_aircraft": 353,
+      "correct": 277,
+      "wrong_value": 15,
+      "wrong_runway": 3,
+      "wrong_direction": 1,
+      "wrong_unit": 2
+    },
+    "wrong_value": {
+      "wrong_value": 488,
+      "correct": 97,
+      "omitted_item": 8,
+      "wrong_aircraft": 20,
+      "wrong_unit": 2,
+      "ack_only": 1
+    },
+    "ack_only": {
+      "ack_only": 586,
+      "wrong_unit": 2,
+      "omitted_item": 1
+    },
+    "wrong_runway": {
+      "wrong_runway": 590,
+      "correct": 20,
+      "wrong_aircraft": 1
+    },
+    "correct": {
+      "correct": 600,
+      "wrong_unit": 7,
+      "wrong_aircraft": 41,
+      "wrong_value": 7,
+      "wrong_direction": 1
+    },
+    "omitted_item": {
+      "omitted_item": 609,
+      "ack_only": 3,
+      "wrong_unit": 6,
+      "wrong_value": 5,
+      "correct": 1
+    },
+    "wrong_direction": {
+      "wrong_direction": 616,
+      "correct": 3,
+      "wrong_aircraft": 1
+    },
+    "wrong_unit": {
+      "wrong_unit": 627,
+      "wrong_aircraft": 2,
+      "wrong_value": 2,
+      "correct": 2
+    }
+  },
+  "mean_confidence": 0.908
+}
