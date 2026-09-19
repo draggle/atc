@@ -1,8 +1,8 @@
 # Tower
 
-An AI second set of ears on an air traffic control frequency. Built at Hack the North 2026.
+An AI system for air traffic control, built at Hack the North 2026.
 
-Pilots must repeat every instruction back to the controller, and the controller is supposed to catch mistakes. Sometimes they miss one. Tower listens to both sides, transcribes the radio with a Whisper model fine-tuned on ATC audio, checks every readback against its instruction, and alerts when they do not match or when no readback arrives.
+Tower plans the best path for every flight, adapts the moment anything changes, and makes sure every instruction is heard and flown correctly. It plans and replans conflict-free paths in a simulator we built, transcribes noisy radio with a Whisper model fine-tuned on ATC audio, checks every pilot readback against its instruction, and verifies on radar that each plane complies. AI pilots answer by voice, and an AI agent investigates the cases too messy for rules.
 
 ## For teammates
 
@@ -16,6 +16,8 @@ Start with [CLAUDE.md](CLAUDE.md), then [docs/01-project.md](docs/01-project.md)
 | [docs/04-training.md](docs/04-training.md) | Datasets, fine-tuning recipes, evaluation, Baseten setup |
 | [docs/05-data-and-legal.md](docs/05-data-and-legal.md) | What audio we may and may not use |
 | [docs/06-plan.md](docs/06-plan.md) | Deadlines, owners, milestones, risks, cut list |
+| [docs/07-build-spec.md](docs/07-build-spec.md) | The researched build spec: simulator, planner, safety metrics, Tower core, AI pilots, Baseten commands |
+| [docs/00-full-context.md](docs/00-full-context.md) | Everything in one file, for onboarding |
 
 ## Setup
 
@@ -30,5 +32,6 @@ Then fill in your keys. Run instructions will be added here as code lands.
 Keep this list current. Hack the North requires attribution.
 
 - Datasets: [jacktol/atc-dataset](https://huggingface.co/datasets/jacktol/atc-dataset), [jlvdoorn/atco2-asr-atcosim](https://huggingface.co/datasets/jlvdoorn/atco2-asr-atcosim)
-- Base models: OpenAI Whisper. Others to be added
+- Base models: OpenAI Whisper, RoBERTa-base. Others to be added
+- Voices: ElevenLabs
 - Infrastructure: Baseten

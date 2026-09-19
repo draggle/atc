@@ -1,6 +1,6 @@
 # training/
 
-Everything that produces a model or a number. Full detail is in `../docs/04-training.md`. Read `../docs/05-data-and-legal.md` before adding any data source.
+Everything that produces a model or a number. Read section 11 of `../docs/07-build-spec.md` first, then `../docs/04-training.md`. The checker is a RoBERTa-base cross-encoder trained on pairs the simulator generates. Read `../docs/05-data-and-legal.md` before adding any data source.
 
 ## Rules
 
@@ -19,7 +19,8 @@ training/
   finetune_whisper.py
   eval_wer.py           stock versus tuned on the held-out split
   gen_checker_data.py   synthetic clearance and readback pairs with injected errors
-  finetune_checker.py
+  finetune_checker.py   RoBERTa-base cross-encoder, N+1 classes
+  whisper/config.py     Baseten training job definition
   eval_checker.py       accuracy per error type, false alarm rate, latency
   RUNS.md               run log
 ```

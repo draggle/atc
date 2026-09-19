@@ -1,23 +1,37 @@
 # Tower
 
-An AI second set of ears on an air traffic control frequency. Built at Hack the North 2026, Sept 18 to 20, University of Waterloo.
+An AI system for air traffic control, running against our own simulator. Built at Hack the North 2026, Sept 18 to 20, University of Waterloo.
 
-When a controller gives an instruction, the pilot must repeat it back, and the controller is supposed to catch any mistake. Busy controllers sometimes miss one. Tower listens to both sides of the radio, transcribes it with a Whisper model we fine-tune on ATC audio, tracks every open instruction per aircraft, checks each readback against it, and alerts when they do not match or when no readback arrives.
+**Tower plans the best path for every flight, adapts the moment anything changes, and makes sure every instruction is heard and flown correctly.**
 
-Mental model: **Whisper hears, the notepad remembers, the agent handles the cases too messy for rules.**
+1. **Plans** an ideal, conflict-free path for every flight, at the same safety margins used today.
+2. **Replans** when anything changes: a late flight, a storm, an intruder, or a plane that deviates.
+3. **Listens** to the noisy radio with a Whisper model we fine-tune on ATC audio.
+4. **Validates** that each pilot readback means the same as the instruction.
+5. **Verifies** on radar that each plane does what it was told.
 
-**Scope grew on Sept 19.** Tower now also runs against a simulator, suggests safe shortcuts and conflict fixes, verifies on radar that aircraft do what they were told, and uses AI pilots that read back by voice. The full design is in `docs/07-build-spec.md`. Steps 0 to 4 of its build order are the core and come first.
+AI pilots fly the simulated planes and answer by voice, sometimes wrongly. An AI agent investigates the cases too messy for rules. The controller stays in charge.
+
+Why the pieces belong together: a tightly optimized plan only works if every instruction is heard and followed exactly, so the listening and checking side is what makes the optimization safe.
 
 ## Status
 
-Docs only. No code yet. Update this section as pieces land so nobody has to guess what works.
+As of Saturday Sept 19: docs only, no code yet. Update this as pieces land. Items follow the build order in section 12 of `docs/07-build-spec.md`.
 
-- [ ] Training: Whisper fine-tune running on Baseten
-- [ ] Backend: audio in, transcript out
-- [ ] Backend: extractor, state machine, checker
-- [ ] Backend: resolver agent
-- [ ] Frontend: live transcript, open clearances, alert feed
-- [ ] Demo: pilot mic with radio filter, stock vs tuned toggle, backup video
+- [ ] 0. Shared schemas and WebSocket events agreed and mocked
+- [ ] 1. Simulator stepping aircraft on routes, radar view drawing them
+- [ ] 2. Mic to stock Whisper to transcript on screen
+- [ ] 3. Spoken clearance moves a plane: normalizer, parser, callsign snapping, state machine, rule checker
+- [ ] 4. One AI pilot reads back by voice with injected errors, first alert fires
+- [ ] 5. Fine-tuned Whisper deployed on Baseten, stock comparison, measured word error rate
+- [ ] 6. Planner: conflict-free plan, fixed-route baseline, instruction cards
+- [ ] 7. Radar verification and the watch tool
+- [ ] 8. Checker cross-encoder trained and combined with rules
+- [ ] 9. Resolver agent with its trace on screen
+- [ ] 10. Replanning around intruders, then Monte Carlo safety evaluation
+- [ ] 11. Sliders, absurd scenarios, data engine
+
+Steps 0 to 4 are a complete demo alone and come first.
 
 ## Doc map
 
@@ -30,33 +44,34 @@ Read `docs/01-project.md` first, whatever you are working on. Then:
 | Fine-tuning Whisper, the readback checker, Baseten setup, evaluation | `docs/04-training.md` |
 | Any new audio source or dataset | `docs/05-data-and-legal.md` before you download anything |
 | What to build next, who owns what, the demo script | `docs/06-plan.md` |
-| **The researched build spec: simulator, advisor, AI pilots, checker design, Baseten commands. Wins over 03 and 04 where they differ** | `docs/07-build-spec.md` |
+| **The researched build spec: simulator, planner, safety metrics, AI pilots, checker design, Baseten commands. Wins over 03 and 04 where they differ** | `docs/07-build-spec.md` |
 
 Each of `backend/`, `training/`, and `frontend/` has its own short `CLAUDE.md` with that component's contract.
 
-`docs/00-full-context.md` is a single-file snapshot of everything, including ideas not yet in the numbered docs: the simulator, BlueSky, and the insights view. It is about 900 lines, so do not load it by default. Use it for onboarding or for pasting into a tool that cannot see the repo. The numbered docs win if they disagree.
+`docs/00-full-context.md` is a single-file snapshot of everything, including background that is not in the numbered docs: how routes work, BlueSky, the insights idea, and the decision history. It is about 1,400 lines, so do not load it by default. Use it for onboarding or for pasting into a tool that cannot see the repo. The numbered docs win if they disagree.
 
 ## Architecture in ten lines
 
 ```
-audio -> VAD -> tuned Whisper -> normalizer -> extractor -> state machine -> checker
-                                                                              |
-                                                clear match / clear mismatch <+
-                                                                              | ambiguous
-                                                                              v
-                                                                     resolver agent + tools
-                                                                              |
-                                                                alert | dismiss | uncertain
+controller mic --audio--> TOWER CORE <----state---- SIMULATOR <--commands-- AI PILOTS
+AI pilot voices --audio-> hear, understand,             ^                      ^
+                          track, check                  |                      | clearance
+                              |   ^                  PLANNER ---- instruction cards
+                 ambiguous    |   | radar            plan, replan
+                              v   |
+                        resolver agent  --> alert | dismiss | uncertain --> SCREEN
 ```
 
-- **Tier 1** is a fixed pipeline. No agent loops. Target under 2 seconds per transmission.
-- **Tier 2** is a tool-calling agent that wakes only on ambiguous cases. It re-listens, checks who else is on frequency, looks at history, then commits to an action with a reason.
+- **Planner** is plain search and geometry. It plans every flight, then repairs the plan when anything changes. No machine learning.
+- **Tower core tier 1** is a fixed pipeline: VAD, tuned Whisper, normalizer, callsign snapping, grammar parser, state machine, checker. Target under 2 seconds per transmission.
+- **Tier 2** is a tool-calling agent that wakes only on ambiguous cases. It re-listens, checks who is on frequency, looks at the radar, and can watch a plane before deciding.
+- **The plane obeys the pilot's readback, not the clearance.** That is what makes a readback error visible on radar.
 - All language model calls go through Baseten's OpenAI-compatible API. Both fine-tuned models are trained and served on Baseten.
 
 ## Repo layout
 
 ```
-backend/    FastAPI service: audio ingest, pipeline, state, resolver agent, WebSocket events
+backend/    FastAPI service: simulator, planner, AI pilots, Tower core, resolver agent, WebSocket events
 training/   data prep, Whisper fine-tune, checker data generation and fine-tune, evaluation
 frontend/   Next.js live screen
 docs/       shared context
@@ -72,7 +87,10 @@ data/       local datasets, audio, checkpoints. Gitignored. Never commit.
 5. **Inference goes through Baseten.** Do not add another LLM provider without telling the team. It weakens the Baseten track story.
 6. **Report real numbers.** Word error rate, checker accuracy, false alarm rate, and latency must be measured by us on a held-out set. If we fall back to a published fine-tuned model, we say so.
 7. **Do not claim Tower would have prevented any specific accident.** Real incidents are context, handled respectfully.
-8. **Everything is built this weekend.** Third-party code, models, and datasets are fine with attribution. List them in `README.md`.
+8. **Never plan below the separation minimum,** 5 NM and 1,000 ft. The slider changes only the extra buffer, except in a scenario labeled absurd.
+9. **Never pitch "planes fly closer."** The claim is ideal paths at the same margins. See `docs/01-project.md`.
+10. **The planner is not the language model's job.** Search and geometry do the math. The model phrases and prioritizes.
+11. **Everything is built this weekend.** Third-party code, models, and datasets are fine with attribution. List them in `README.md`.
 
 ## Conventions
 

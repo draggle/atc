@@ -1,6 +1,6 @@
 # 04. Training, evaluation, and Baseten
 
-> **Updated by `07-build-spec.md`.** The checker is now a RoBERTa-base cross-encoder, not a LoRA on a language model. Baseten training and serving commands are in section 10 of that file.
+> **Updated by `07-build-spec.md`.** The checker is now a RoBERTa-base cross-encoder, not a LoRA on a language model. Baseten training and serving commands are in section 11 of that file.
 
 We train two models. The before and after on each is the core of the Baseten pitch and a large part of the Rox pitch.
 

@@ -1,18 +1,20 @@
 # 07. Build spec: researched architecture for Tower
 
-Written Saturday Sept 19, 2026 after reading the primary research and the tool docs. This is the concrete plan. Where it disagrees with `03-architecture.md` or `04-training.md`, this file wins. The changes are listed in section 12.
+Written Saturday Sept 19, 2026 after reading the primary research and the tool docs. This is the concrete plan. Where it disagrees with `03-architecture.md` or `04-training.md`, this file wins. The changes are listed in section 13.
 
-Every claim marked **verified** was checked against a source listed in section 13. Anything marked **estimate** or **assumption** was not.
+Every claim marked **verified** was checked against a source listed in section 14. Anything marked **estimate** or **assumption** was not.
 
 ## 1. What the product does
 
-Tower is an advisory assistant for an air traffic controller. It does three things on one shared picture of the airspace.
+Tower is an advisory system for an air traffic controller. It does five things on one shared picture of the airspace.
 
-1. **Suggests** safe shortcuts and cheap conflict fixes.
-2. **Validates** that each pilot readback matches the instruction.
-3. **Verifies** on radar that each aircraft does what it was told.
+1. **Plans** an ideal, conflict-free path for every flight.
+2. **Replans** when anything changes: a late flight, a storm, an intruder, or a plane that deviates.
+3. **Listens** to the radio with a speech model we fine-tune.
+4. **Validates** that each pilot readback matches the instruction.
+5. **Verifies** on radar that each aircraft does what it was told.
 
-It runs against a simulator, so the radar picture is simulated and the radio audio is real sound passing through the real speech pipeline. The controller stays in charge throughout.
+It runs against a simulator, so the radar picture is simulated while the radio audio is real sound passing through the real speech pipeline. The controller stays in charge throughout. The full product description and the separation framing are in `01-project.md`.
 
 ## 2. What the research says, and what we take from it
 
@@ -29,7 +31,7 @@ It runs against a simulator, so the radar picture is simulated and the radio aud
 | About one third of en-route readback errors involve frequency changes. About 10 percent of communication errors are speed confused with heading. About 20 percent involve similar callsigns on one frequency | Weight the synthetic data and the demo scenarios toward these |
 | About 15 percent of controller words are outside any command, such as greetings and chatter | The parser must tolerate unknown words |
 
-**Risk note on word error rate.** With speech accuracy worse than theirs, a naive checker will raise too many false alarms on real recordings. Four mitigations are built into this design: callsign snapping to the active list, the n-best rule in section 6, radar verification in section 7, and the resolver agent. In the simulator the audio is cleaner than real radio, so accuracy will be much better there. Report both numbers and say which is which.
+**Risk note on word error rate.** With speech accuracy worse than theirs, a naive checker will raise too many false alarms on real recordings. Four mitigations are built into this design: callsign snapping to the active list, the n-best rule in section 7, radar verification in section 8, and the resolver agent. In the simulator the audio is cleaner than real radio, so accuracy will be much better there. Report both numbers and say which is which.
 
 ### Contextual biasing. Verified
 
@@ -60,17 +62,30 @@ An AI pilot for controller training built as four modules: speech recognition, a
                          +----+---------------+------+
              state (1 Hz)     |               ^ commands
                               v               |
-+-----------+   audio   +-----------+   +-----+------+   suggestions   +------------+
-| controller|---------->|   TOWER   |<->|  ADVISOR   |---------------->|   SCREEN   |
-| mic       |           |   CORE    |   | shortcuts, |                 | radar,     |
-+-----------+           | hear,     |   | conflicts  |                 | transcript,|
++-----------+   audio   +-----------+   +-----+------+   instructions  +------------+
+| controller|---------->|   TOWER   |<->|  PLANNER   |---------------->|   SCREEN   |
+| mic       |           |   CORE    |   | plan,      |                 | radar,     |
++-----------+           | hear,     |   | replan     |                 | transcript,|
 +-----------+   audio   | understand|   +------------+                 | alerts,    |
-| AI pilots |---------->| track,    |----------- alerts, trace ------->| advisor    |
+| AI pilots |---------->| track,    |----------- alerts, trace ------->| cards      |
 | LLM + TTS |<----------| check     |                                  +------------+
 +-----------+ clearance +-----------+
 ```
 
-Five services in one Python process to start with: simulator, Tower core, advisor, pilot agents, and a WebSocket hub. Split them only if needed.
+Five services in one Python process to start with: simulator, Tower core, planner, pilot agents, and a WebSocket hub. Split them only if needed.
+
+### WebSocket events added by this spec
+
+These extend the list in `03-architecture.md`.
+
+| type | Payload |
+|---|---|
+| `radar` | list of `AircraftState`, once per second |
+| `plan` | per-flight planned path, plus totals for the plan and the fixed-route baseline |
+| `plan_update` | which flights changed, why, and the trigger |
+| `instruction_card` | `{id, callsign, items, phrase, reason, urgency_s, status}` where status is pending, spoken, validated, verified, or error |
+| `disruption` | an intruder, storm, or closed zone that was added, with its predicted path |
+| `scoreboard` | miles and time saved, losses of separation, errors caught, response times |
 
 ## 4. Simulator
 
@@ -131,60 +146,103 @@ BlueSky works in SI units internally, so convert altitude and speed. Check the e
 
 **The plane obeys the pilot's readback, not the controller's clearance.** That single rule is what makes a readback error visible on radar.
 
-## 5. Advisor: shortcuts and conflict fixes
+## 5. Planner: plan every flight, then keep repairing the plan
 
-Plain geometry and search. No machine learning, and the language model never does the math.
+This replaces the earlier shortcut advisor. A shortcut is just one kind of repair. It is plain search and geometry. No machine learning, and the language model never does the math.
 
-### Trajectory prediction
+**Source note.** The conflict minima and BlueSky calls in this file were verified. The planning method below comes from general knowledge of the field, which calls the goal trajectory-based operations. It was not checked against papers during the hackathon.
 
-For each aircraft, walk its route at constant ground speed and sample a position every 10 seconds for a 15 minute look-ahead. Altitude moves linearly toward the target. This gives an array of `(t, x, y, alt)`.
+### The problem
 
-### Conflict test
+Each flight has an entry point, an exit point, an entry time, a speed, and a preferred altitude. Produce a path in space and time for every flight that minimizes total cost, such that no two flights ever come closer than the separation minimum plus a buffer, and no path crosses a blocked zone.
 
-Two aircraft conflict if, at the same sample time, they are within **5 NM horizontally and 1,000 ft vertically**. These are the standard en-route separation minima. For suggestions, test against a larger buffer of 8 NM so advice is never marginal.
+### Why prioritized planning
 
-### Shortcut search, per aircraft
+Planning all flights jointly to a true optimum grows exponentially with the number of aircraft. Reactive methods that dodge at the last moment are fast but never give an efficient plan. Prioritized planning is the practical middle: fast, simple, and good, though not guaranteed optimal.
+
+### Trajectory representation and conflict test
+
+- A trajectory is an array of `(t, x, y, alt)` sampled every 10 seconds along the path at the planned speed. Altitude moves linearly toward its target.
+- Two flights conflict if at the same sample time they are within **5 NM horizontally and 1,000 ft vertically**. These are the standard en-route minima.
+- The planner tests against the minimum plus a **buffer**. The buffer is the separation slider. Default 3 NM extra.
+- For 40 aircraft and a 30 minute horizon this is a small numpy computation.
+
+### Planning
 
 ```
-skip if the aircraft has an open, unconfirmed clearance
-for k from the last waypoint down to next+1:
-    candidate = [present position -> waypoint k -> rest of route]
-    if candidate crosses a blocked zone: continue
-    if candidate conflicts with any other aircraft's predicted path: continue
-    saving = length(current route) - length(candidate)
-    if saving >= 3 NM: propose it and stop
+order flights by priority: airborne first, then by entry time
+for each flight:
+    candidates = [ideal direct path at preferred speed and altitude]
+               + entry delayed by 1, 2, 3 min          (only if not yet in the sector)
+               + speed changed by 5 or 10 percent
+               + altitude changed by 1,000 or 2,000 ft
+               + a dogleg of 5 or 10 NM either side of the conflict point
+    sort candidates by cost
+    keep the first that does not conflict with flights already planned
+    and does not cross a blocked zone
 ```
 
-Rank proposals by saving. Rate-limit to one per aircraft every few minutes so the controller is not nagged.
+**Cost** is added time plus added distance, a penalty for altitude changes, and during replanning a penalty for deviating from the previous plan so routes do not flicker.
 
-### Conflict resolution
+**Improvement pass.** Take the flight that paid the highest cost, move it earlier in the order, replan, and keep the result only if total cost drops. Repeat until a time budget of a second or two runs out.
 
-When the predictor finds a conflict, generate candidate fixes for one of the two aircraft: level change of 1,000 or 2,000 ft, a heading change of 10, 20, or 30 degrees for a few minutes then direct back to the route, or a speed change. Keep the candidates that are conflict-free and choose the one with the least added distance. Prefer a level change when added distance ties.
+### Replanning
 
-### What the agent adds
+Triggers: an intruder, a storm or closed zone, a late flight, or a plane that deviates after a bad readback. Radar verification in section 8 raises that last one.
 
-- Decides whether a suggestion is worth interrupting for, given workload and how many alerts are open.
-- Writes the one-line reason.
-- Phrases it in correct radio language, for example "Air Canada one two three, proceed direct BOSOX."
+- **Predict the newcomer.** Assume it keeps its current speed and heading. Give it a larger buffer that grows with look-ahead time, because it is not cooperating. Start at 10 NM plus 1 NM per minute.
+- **Disturb as little as possible.** Replan only the flights whose trajectories now conflict and hold everyone else fixed. Widen the set to their neighbours only if no solution exists.
+- **Respect the radio.** Freeze the next 60 to 90 seconds of every path. An instruction must be spoken, read back, and flown before it takes effect.
+- **Emergency layer.** If a loss of separation is predicted within about two minutes, skip optimization and issue an immediate turn away or level change.
 
-### Closing the loop
+### From plan to instructions
 
-An accepted suggestion becomes a clearance like any other. The controller speaks it, the pilot reads it back, Tower validates the readback, and radar verification confirms the turn. A wrong readback on a shortcut sends a plane to the wrong waypoint, so validation matters more here, not less.
+Each change to a flight's plan becomes one instruction card: direct to a waypoint, a heading, a speed, or a level. Cards are sorted by urgency, meaning time until the change must take effect. The language model decides whether a non-urgent card is worth interrupting for, writes the one-line reason, and phrases it in correct radio language.
 
-### Evaluation
+An issued card is a clearance like any other. The controller speaks it, the pilot reads it back, Tower validates the readback, and radar verification confirms compliance. A wrong readback on a reroute sends a plane somewhere the plan did not expect, so validation matters more here, not less.
 
-Run the same seeded scenarios twice in fast time, baseline and with the advisor auto-accepted. Report total distance, total flight time, conflicts, and number of suggestions. Fuel is an **assumption**: distance times a constant burn per NM by aircraft type, labeled as an estimate on screen. The OpenAP library gives better numbers if someone has time.
+### Baseline for comparison
 
-## 6. Tower core: hear, understand, track, check
+The same traffic on fixed waypoint routes, first come first served. Winds and detailed aircraft performance are left out. Say so on stage.
 
-### 6.1 Audio in
+## 6. Safety: how we define and measure it
+
+### The hard floor
+
+A **loss of separation** is two aircraft within 5 NM horizontally and 1,000 ft vertically at the same moment. The planner must produce zero of these. It never plans below the minimum, whatever the slider says. The slider only changes the extra buffer, except in an explicitly labeled absurd scenario.
+
+### Robustness is the real definition
+
+A plan that is only safe when everything goes perfectly is not safe. Test each plan under disturbance with Monte Carlo runs. In each run, vary speeds by a few percent, shift entry times by about a minute, delay some instructions, and inject readback errors at a realistic rate of 1 to 2 percent or higher.
+
+| Measure | Definition |
+|---|---|
+| Loss-of-separation rate | Events per simulated flight hour. The headline number |
+| Closest approach | Distribution of minimum distances between pairs, not only the worst case |
+| Severity | How deep into the protected zone a breach went, and for how long |
+| Readback detection | Share of injected readback errors detected, false alarm rate on correct readbacks, seconds from error to alert |
+| Conformance | How far a plane deviated, in feet and seconds, before radar verification flagged it |
+| Disruption response | Seconds from an intruder appearing to a conflict-free plan, and the closest anyone came to it |
+| Efficiency | Total distance and time versus the fixed-route baseline |
+
+### The trade-off curve
+
+Plot efficiency against buffer size against loss-of-separation rate, with Tower's validation on and off. With validation on, errors are caught early, so the same safety level holds at a smaller buffer. This is the honest form of the closeness argument: better communication safety is what earns tighter plans.
+
+### Headline sentence to aim for
+
+Zero losses of separation across N simulated hours with a realistic readback error rate, while flying X percent fewer miles than fixed routes. Fill in N and X from our own runs.
+
+## 7. Tower core: hear, understand, track, check
+
+### 7.1 Audio in
 
 - Browser captures mic audio as 16 kHz mono PCM and streams it over a WebSocket. Push-to-talk, like a real radio.
 - AI pilot speech is synthesized, run through the radio effect, and fed into **the same ingest path**. Tower must hear the pilots, never read their text.
 - Silero VAD closes an utterance after about 300 ms of silence. Drop anything under 0.5 s.
 - Radio effect: band-pass 300 to 3,400 Hz, light clipping, additive noise at a chosen level. The chaos slider controls the noise level.
 
-### 6.2 Speech recognition
+### 7.2 Speech recognition
 
 - Tier 1: our fine-tuned Whisper, converted to CTranslate2 and served with faster-whisper in a Truss on Baseten. Input is base64 WAV. Output is text plus average log-probability.
 - Pass a **prompt** built from the active callsigns and nearby waypoint names on every call.
@@ -197,15 +255,15 @@ Conversion command:
 ct2-transformers-converter --model ./whisper-atc-checkpoint --output_dir ./whisper-atc-ct2 --quantization float16
 ```
 
-### 6.3 Normalizer
+### 7.3 Normalizer
 
 Deterministic Python. Phonetic letters, digit words including niner, tree, and fife, decimals, flight levels, thousands and hundreds, runway suffixes, and airline telephony names to ICAO codes. Unit-tested, because most domain bugs live here.
 
-### 6.4 Callsign snapping
+### 7.4 Callsign snapping
 
 Match the recognized callsign against the simulator's active list with a fuzzy score on the normalized form. Accept the best match above a threshold. Pilots often shorten callsigns, so allow suffix matches. If two active callsigns both score high, mark the transmission ambiguous and warn about similar callsigns.
 
-### 6.5 Concept extraction
+### 7.5 Concept extraction
 
 Two stages.
 
@@ -214,15 +272,15 @@ Two stages.
 
 Both produce the same `Extraction` with a list of `Item`s as defined in `03-architecture.md`.
 
-### 6.6 Speaker role
+### 7.6 Speaker role
 
 In the simulator we know the channel, so it is ground truth. On real recordings use the published speaker-role classifier.
 
-### 6.7 State machine
+### 7.7 State machine
 
 Per callsign, the six HAAWAII states. A controller transmission with mandatory items moves the aircraft to `EXPECTING_READBACK` and starts a 20 to 30 second timer. A pilot transmission with no commands while idle is `PILOT_REPORTING` and is ignored by the checker.
 
-### 6.8 Checker
+### 7.8 Checker
 
 Three layers, cheapest first.
 
@@ -232,7 +290,7 @@ Three layers, cheapest first.
 
 Clear match: close silently. Clear mismatch with high confidence: alert. Everything else goes to tier 2.
 
-## 7. Tier 2: the resolver agent, and radar verification
+## 8. Tier 2: the resolver agent, and radar verification
 
 ### Radar verification
 
@@ -258,7 +316,7 @@ A background check on every aircraft with a recently closed clearance.
 
 Limits are unchanged: at most 4 tool calls, about 5 seconds unless watching, and it always ends in exactly one terminal action. It is a hand-rolled loop on the OpenAI SDK pointed at Baseten.
 
-## 8. AI pilots
+## 9. AI pilots
 
 One agent per simulated aircraft.
 
@@ -271,9 +329,9 @@ One agent per simulated aircraft.
 
 Knobs: error probability, accent mix, speech rate, noise level, and how much pilots shorten.
 
-## 9. The data engine
+## 10. The data engine
 
-Add a scripted controller that issues clearances from scenario files and advisor suggestions. The world then runs unattended and produces labeled data.
+Add a scripted controller that issues clearances from scenario files and planner instructions. The world then runs unattended and produces labeled data.
 
 | Output | Trains or tests |
 |---|---|
@@ -283,13 +341,13 @@ Add a scripted controller that issues clearances from scenario files and advisor
 
 Rule: never evaluate speech accuracy on synthetic audio alone. Report real-recording word error rate separately.
 
-## 10. Models, training, and serving on Baseten
+## 11. Models, training, and serving on Baseten
 
 | Model | Base | Data | Training | Serving |
 |---|---|---|---|---|
 | Speech | Whisper small first, then medium.en | Public ATC datasets, plus simulator audio later | Hugging Face trainer on one H100. Time is an **estimate**: under an hour for small, one to three hours for medium.en | faster-whisper in a Truss |
 | Checker | RoBERTa-base cross-encoder | 50,000 to 100,000 synthetic pairs, N+1 classes | Learning rate 2e-5, batch 64, AdamW. Minutes on an H100 | Small Truss, or in-process on CPU as a fallback |
-| Extractor fallback, resolver, pilot phrasing, advisor phrasing | Hosted models on Baseten Model APIs | none | none | OpenAI-compatible API |
+| Extractor fallback, resolver, pilot phrasing, instruction phrasing | Hosted models on Baseten Model APIs | none | none | OpenAI-compatible API |
 
 ### Training job. Verified from Baseten's docs
 
@@ -319,7 +377,7 @@ project = TrainingProject(name="tower-whisper-atc", job=job)
 - One-command checkpoint deployment is documented for language models. For Whisper and RoBERTa, download the checkpoint and deploy it in our own Truss.
 - Baseten's cookbook has LoRA and PyTorch examples but no Whisper example, so ask the booth for help early.
 
-## 11. Build order and the path that must work first
+## 12. Build order and the path that must work first
 
 Interfaces first, then parallel work against mocks.
 
@@ -331,18 +389,19 @@ Interfaces first, then parallel work against mocks.
 | 3 | Normalizer, grammar parser, callsign snapping, state machine, rule checker. **Spoken clearance moves a plane** | 1, 2 |
 | 4 | One AI pilot: template readback, ElevenLabs voice, radio effect, error injection. **First alert fires** | 3 |
 | 5 | Fine-tuned Whisper deployed, stock versus ours comparison, measured word error rate | training stream |
-| 6 | Advisor: shortcut search, suggestion card, accept by voice | 1, 3 |
+| 6 | Planner: conflict-free plan for a scenario, fixed-route baseline, instruction cards spoken by voice | 1, 3 |
 | 7 | Radar verification and the `watch` tool | 3 |
 | 8 | Cross-encoder checker trained and combined with rules, n-best rule | 4 for data |
 | 9 | Resolver agent with its trace on screen | 7, 8 |
-| 10 | Batch evaluation: advisor savings, detection and false alarm rates | 6, 8 |
-| 11 | Chaos slider, absurd scenarios, conflict resolution advice, data engine | everything |
+| 10 | Replanning around an intruder or storm, with the freeze window and emergency layer | 6 |
+| 10b | Batch and Monte Carlo evaluation: efficiency, loss-of-separation rate, detection and false alarm rates, trade-off curve | 6, 8 |
+| 11 | Separation and chaos sliders, absurd scenarios, data engine | everything |
 
 Steps 0 to 4 are the project. If only those work, there is still a complete demo: speak a clearance, a plane moves, an AI pilot reads back wrong, Tower catches it, and the plane visibly goes wrong when Tower is off.
 
-**Suggested split for four people:** simulator and advisor, Tower core, models and evaluation, screen and AI pilots.
+**Suggested split for four people:** simulator and planner, Tower core, models and evaluation, screen and AI pilots.
 
-## 12. What changed from the earlier docs
+## 13. What changed from the earlier docs
 
 - The checker model is a RoBERTa-base cross-encoder classifier, not a LoRA on a 1B to 3B language model.
 - The state machine uses the six HAAWAII states.
@@ -350,10 +409,13 @@ Steps 0 to 4 are the project. If only those work, there is still a complete demo
 - New: callsign snapping and Whisper prompts built from the active aircraft list.
 - New: the n-best rule before any mismatch alert.
 - New: radar verification and the `watch` tool.
-- New components: simulator, advisor, AI pilots, data engine.
+- New components: simulator, planner, AI pilots, data engine.
+- The shortcut advisor was replaced by a planner that plans every flight and repairs the plan when anything changes. Shortcuts are one kind of repair.
+- New section 6 defines safety and how we measure it, including Monte Carlo robustness runs and the trade-off curve.
+- Separation framing: same margins and better paths, never "planes fly closer."
 - The honest accuracy caveat: published detection results needed 5 to 10 percent word error rate, which is better than Whisper fine-tunes reach on real noisy recordings.
 
-## 13. Sources
+## 14. Sources
 
 - HAAWAII readback error detection paper: https://www.sesarju.eu/sites/default/files/documents/sid/2022/paper_3.pdf
 - SCOPE: https://arxiv.org/pdf/2605.29543
