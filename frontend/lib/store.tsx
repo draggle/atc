@@ -245,8 +245,21 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
       // The resolver is done with a clearance once it leaves "open". Without an alert (it dismissed
       // the doubt, or the readback matched after all) nothing else ends the CHECKING card, and it
       // span for ever. A radar watch is the exception: that card counts itself down.
-      const next = upsertClearance(state, ev.payload);
+      let next = upsertClearance(state, ev.payload);
       const id = ev.payload.id;
+      // The controller said the correction and the pilot read it back right: that settles every
+      // standing alert about the same instruction to the same aircraft. It used to stay until
+      // dismissed by hand, which read as "Tower did not hear my correction".
+      if (ev.payload.status === "matched" && next.alerts.length > 0) {
+        const settled = new Set((ev.payload.items ?? []).map((i) => `${i.type}:${String(i.value).toUpperCase()}`));
+        const alerts = next.alerts.filter((a) => {
+          if (a.clearance_id === id) return false;
+          const cs = a.callsign ?? callsignForClearance(next, a.clearance_id);
+          if (cs !== ev.payload.callsign || a.expected.length === 0) return true;
+          return !a.expected.every((i) => settled.has(`${i.type}:${String(i.value).toUpperCase()}`));
+        });
+        if (alerts.length !== next.alerts.length) next = { ...next, alerts };
+      }
       const watching = (state.steps[id] ?? []).at(-1)?.tool === "watch";
       if (ev.payload.status === "open" || watching || !next.resolving.includes(id)) return next;
       return { ...next, resolving: next.resolving.filter((r) => r !== id) };
