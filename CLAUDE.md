@@ -23,7 +23,7 @@ As of Sunday morning Sept 20: steps 0 to 4 work end to end on one laptop with no
 - [x] 2. Mic to stock Whisper to transcript on screen (local faster-whisper; Baseten client written)
 - [x] 3. Spoken clearance moves a plane: normalizer, parser, callsign snapping, state machine, rule checker
 - [x] 4. One AI pilot reads back by voice with injected errors, first alert fires (macOS `say`; ElevenLabs client written)
-- [~] 5. Fine-tuned Whisper: trained on a Baseten H100, **WER 0.708 stock to 0.159 tuned on 1,000 held-out clips** (`training/RUNS.md`). Not deployed yet, so the app still runs local Whisper
+- [x] 5. Fine-tuned Whisper: trained on a Baseten H100, **WER 0.708 stock to 0.159 tuned on 1,000 held-out clips** (`training/RUNS.md`), deployed on Baseten (`training/serve_asr`, `training/BASETEN.md`) and used by the app when `ASR_MODEL_URL` is set. Known gap: it mishears our made-up fix names
 - [x] 6. Planner: conflict-free plan, fixed-route baseline, instruction cards
 - [x] 7. Radar verification and the watch tool (backend done; no radar visual yet)
 - [~] 8. Checker cross-encoder trained (laptop, 0.89 accuracy on synthetic pairs) and served; not wired live without `CHECKER_MODEL_URL`

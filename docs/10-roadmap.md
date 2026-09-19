@@ -159,8 +159,8 @@ Still open in this phase: the Manual review step (see what Tower heard against t
 - [ ] The "errors caught" number comes from the real pipeline, not from the assumption in the eval
 
 ### Phase 8. Models. Runs in parallel all day, models owner
-- [ ] Full Whisper small run on Baseten finished, numbers in `training/RUNS.md`
-- [ ] Tuned Whisper deployed, `ASR_MODEL_URL` set, stock versus tuned toggle live
+- [x] Full Whisper small run on Baseten finished, numbers in `training/RUNS.md` (WER 0.708 stock to 0.159 tuned, 1,000 held-out clips)
+- [x] Tuned Whisper deployed, `ASR_MODEL_URL` set, stock versus tuned toggle live (`training/serve_asr`, T4, 0.8 s per transmission at beam 3; stock side runs locally in parallel with `ASR_STOCK_LOCAL=1`; falls back to local Whisper per transmission if Baseten cannot be reached)
 - [ ] A run with our simulator's audio mixed in, to fix the demo-voice regression
 - [ ] Checker trained on Baseten and wired in
 - [ ] Per-word confidence and calibrated scores for the agent

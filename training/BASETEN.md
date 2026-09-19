@@ -130,3 +130,9 @@ Things to know:
 - The app does not depend on it. If a call fails, `WithFallback` in `backend/tower/asr.py` hears that transmission with the local model and skips Baseten for 45 s. Point `ASR_LOCAL_MODEL` at a CTranslate2 export of the tuned model (the job wrote one to `ct2-float16/`) and the fallback is as good as the deployment.
 - Shared workspace: the model is named `k7-asr` on purpose. Scale it to zero or deactivate it when we are not testing, and delete it after the event.
 
+**Deployed Saturday Sept 19, 15:53.** Model `k7-asr`, id `q40o4j9w`, one T4, transformers 5.17.0 (the first push pinned 4.57.1 and could not read the tokenizer the training job had saved: serve with the transformers that trained). Predict URL: `https://model-q40o4j9w.api.baseten.co/environments/production/predict`.
+
+Measured from the laptop on a 2.7 s pilot clip, steady state, round trip: beam 1 = 0.3 s, beam 3 = 0.8 s, beam 5 = 1.7 s (1.5 s of that inside the model). The app uses beam 3 (`ASR_BEAM_SIZE`). Through the app's real path, tuned on Baseten plus the stock comparison run locally at the same time: 0.8 to 0.9 s per transmission. The first call after an idle period is slower.
+
+**What it does not fix.** Our simulator's made-up fix names. "direct ESTIR" comes back as "direct to six" from the tuned model (confidence 0.95) and "direct to sit" from stock, with or without the fix names in the prompt. The training data is real ATC audio and has never heard ESTIR. The pipeline already treats "routing read back but fix not understood" as ambiguous and hands it to the agent, so this does not raise a false alarm, but the right fix is a second run with a few thousand synthetic clips of our own phrases mixed in.
+

@@ -34,6 +34,7 @@ import os
 import re
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -344,6 +345,10 @@ class WithFallback:
 # ---------------------------------------------------------------------------
 
 
+STOCK_WAIT_S = 4.0  # how long the comparison may hold up a transmission after the tuned model answered
+_STOCK_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="asr-stock")
+
+
 class StockAndTuned:
     """Transcribe with the tuned model; also run the stock model and attach `text_stock`."""
 
@@ -352,13 +357,16 @@ class StockAndTuned:
         self.stock = stock
 
     def transcribe(self, samples_or_path, prompt: str | None = None) -> ASRResult:
+        """Both models hear the clip at the same time, so the comparison costs no extra wait."""
         samples = _load_samples(samples_or_path)
+        if self.stock is None:
+            return self.tuned.transcribe(samples, prompt)
+        pending = _STOCK_POOL.submit(self.stock.transcribe, samples, prompt)
         res = self.tuned.transcribe(samples, prompt)
-        if self.stock is not None:
-            try:
-                res.text_stock = self.stock.transcribe(samples, prompt).text
-            except Exception as exc:  # never let the toggle break the main path
-                res.text_stock = f"<stock failed: {type(exc).__name__}>"
+        try:
+            res.text_stock = pending.result(timeout=STOCK_WAIT_S).text
+        except Exception as exc:  # never let the toggle break or slow the main path
+            res.text_stock = f"<stock failed: {type(exc).__name__}>"
         return res
 
 
@@ -380,7 +388,11 @@ def get_asr(force_new: bool = False) -> ASR:
 
     # ASR_LOCAL_MODEL may be a size ("base.en") or a folder holding a CTranslate2 export of our
     # tuned model, which makes the local fallback as good as the remote one.
-    tuned: ASR = (WithFallback(BasetenWhisper(tuned_url, name="baseten:tuned"), lambda: LocalWhisper(local_size))
+    # Beam width is the speed dial for the deployed model. Measured on the T4, round trip:
+    # 1 = 0.3 s, 3 = 0.8 s, 5 = 1.7 s. Three keeps a score and alternatives inside the 2 s budget.
+    beams = int(os.environ.get("ASR_BEAM_SIZE", "3"))
+    tuned: ASR = (WithFallback(BasetenWhisper(tuned_url, beam_size=beams, n_best=beams, name="baseten:tuned"),
+                               lambda: LocalWhisper(local_size))
                   if tuned_url else LocalWhisper(local_size))
     stock: ASR | None = None
     if stock_url:
