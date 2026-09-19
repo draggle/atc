@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
+from sim import live as LIVE  # noqa: E402
 from sim import scenarios as SC  # noqa: E402
 from tower.audio import pcm16_to_float  # noqa: E402
 from world import AUDIO_DIR, World  # noqa: E402
@@ -70,6 +71,22 @@ def _json_default(o: Any) -> Any:
 
 hub = Hub()
 world = World(hub.emit, synthesize=SYNTH)
+_background: set[asyncio.Task[Any]] = set()  # keeps fire-and-forget tasks alive until they finish
+
+
+def _configure_live(data: dict[str, Any]) -> None:
+    """configure with source "live": one snapshot of the real sky. See sim/live.py.
+
+    The fetch can take seconds, so it runs as a task (and in a thread inside that): the socket keeps
+    reading and the clock keeps ticking. load_into_async never raises and reports through notices.
+    """
+    try:
+        cap = int(data.get("max_flights") or 0) or None
+    except (TypeError, ValueError):
+        cap = None
+    task = asyncio.create_task(LIVE.load_into_async(world, str(data.get("region") or ""), cap))
+    _background.add(task)
+    task.add_done_callback(_background.discard)
 
 
 async def clock() -> None:
@@ -206,8 +223,10 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 asyncio.create_task(world.agent_request(str(data.get("text", ""))))
             elif typ == "radio_text":
                 asyncio.create_task(world.controller_text(str(data.get("text", ""))))
+            elif typ == "configure" and data.get("source") == "live":
+                _configure_live(data)
             elif typ in ("load_scenario", "configure"):
-                # configure: {source: "sim", scenario, density}. Real traffic arrives in phase 4.
+                # configure: {source: "sim" | "real", scenario, density, max_flights}.
                 name = str(data.get("scenario") or data.get("name") or "demo")
                 density = float(data.get("density") or 1.0)
                 cap = data.get("max_flights")

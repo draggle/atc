@@ -342,6 +342,15 @@ export function callsignForClearance(state: TowerState, clearanceId: string): st
   return card?.callsign ?? null;
 }
 
+/** "14:32 UTC" from a live snapshot's ISO-8601 time, or "" when it is missing or not a date. */
+export function snapshotClock(iso: unknown): string {
+  if (typeof iso !== "string" || !iso) return "";
+  // No zone on the string means UTC, not the laptop's time zone.
+  const d = new Date(/(z|[+-]\d{2}:?\d{2})$/i.test(iso) ? iso : `${iso}Z`);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")} UTC`;
+}
+
 // ---------------------------------------------------------------------------
 // Context
 // ---------------------------------------------------------------------------

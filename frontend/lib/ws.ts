@@ -51,6 +51,8 @@ export function connectTower(opts: {
   let closed = false;
   let everOpened = false;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The region of the mock's live snapshot, kept so a reset stays a live snapshot. */
+  let mockLive: string | undefined;
 
   const startMockMode = () => {
     if (closed || mock) return;
@@ -118,7 +120,9 @@ export function connectTower(opts: {
       if (mock && (msg.type === "reset" || msg.type === "configure" || msg.type === "load_scenario")) {
         // The mock is a scripted closure: a new world means a new mock.
         mock.stop();
-        mock = startMock(opts.onEvent, msg.type === "reset" ? undefined : ("scenario" in msg ? msg.scenario : msg.name));
+        if (msg.type !== "reset") mockLive = msg.type === "configure" && msg.source === "live" ? msg.region : undefined;
+        const name = msg.type === "load_scenario" ? msg.name : msg.type === "configure" && msg.source !== "live" ? msg.scenario : undefined;
+        mock = startMock(opts.onEvent, name, mockLive);
         return;
       }
       if (mock) mock.send(msg);

@@ -19,7 +19,6 @@ import gzip
 import io
 import json
 import math
-import re
 import sys
 import tarfile
 import time
@@ -27,19 +26,15 @@ from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from airlines import AIRLINE_CALLSIGN  # noqa: E402
+from sim.regions import REGIONS  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[2]
 RAW = REPO / "data" / "real" / "raw"
 OUT = REPO / "data" / "real" / "extracted"
 R_NM = 3440.065
-AIRLINE_CALLSIGN = re.compile(r"^[A-Z]{3}[0-9][A-Z0-9]{0,3}$")
 
-# name, centre lat, centre lon, radius NM, floor ft, [window start hours UTC], label
-REGIONS = [
-    ("europe-core", 50.6, 6.2, 150.0, 24500, [10, 16], "Western Europe core (Maastricht, Rhine, Benelux)"),
-    ("uk", 52.6, -1.4, 150.0, 24500, [10, 16], "United Kingdom (Midlands and the London approaches)"),
-    ("us-northeast", 40.9, -75.2, 150.0, 24000, [14, 21], "US Northeast corridor (New York, Philadelphia)"),
-    ("toronto", 43.6777, -79.6248, 150.0, 24000, [14, 21], "Southern Ontario (Toronto Pearson)"),
-]
 WINDOW_S = 3600
 MIN_INSIDE_S = 240
 MAX_LEVEL_CHANGE_FT = 4000

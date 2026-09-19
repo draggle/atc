@@ -19,7 +19,9 @@ import type {
   Plan,
   PlannedPath,
   ResolverStep,
+  LiveRegion,
   ScenarioInfo,
+  ScenarioMeta,
   Scoreboard,
   SimState,
   TowerEvent,
@@ -40,6 +42,12 @@ const SECTOR = 200;
 let MOCK_WORLD_ID = 0;
 const MOCK_SCENARIOS: ScenarioInfo[] = [
   { name: "demo", description: "Scripted mock traffic. Start the backend for the real simulator.", flights: 8, source: "sim" },
+];
+const MOCK_LIVE_REGIONS: LiveRegion[] = [
+  { key: "europe-core", label: "Western Europe core (Maastricht, Rhine, Benelux)" },
+  { key: "uk", label: "United Kingdom" },
+  { key: "us-northeast", label: "US Northeast" },
+  { key: "toronto", label: "Toronto" },
 ];
 const TICK_MS = 1000; // 1 Hz like the backend, so client-side interpolation is exercised
 const DT_S = 4; // sim seconds per tick, so motion is visible
@@ -88,7 +96,8 @@ function item(type: Item["type"], value: string | number, unit: Item["unit"], ac
   return { type, value, unit, action, mandatory: true };
 }
 
-export function startMock(emit: Emit, scenarioName?: string): MockHandle {
+/** `liveRegion`: pretend the same scripted world is a live snapshot of that region, labelled as the backend would. */
+export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string): MockHandle {
   MOCK_WORLD_ID += 1;
   const timers = new Set<ReturnType<typeof setTimeout>>();
   let stopped = false;
@@ -99,7 +108,17 @@ export function startMock(emit: Emit, scenarioName?: string): MockHandle {
   let scriptStarted = false;
   let towerEnabled = true;
   let autoSpeak = false;
-  let scenario = scenarioName ?? "Toronto FIR, 16:00 local";
+  let scenario = liveRegion ? `live/${liveRegion}` : (scenarioName ?? "Toronto FIR, 16:00 local");
+  const liveMeta: ScenarioMeta | undefined = liveRegion
+    ? {
+        region: liveRegion,
+        label: MOCK_LIVE_REGIONS.find((r) => r.key === liveRegion)?.label ?? liveRegion,
+        live: true,
+        snapshot_utc: new Date().toISOString(),
+        attribution: "Flight data: adsb.lol, ODbL 1.0 and CC0. Gate names are ours.",
+        caveats: "Mock snapshot: scripted traffic, not the real sky. Start the backend for a live one.",
+      }
+    : undefined;
   const zones: Zone[] = [{ id: "storm-1", x_nm: 40, y_nm: 30, radius_nm: 14, kind: "storm" }];
   const flights: Flight[] = FLIGHTS.map((f) => {
     const a = WP[f.route[0]];
@@ -172,6 +191,8 @@ export function startMock(emit: Emit, scenarioName?: string): MockHandle {
     speed,
     world_id: MOCK_WORLD_ID,
     scenarios: MOCK_SCENARIOS,
+    live_regions: MOCK_LIVE_REGIONS,
+    ...(liveMeta ? { source: "real" as const, meta: liveMeta } : {}),
   });
 
   // ------------------------------------------------------------------ plan

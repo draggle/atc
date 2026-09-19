@@ -12,7 +12,7 @@ Every message is one JSON object `{"type": ..., "payload": {...}, "t": <sim seco
 
 | type | payload | when |
 |---|---|---|
-| `state` | `{scenario, lifecycle, speed, world_id, scenarios: ScenarioInfo[], tower_enabled, auto_speak, t, waypoints: Waypoint[], zones: Zone[], sector_nm, buffer_nm, error_rate, noise, watching}` | on connect, on every lifecycle change, and whenever a setting changes |
+| `state` | `{scenario, lifecycle, speed, world_id, scenarios: ScenarioInfo[], live_regions: {key, label}[], tower_enabled, auto_speak, t, waypoints: Waypoint[], zones: Zone[], sector_nm, buffer_nm, error_rate, noise, watching}` | on connect, on every lifecycle change, and whenever a setting changes |
 | `radar` | `{aircraft: AircraftState[], zones?: Zone[]}` | once per second. `zones` is present while any zone is drifting or swelling and replaces `state.zones`. An intruder's `AircraftState` carries `threat`: fighter, drone, balloon, emergency or unknown |
 | `plan` | `Plan` | after initial planning and every replan |
 | `plan_update` | `{changed: string[], reason, trigger}` | with every replan |
@@ -38,6 +38,7 @@ Every message is one JSON object `{"type": ..., "payload": {...}, "t": <sim seco
 | `{"type":"radio_text","text"}` | typed controller transmission, fallback when there is no mic |
 | `{"type":"configure","source":"sim","scenario","density"}` | build a world and its plan. Lifecycle becomes `ready`. **The clock does not start.** `load_scenario` with `name` still works as an alias |
 | `{"type":"configure","source":"real","scenario":"real/<region>_<date>_<hhmm>","max_flights"}` | load recorded traffic, thinned evenly over the hour to at most `max_flights`. `state` then carries `source: "real"`, `meta` (region, label, date, hour_utc, gates, attribution, caveats), `geo.shape: "circle"`, and waypoints with `kind: "gate"`. Hidden track vertices are never sent |
+| `{"type":"configure","source":"live","region":"<key>","max_flights"}` | take **one snapshot** of the real sky over a region from adsb.lol and load it as a scenario (`backend/sim/live.py`). `region` is a `key` from `state.live_regions`. The fetch runs off the clock: the backend answers at once with an info `notice` ("Fetching the live sky over ..."), and the `state`, `plan` and `radar` of the new world follow when the snapshot is in, usually under 2 s, at most about 12 s. Nothing polls afterwards. A second live `configure` while one is in flight is ignored with an info `notice`. An unknown region is an error `notice` |
 | `{"type":"start"}` | `ready` or `paused` to `running` |
 | `{"type":"pause"}` | `running` to `paused` |
 | `{"type":"reset"}` | back to the world as it was loaded: clock at zero, nothing issued. New `world_id` |
@@ -48,6 +49,23 @@ Every message is one JSON object `{"type": ..., "payload": {...}, "t": <sim seco
 | `{"type":"remove_disruption","id"}` | take one out by hand. An emergency aircraft cannot be removed: it is a real flight |
 | `{"type":"speak_card","id"}` | speak one card by TTS now |
 | `{"type":"set_sliders","buffer_nm","error_rate","noise"}` | separation buffer, pilot error rate, radio noise |
+
+### Live mode
+
+`state.live_regions` lists the regions live mode can load, `[{key, label}]`. It comes from `backend/sim/regions.py`, not from files on disk, so it is present even when no replay scenario is installed.
+
+A live world looks like a real-replay world to the screen: `scenario: "live/<region>"`, `source: "real"` (there is no third value), `geo.shape: "circle"`, gates as waypoints. It is told apart by `meta`:
+
+| meta key | value |
+|---|---|
+| `live` | `true` for a world built from a live snapshot. Absent otherwise |
+| `snapshot_utc` | when the snapshot was taken, ISO 8601, for example `2026-09-19T19:54:14Z` |
+| `fallback` | absent when the live feed answered. `"saved_snapshot"`: the feed failed and the newest snapshot saved under `data/live/` was loaded, so `live` is still `true` and `snapshot_utc` is older. `"replay"`: no saved snapshot either, so the newest committed `real/<region>_*` hour was loaded, and `live` is absent |
+| `attribution`, `caveats` | as in real mode. The live caveat says each route is the current track projected straight to the boundary, so miles saved is zero by construction |
+| `seen`, `kept: {inside, inbound}`, `dropped: {reason: count}` | how many aircraft the feed held, how many are in the scenario (inside the circle now, or entering within 30 minutes), and why the rest were left out |
+| `region`, `label`, `radius_nm`, `floor_ft`, `gates`, `max_flights`, `flights_available` | as in real mode |
+
+Every fallback comes with a `notice` at level `warn` that says what happened, for example "Live feed unavailable (adsb.lol: ConnectTimeout). Loaded the snapshot from 19:54 UTC on 2026-09-19 instead." If there is nothing to fall back to, the `notice` is level `error` and the world is left as it was. `reset` returns to the loaded snapshot and does not fetch again.
 
 ## Geography
 

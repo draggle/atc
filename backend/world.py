@@ -48,6 +48,7 @@ from schemas import (
     event,
 )
 from sim import geoframe as GEO
+from sim import regions as REGIONS
 from sim import scenarios as SC
 from sim.engine import Simulator
 from sim.monitor import SeparationMonitor
@@ -139,6 +140,7 @@ class World:
         self.lifecycle: str = "idle"
         self.world_id = 0  # bumps on every load so the screen can drop the previous world's state
         self._base_scenario: Scenario | None = None  # what reset() returns to
+        self.live_loading = False  # a live snapshot is being fetched (sim/live.py); a second request is ignored
         self._lock = asyncio.Lock()
         AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -146,6 +148,10 @@ class World:
 
     def load(self, name: str, max_flights: int | None = None) -> None:
         sc = SC.thin(SC.load(name), max_flights)
+        self._load_scenario(sc)
+
+    def load_scenario(self, sc: Scenario) -> None:
+        """Load a scenario built elsewhere, such as a live snapshot (sim/live.py). reset() returns to it."""
         self._load_scenario(sc)
 
     def _load_scenario(self, sc: Scenario) -> None:
@@ -251,6 +257,7 @@ class World:
             "lifecycle": self.lifecycle,
             "world_id": self.world_id,
             "scenarios": scenario_catalog(),
+            "live_regions": REGIONS.catalog(),  # live mode needs no files, so it is offered even with no replays
             "watching": self.watching(),
             "disruptions": [self._disruption_payload(d) for d in self.disruptions.values()],
             "disruption_kinds": DZ.catalog(),

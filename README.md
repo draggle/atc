@@ -87,6 +87,7 @@ Environment variables, all optional, in `.env` (copy `.env.example`):
 Other commands:
 
 ```bash
+# live sky needs no setup: pick Live and a region on the screen (one request to adsb.lol, see backend/sim/live.py)
 # real traffic: put an adsb.lol daily archive (three tar parts) in data/real/raw, then
 cd backend && .venv/bin/python tools/real_extract.py --date 2026-09-18   # one pass, about a minute
 cd backend && .venv/bin/python tools/real_build.py                        # writes backend/scenarios/real/*.json
@@ -123,7 +124,7 @@ Start with [CLAUDE.md](CLAUDE.md), then [docs/01-project.md](docs/01-project.md)
 
 Hack the North requires attribution. Keep this current.
 
-- Flight data: [adsb.lol globe_history](https://github.com/adsblol/globe_history_2026), open under ODbL 1.0 and CC0. The built scenarios in `backend/scenarios/real/` are derived from the 2026-09-18 archive. Gate names in those scenarios are ours
+- Flight data: [adsb.lol globe_history](https://github.com/adsblol/globe_history_2026), open under ODbL 1.0 and CC0. The built scenarios in `backend/scenarios/real/` are derived from the 2026-09-18 archive. Gate names in those scenarios are ours. Live mode (`backend/sim/live.py`) takes one snapshot per load from the [adsb.lol API](https://api.adsb.lol) under the same licence, and falls back to a saved snapshot or a recorded hour if the feed is down
 - Map: [MapLibre GL](https://maplibre.org), [deck.gl](https://deck.gl), basemap by [CARTO](https://carto.com/attributions) on OpenStreetMap data. Type: B612 and B612 Mono (Airbus, OFL)
 - Datasets: [jacktol/atc-dataset](https://huggingface.co/datasets/jacktol/atc-dataset) (ATCO2 one-hour subset plus UWB-ATCC, MIT per the card), [jlvdoorn/atco2-asr-atcosim](https://huggingface.co/datasets/jlvdoorn/atco2-asr-atcosim) (referenced, not yet used)
 - Base models: OpenAI Whisper (tiny, base, small), distilroberta-base and roberta-base

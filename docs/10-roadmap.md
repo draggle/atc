@@ -117,6 +117,16 @@ How a real flight is modelled: its route is the track it actually flew, simplifi
 - **Instruction cards needed a floor.** Real traffic produced 62 cards at load, mostly "direct, saves 0 NM". A direct now needs to save 3 NM to earn a card. The same load gives 10, all of them conflict fixes or real shortcuts.
 - Busy-sky decluttering on the map: one-line labels unless an aircraft matters right now, smaller icons, and only airborne flights draw routes once the clock runs.
 
+### Phase 4b. Live sky. Saturday evening
+A third data source: one snapshot of the real sky from adsb.lol, loaded as an ordinary scenario. `backend/sim/live.py`; regions shared with the extractor in `backend/sim/regions.py`, gate clustering shared with `real_build.py` in `backend/sim/gates.py`. A snapshot, not a stream, and miles saved is zero by construction: see "Live sky" in `09-overnight-findings.md`.
+- [x] `configure` with `source: "live"` and a region loads a snapshot; the fetch runs in a thread, so the clock and the socket never wait for the network
+- [x] Same filters as the replay tools: airline callsign, at or above the region floor, level, fresh position. Inside flights start where they are, outer-ring flights enter on the boundary when they would arrive
+- [x] Planner leaves zero conflicts on a recorded snapshot capped at 80 flights (test), and on real snapshots of all four regions (checked by hand Saturday 20:07 UTC: 141, 36, 91 and 77 flights)
+- [x] Fallback chain tested: saved snapshot, then committed replay, then an error notice with the world untouched. Each fallback raises a `warn` notice
+- [x] Start, step and Reset return to the snapshot without fetching again
+- [x] No test touches the network: a recorded response is in `backend/tests/fixtures/`
+- [ ] Load each region once on the demo laptop before judging, so a saved snapshot exists if the Wi-Fi fails
+
 ### Phase 5. Disruptions. About 2 hours
 The unified `Disruption` schema, planner input, simulator motion, and one Disrupt control: choose a kind and click, or press Random.
 - [x] Every kind produces a conflict-free replan, or an explicit message naming the flights that could not be resolved
