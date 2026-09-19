@@ -243,6 +243,11 @@ def correction_phrase(clearance: OpenClearance, verdict: Verdict) -> str:
     return f"{spoken_callsign(clearance.callsign)}, negative, {body}"
 
 
+def confirm_phrase(clearance: OpenClearance) -> str:
+    """What to say when the readback could not be understood: ask, do not accuse."""
+    return f"{spoken_callsign(clearance.callsign)}, confirm {phrase_from_items('', clearance.items)}"
+
+
 _ROUTE_CUE = re.compile(r"\b(direct|proceed|proceeding|routing|route)\b")
 
 

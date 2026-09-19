@@ -232,6 +232,80 @@ def test_wrong_fix_readback_alerts_and_the_plane_goes_to_the_wrong_fix(world):
     assert w.sim.get(cs).route[:1] == [heard[0]], "the plane obeys the readback, not the clearance"
 
 
+def _opened(ev):
+    return [e for e in ev if e["type"] == "clearance_opened"]
+
+
+def test_saying_the_same_instruction_twice_is_one_instruction(world):
+    """A double click on "Say it", or a controller repeating themselves, is not two clearances.
+
+    Two open clearances for one instruction mean one readback closes one of them and the other
+    times out as "NO READBACK, heard nothing" about a pilot who answered correctly."""
+    w, ev = world
+    w.fleet.set_error_rate(0.0)
+    cs = w.sim.aircraft()[0].callsign
+    ev.clear()
+    asyncio.run(w.controller_text(f"{cs} descend and maintain flight level two four zero"))
+    asyncio.run(w.controller_text(f"{cs} descend and maintain flight level two four zero"))
+    assert len(_opened(ev)) == 1, "the repeat refreshes the open clearance, it does not open another"
+    assert len(w.core.store.open_clearances(cs)) == 1
+    for _ in range(40):
+        asyncio.run(w.tick(1.0))
+    assert not [e for e in ev if e["type"] == "alert"], [e["payload"].get("reason") for e in ev if e["type"] == "alert"]
+    assert w.sim.get(cs).target_alt == 24000
+
+
+def test_a_different_instruction_to_the_same_aircraft_is_still_a_new_clearance(world):
+    w, ev = world
+    cs = w.sim.aircraft()[0].callsign
+    ev.clear()
+    asyncio.run(w.controller_text(f"{cs} descend and maintain flight level two four zero"))
+    asyncio.run(w.controller_text(f"{cs} turn left heading two seven zero"))
+    assert len(_opened(ev)) == 2
+
+
+def test_say_it_pressed_twice_speaks_the_card_once(world):
+    from schemas import InstructionCard, Item
+    w, ev = world
+    cs = w.sim.aircraft()[0].callsign
+    card = InstructionCard(id="card-dbl", callsign=cs, items=[Item(type="altitude", value=240, unit="FL", action="descend")],
+                           phrase=f"{cs} descend and maintain flight level two four zero", reason="test", urgency_s=60.0)
+    w.cards[card.id] = card
+    ev.clear()
+
+    async def both():
+        await asyncio.gather(w.speak_card(card.id), w.speak_card(card.id))
+        await w.speak_card(card.id)  # and a third, late press
+
+    asyncio.run(both())
+    assert len(_opened(ev)) == 1
+
+
+def test_an_uncertain_verdict_reaches_the_screen_with_something_to_say(world, monkeypatch):
+    """The resolver is never silent: "uncertain" must end in a card that tells the controller what to do."""
+    from tower.resolver.agent import Resolution
+    w, ev = world
+    w.fleet.set_error_rate(0.0)
+    cs = w.sim.aircraft()[0].callsign
+    asyncio.run(w.controller_text(f"{cs} descend and maintain flight level two four zero"))
+
+    def gave_up(clearance, verdict, tx, extra_context=None):
+        v = verdict.model_copy(update={"result": "ambiguous", "decided_by": "resolver", "confidence": 0.5,
+                                       "reason": "uncertain: resolver ran out of time"})
+        return Resolution(v, [], None)
+
+    monkeypatch.setattr(w.core.resolver, "resolve", gave_up)
+    ev.clear()
+    tx = w._new_tx(f"descend flight level two one zero {cs}", "pilot", conf=0.4)  # unclear, and low confidence
+    events = w.core.on_transmission(tx, list(w.sim.active), w.sim.aircraft())
+    alerts = [e["payload"] for e in events if e["type"] == "alert"]
+    assert alerts, [e["type"] for e in events]
+    a = alerts[0]
+    assert a["result"] == "ambiguous" and a["decided_by"] == "resolver"
+    assert "confirm" in (a.get("correction_phrase") or "").lower()
+    assert [e for e in events if e["type"] == "clearance_updated"][-1]["payload"]["status"] == "uncertain"
+
+
 def test_snap_waypoints_uses_route_prior():
     from world import snap_waypoints
     wps = ["WAKOL", "GALTO", "ESTIR", "PIKAR", "CENTA"]

@@ -156,6 +156,7 @@ class World:
         self._base_scenario: Scenario | None = None  # what reset() returns to
         self.live_loading = False  # a live snapshot is being fetched (sim/live.py); a second request is ignored
         self._lock = asyncio.Lock()
+        self._speaking: set[str] = set()  # cards Tower is saying right now, see speak_card
         AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------ setup
@@ -1090,6 +1091,17 @@ class World:
         if card.callsign not in self.sim.active:
             self.notice(f"{card.callsign} is not in the sector yet. Its instruction waits until it checks in.", "info")
             return
+        # Speaking takes a few real seconds and the card stays "pending" throughout, so a second
+        # press of "Say it" used to transmit the same instruction again.
+        if card_id in self._speaking or card.status != "pending":
+            return
+        self._speaking.add(card_id)
+        try:
+            await self._speak_card(card)
+        finally:
+            self._speaking.discard(card_id)
+
+    async def _speak_card(self, card: InstructionCard) -> None:
         if self.tts is None or self.asr is None and not self.synthesize:
             await self._controller(card.phrase, card=card)
             return
