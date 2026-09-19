@@ -125,6 +125,46 @@ def test_auto_correct_after_wrong_readback(world):
     assert w.sim.get(cs).target_alt == 24000
 
 
+def test_tower_trusts_its_own_card_over_its_own_ears(world):
+    """Tower says "direct ESTIR" and hears itself say "direct JIGOR": the card is what was said."""
+    from schemas import InstructionCard, Item, OpenClearance
+    w, ev = world
+    cs = w.sim.aircraft()[0].callsign
+    card = InstructionCard(id="card-x", callsign=cs, items=[Item(type="route", value="ESTIR", action="direct")],
+                           phrase=f"{cs} proceed direct ESTIR", reason="test", urgency_s=60.0)
+    w.cards[card.id] = card
+    asyncio.run(w._controller(f"{cs} proceed direct JIGOR", card=card))
+    opened = [OpenClearance.model_validate(e["payload"]) for e in ev if e["type"] == "clearance_opened"]
+    assert opened, "a clearance opens"
+    assert all([i.value for i in c.items] == ["ESTIR"] for c in opened), "the screen never sees the misheard fix"
+    assert all(w.core.store.get(c.id).items[0].value == "ESTIR" for c in opened), "nor does the checker"
+
+
+def test_a_correction_is_never_corrected_again(world, monkeypatch):
+    """If the corrected readback still alerts, Tower hands it to the human. It must not loop."""
+    w, ev = world
+    w.set_auto_speak(True)
+    cs = w.sim.aircraft()[0].callsign
+    calls = []
+    real = w._auto_correct
+
+    async def counted(c, phrase):
+        calls.append(c.id)
+        assert len(calls) < 5, "auto-correct is looping"
+        await real(c, phrase)
+
+    monkeypatch.setattr(w, "_auto_correct", counted)
+    # every readback, including the one after a correction, raises an alert
+    monkeypatch.setattr(w.core, "on_transmission", lambda tx, active, states: (
+        [{"type": "alert", "payload": {"clearance_id": None, "correction_phrase": f"{cs} negative"}}]
+        if tx.speaker == "pilot" else w.core.__class__.on_transmission(w.core, tx, active, states)))
+    asyncio.run(w.controller_text(f"{cs} descend and maintain flight level two four zero"))
+    asyncio.run(w.tick(1.0)); asyncio.run(w.tick(1.0)); asyncio.run(w.tick(1.0))
+    # Auto mode may issue cards of its own meanwhile: each clearance is corrected once, a fix never
+    assert calls and len(calls) == len(set(calls)) and not any(c.endswith("-fix") for c in calls), calls
+    assert any(e["type"] == "notice" and "still" in e["payload"]["text"].lower() for e in ev)
+
+
 def test_snap_waypoints_uses_route_prior():
     from world import snap_waypoints
     wps = ["WAKOL", "GALTO", "ESTIR", "PIKAR", "CENTA"]

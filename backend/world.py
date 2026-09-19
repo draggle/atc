@@ -887,6 +887,8 @@ class World:
         self.transmissions += 1
         self.tier1_latencies.append(asr_latency + time.perf_counter() - t0)
         self.emit(event("transcript", self._tx_payload(tx), t=self.sim.t))
+        if card is not None and self._trust_the_card(card, events):
+            conf = min(conf, 0.5)
         self._emit_core_events(events)
         opened = [OpenClearance.model_validate(e["payload"]) for e in events if e["type"] == "clearance_opened"]
         if card is not None and not opened:
@@ -907,6 +909,33 @@ class World:
                 card.via = card.via or "human"
                 self._link_card(card, c.id)
             self._schedule_pilot(c, heard_ok=(conf >= 0.5))
+
+    def _trust_the_card(self, card: InstructionCard, events: list[dict[str, Any]]) -> bool:
+        """Tower spoke this card itself, so the card is what was said, whatever its own ears heard.
+
+        Whisper turns a made-up fix into another word ("GEGOR" -> "jigor"), and the clearance then
+        expects a fix nobody was given: the pilot's correct readback alerts and the correction asks
+        for the wrong fix. A human on the mic gets no such benefit of the doubt: they may have misspoken.
+        Returns True if what Tower heard had to be overruled.
+        """
+        overruled = False
+        for e in events:
+            if e["type"] != "clearance_opened":
+                continue
+            heard = OpenClearance.model_validate(e["payload"])
+            if heard.callsign != card.callsign:
+                continue
+            if [(i.type, i.value) for i in heard.items] == [(i.type, i.value) for i in card.items]:
+                continue
+            stored = self.core.store.get(heard.id)
+            if stored is None:
+                continue
+            log.warning("Tower misheard its own card for %s: heard %s, said %s", card.callsign,
+                        [i.value for i in heard.items], [i.value for i in card.items])
+            stored.items = [it.model_copy() for it in card.items]
+            e["payload"] = stored
+            overruled = True
+        return overruled
 
     def _tx_payload(self, tx: Transmission) -> dict[str, Any]:
         """Transmission plus the callsign the parser attached, for the transcript column."""
@@ -986,8 +1015,12 @@ class World:
         alert = next((e for e in events if e["type"] == "alert"), None)
         if alert and self.tower_enabled and self.auto_speak:
             phrase = alert["payload"].get("correction_phrase")
-            if phrase:
+            if phrase and not correction:
                 await self._auto_correct(c, phrase)
+            elif phrase:
+                # One correction, then the human decides. Correcting a correction can loop for ever.
+                self.notice(f"{c.callsign} still reads back wrong after Tower's correction. It is yours to sort out.",
+                            "warn")
 
     async def _hear_pilot(self, resp: PilotResponse) -> Transmission:
         ref = ""
