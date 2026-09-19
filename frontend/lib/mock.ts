@@ -35,14 +35,14 @@ const TICK_MS = 1000; // 1 Hz like the backend, so client-side interpolation is 
 const DT_S = 4; // sim seconds per tick, so motion is visible
 
 const WAYPOINTS: Waypoint[] = [
-  { name: "BOSOX", x_nm: 20, y_nm: 30 },
-  { name: "LINNG", x_nm: 60, y_nm: 150 },
-  { name: "TULEG", x_nm: 100, y_nm: 100 },
-  { name: "DUNKS", x_nm: 150, y_nm: 40 },
-  { name: "PEKOE", x_nm: 175, y_nm: 170 },
-  { name: "ANCOL", x_nm: 30, y_nm: 180 },
-  { name: "WAKOL", x_nm: 185, y_nm: 105 },
-  { name: "SIMCO", x_nm: 110, y_nm: 15 },
+  { name: "BOSOX", x_nm: -80, y_nm: -70 },
+  { name: "LINNG", x_nm: -40, y_nm: 50 },
+  { name: "TULEG", x_nm: 0, y_nm: 0 },
+  { name: "DUNKS", x_nm: 50, y_nm: -60 },
+  { name: "PEKOE", x_nm: 75, y_nm: 70 },
+  { name: "ANCOL", x_nm: -70, y_nm: 80 },
+  { name: "WAKOL", x_nm: 85, y_nm: 5 },
+  { name: "SIMCO", x_nm: 10, y_nm: -85 },
 ];
 const WP = Object.fromEntries(WAYPOINTS.map((w) => [w.name, w]));
 
@@ -84,7 +84,7 @@ export function startMock(emit: Emit): MockHandle {
   let towerEnabled = true;
   let autoSpeak = false;
   let scenario = "Toronto FIR, 16:00 local";
-  const zones: Zone[] = [{ id: "storm-1", x_nm: 140, y_nm: 130, radius_nm: 14, kind: "storm" }];
+  const zones: Zone[] = [{ id: "storm-1", x_nm: 40, y_nm: 30, radius_nm: 14, kind: "storm" }];
   const flights: Flight[] = FLIGHTS.map((f) => {
     const a = WP[f.route[0]];
     const b = WP[f.route[1]];
@@ -195,7 +195,7 @@ export function startMock(emit: Emit): MockHandle {
         const da = Math.sign(f.targetAlt - f.alt) * Math.min(Math.abs(f.targetAlt - f.alt), 30 * DT_S);
         f.alt += da;
       }
-      if (f.isIntruder && (f.x < -10 || f.x > SECTOR + 10 || f.y < -10 || f.y > SECTOR + 10)) {
+      if (f.isIntruder && (Math.abs(f.x) > SECTOR / 2 + 10 || Math.abs(f.y) > SECTOR / 2 + 10)) {
         f.isIntruder = false;
         f.gs = 0;
       }

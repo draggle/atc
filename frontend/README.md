@@ -86,4 +86,4 @@ JSON:
 
 Binary: raw PCM16 mono 16 kHz frames while push-to-talk is held. `ptt_start` is sent before the first frame and `ptt_stop` after the last.
 
-Coordinates: `x_nm` east, `y_nm` north, origin at the bottom-left of the `sector_nm` square.
+Coordinates: `x_nm` east, `y_nm` north, sector centred on the origin, so values run from -sector_nm/2 to +sector_nm/2.
