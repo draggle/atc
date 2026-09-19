@@ -1,0 +1,47 @@
+# Demo traffic plus a scripted fighter (VIPER11) that appears at t=300 s on the
+# south-east edge and crosses the middle of the sector at 550 kt, not talking to us.
+name: intruder
+seed: 7
+sector_nm: 200
+separation_buffer_nm: 3.0
+description: Demo plus a fighter crossing the middle at t=300 s. Eight flights over 15 minutes, one baseline crossing at CENTA, one direct-path crossing, one similar callsign pair.
+waypoints:
+  - {name: WAKOL, x_nm: -100, y_nm: 20}
+  - {name: BUNTS, x_nm: -100, y_nm: -30}
+  - {name: GALTO, x_nm: -100, y_nm: 80}
+  - {name: ESTIR, x_nm: 100, y_nm: 15}
+  - {name: DAVRI, x_nm: 100, y_nm: -40}
+  - {name: REMLA, x_nm: 100, y_nm: -85}
+  - {name: NORIS, x_nm: -20, y_nm: 100}
+  - {name: TULEK, x_nm: 40, y_nm: 100}
+  - {name: ORDUN, x_nm: 90, y_nm: 100}
+  - {name: SOBEL, x_nm: -30, y_nm: -100}
+  - {name: PIKAR, x_nm: 25, y_nm: -100}
+  - {name: VIBOR, x_nm: -85, y_nm: -100}
+  - {name: CENTA, x_nm: 0, y_nm: 0}
+  - {name: MIDOX, x_nm: -40, y_nm: 10}
+  - {name: LEMKO, x_nm: 40, y_nm: -5}
+  - {name: TOPAZ, x_nm: -10, y_nm: 45}
+  - {name: BOTAN, x_nm: 5, y_nm: -50}
+  - {name: KELVO, x_nm: -55, y_nm: -45}
+  - {name: ZAMIR, x_nm: 55, y_nm: 50}
+  - {name: HAWKE, x_nm: 60, y_nm: -55}
+  - {name: FENIX, x_nm: -60, y_nm: 55}
+routes:
+  R_WE: [WAKOL, MIDOX, CENTA, LEMKO, ESTIR]
+  R_EW: [DAVRI, HAWKE, LEMKO, CENTA, MIDOX, BUNTS]
+  R_NS: [NORIS, TOPAZ, CENTA, BOTAN, PIKAR]
+  R_SN: [SOBEL, BOTAN, CENTA, TOPAZ, TULEK]
+  R_SWNE: [VIBOR, KELVO, CENTA, ZAMIR, ORDUN]
+  R_NWSE: [GALTO, FENIX, MIDOX, CENTA, LEMKO, HAWKE, REMLA]
+  R_SWE: [BUNTS, KELVO, CENTA, LEMKO, ESTIR]
+flights:
+  - {callsign: ACA123, route: R_WE, entry_time_s: 0, alt_ft: 33000, gs_kt: 420}
+  - {callsign: WJA456, route: R_NS, entry_time_s: 0, alt_ft: 33000, gs_kt: 420}
+  - {callsign: UAL210, route: R_SWE, entry_time_s: 0, alt_ft: 35000, gs_kt: 420}
+  - {callsign: DAL789, route: R_SN, entry_time_s: 60, alt_ft: 35000, gs_kt: 420}
+  - {callsign: ACA133, route: R_EW, entry_time_s: 240, alt_ft: 31000, gs_kt: 430}
+  - {callsign: POE311, route: R_SN, entry_time_s: 420, alt_ft: 29000, gs_kt: 380}
+  - {callsign: JZA8102, route: R_NWSE, entry_time_s: 600, alt_ft: 27000, gs_kt: 400}
+  - {callsign: AAL1620, route: R_SWNE, entry_time_s: 780, alt_ft: 33000, gs_kt: 440}
+  - {callsign: VIPER11, actype: F18, is_intruder: true, route: [], entry_time_s: 300, x_nm: 70, y_nm: -95, hdg_deg: 315, alt_ft: 33000, gs_kt: 550}

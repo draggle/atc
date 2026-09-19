@@ -1,0 +1,114 @@
+{
+  "ckpt": "../data/checkpoints/checker-smoke/best",
+  "data": "../data/checker/heldout.jsonl",
+  "n": 1000,
+  "device": "mps",
+  "accuracy": 0.534,
+  "chance": 0.125,
+  "false_alarm_rate": 0.9921,
+  "detection_rate": 0.9977,
+  "accuracy_clean": 0.5374,
+  "accuracy_asr_noise": 0.5252,
+  "per_type": {
+    "correct": {
+      "n": 127,
+      "accuracy": 0.0079
+    },
+    "wrong_value": {
+      "n": 115,
+      "accuracy": 0.4348
+    },
+    "wrong_runway": {
+      "n": 123,
+      "accuracy": 1.0
+    },
+    "wrong_direction": {
+      "n": 106,
+      "accuracy": 0.6038
+    },
+    "wrong_unit": {
+      "n": 140,
+      "accuracy": 0.6357
+    },
+    "omitted_item": {
+      "n": 124,
+      "accuracy": 0.5242
+    },
+    "ack_only": {
+      "n": 134,
+      "accuracy": 0.9851
+    },
+    "wrong_aircraft": {
+      "n": 131,
+      "accuracy": 0.0763
+    }
+  },
+  "latency_ms": {
+    "batched_per_pair": 6.971,
+    "single_pair": {
+      "p50": 29.11,
+      "p95": 205.32
+    }
+  },
+  "confusion": {
+    "wrong_aircraft": {
+      "wrong_value": 61,
+      "omitted_item": 14,
+      "wrong_aircraft": 10,
+      "wrong_unit": 7,
+      "wrong_direction": 27,
+      "wrong_runway": 10,
+      "ack_only": 1,
+      "correct": 1
+    },
+    "wrong_value": {
+      "wrong_direction": 34,
+      "wrong_aircraft": 14,
+      "omitted_item": 11,
+      "wrong_value": 50,
+      "correct": 1,
+      "wrong_unit": 2,
+      "ack_only": 3
+    },
+    "ack_only": {
+      "ack_only": 132,
+      "wrong_runway": 1,
+      "wrong_unit": 1
+    },
+    "wrong_runway": {
+      "wrong_runway": 123
+    },
+    "correct": {
+      "wrong_runway": 14,
+      "omitted_item": 11,
+      "wrong_aircraft": 19,
+      "wrong_direction": 41,
+      "wrong_value": 38,
+      "correct": 1,
+      "ack_only": 1,
+      "wrong_unit": 2
+    },
+    "omitted_item": {
+      "wrong_value": 8,
+      "ack_only": 6,
+      "omitted_item": 65,
+      "wrong_unit": 37,
+      "wrong_direction": 6,
+      "wrong_aircraft": 2
+    },
+    "wrong_direction": {
+      "wrong_unit": 2,
+      "wrong_direction": 64,
+      "omitted_item": 21,
+      "wrong_value": 16,
+      "wrong_aircraft": 3
+    },
+    "wrong_unit": {
+      "wrong_unit": 89,
+      "omitted_item": 41,
+      "wrong_direction": 3,
+      "ack_only": 7
+    }
+  },
+  "mean_confidence": 0.4585
+}

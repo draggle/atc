@@ -1,0 +1,631 @@
+"""Prioritized planning, fixed-route baseline, and replanning. docs/07-build-spec.md section 5.
+
+Order flights (airborne first, then by entry time). For each flight build candidates
+(ideal direct path, entry delays, speed and altitude changes, doglegs around the first
+conflict point), sort by cost, keep the first that neither conflicts with already-planned
+flights nor crosses a blocked zone. Then an improvement pass reorders the highest-cost
+flight while the time budget lasts.
+
+The planner never tests below HARD_SEP_NM / HARD_SEP_FT. `buffer_nm` only adds to it.
+A SAMPLING_MARGIN_NM is added on top so the 10 s sampling cannot hide a breach.
+
+Change strings follow a fixed grammar that planner/cards.py parses:
+    direct <WPT> saves <nm> NM [from t=<s>s]
+    delay entry <s> s to clear <CS>
+    speed <kt> kt (<+/-pct>%) [from t=<s>s] to clear <CS>
+    altitude <ft> ft (<+/-delta>) [from t=<s>s] to clear <CS>
+    heading <hhh> from t=<s>s (<n> NM <left|right> dogleg, then direct <WPT>) to clear <CS>
+The optional "from t=" appears when replanning an airborne flight: the change starts when the
+frozen window ends, and the card's urgency is derived from it.
+    emergency turn <left|right> heading <hhh> to clear <CS>
+    emergency <climb|descend> <ft> ft to clear <CS>
+"""
+from __future__ import annotations
+
+import math
+import time
+from dataclasses import dataclass, field
+
+import numpy as np
+
+from planner.conflicts import Grid, SEP_FT, SEP_NM, crosses_zone, pairwise_conflicts
+from planner.trajectory import DT, polyline_length, route_points, sample_path, sample_straight, samples_array, to_planned_path
+from schemas import AircraftState, Disruption, FlightSpec, Plan, PlannedPath, Scenario, Waypoint, Zone
+from sim.geo import bearing_deg
+
+HARD_SEP_NM = SEP_NM
+HARD_SEP_FT = SEP_FT
+SAMPLING_MARGIN_NM = 1.0
+INTRUDER_BASE_NM = 10.0  # uncooperative traffic: 10 NM growing 1 NM per minute of look-ahead
+INTRUDER_GROWTH_NM_PER_MIN = 1.0
+INTRUDER_SEP_FT = 2000.0
+INTRUDER_HORIZON_S = 1200.0
+EMERGENCY_LOOKAHEAD_S = 120.0
+EMERGENCY_LEG_S = 90.0
+DEVIATION_NM = 1.5  # off the previous path by more than this => replan from the real position
+MIN_ALT_FT, MAX_ALT_FT = 20000.0, 41000.0
+
+# Cost weights, all in "seconds equivalent".
+ALT_PENALTY_S_PER_1000FT = 45.0
+SPEED_PENALTY_S_PER_PCT = 6.0
+PREV_DEVIATION_S_PER_NM = 4.0
+DOGLEG_FIXED_S = 20.0
+
+
+@dataclass
+class _Flight:
+    callsign: str
+    start: tuple[float, float]
+    start_t: float
+    alt0: float
+    pref_alt: float
+    gs: float
+    exit: tuple[float, float]
+    exit_name: str
+    airborne: bool
+    is_intruder: bool = False
+    hdg: float | None = None
+    prefix: np.ndarray = field(default_factory=lambda: np.zeros((0, 4)))
+    prev: np.ndarray | None = None
+    prev_changes: list[str] = field(default_factory=list)
+    route_pts: list[tuple[float, float]] = field(default_factory=list)
+    deviated: bool = False
+
+
+@dataclass
+class _Result:
+    samples: np.ndarray
+    cost: float
+    changes: list[str]
+    conflicts_with: list[str]
+
+
+# --------------------------------------------------------------------------- helpers
+
+def _wp_dict(waypoints) -> dict[str, Waypoint]:
+    if isinstance(waypoints, dict):
+        return waypoints
+    return {w.name: w for w in waypoints}
+
+
+def _nearest_wp(x: float, y: float, wps: dict[str, Waypoint]) -> str:
+    return min(wps.values(), key=lambda w: math.hypot(w.x_nm - x, w.y_nm - y)).name if wps else "EXIT"
+
+
+def _flights_of(src: Scenario | list[FlightSpec]) -> list[FlightSpec]:
+    return list(src.flights) if isinstance(src, Scenario) else list(src)
+
+
+def predict_intruder(x: float, y: float, hdg: float, gs: float, alt: float, now_t: float,
+                     horizon_s: float = INTRUDER_HORIZON_S) -> np.ndarray:
+    """Straight-line prediction samples (t, x, y, alt) for an uncooperative aircraft."""
+    return sample_straight(x, y, hdg, gs, now_t, alt, horizon_s)
+
+
+def intruder_radius(samples: np.ndarray, now_t: float) -> np.ndarray:
+    """Required horizontal separation from an intruder, growing with look-ahead time."""
+    return INTRUDER_BASE_NM + INTRUDER_GROWTH_NM_PER_MIN * np.maximum(samples[:, 0] - now_t, 0) / 60.0
+
+
+def _build_flights(specs: list[FlightSpec], wps: dict[str, Waypoint], states: list[AircraftState] | None,
+                   now_t: float, previous: Plan | None, frozen_s: float) -> list[_Flight]:
+    st = {s.callsign: s for s in (states or [])}
+    prev = {p.callsign: p for p in previous.paths} if previous else {}
+    out: list[_Flight] = []
+    for f in specs:
+        pts = route_points(f.route, wps)
+        s = st.get(f.callsign)
+        if s is None and states is not None and f.entry_time_s <= now_t:
+            continue  # already left the sector
+        if f.is_intruder:
+            if s is None and f.entry_time_s > now_t:
+                continue
+            x, y = (s.x_nm, s.y_nm) if s else (f.x_nm or 0.0, f.y_nm or 0.0)
+            hdg = s.hdg_deg if s else (f.hdg_deg or 0.0)
+            gs = s.gs_kt if s else f.gs_kt
+            alt = s.alt_ft if s else f.alt_ft
+            out.append(_Flight(f.callsign, (x, y), max(now_t, f.entry_time_s), alt, alt, gs, (x, y), "",
+                               True, True, hdg))
+            continue
+        if not pts and not (f.x_nm is not None and f.y_nm is not None):
+            continue
+        exit_pt = pts[-1] if pts else (f.x_nm, f.y_nm)
+        exit_name = f.route[-1] if f.route else _nearest_wp(*exit_pt, wps)
+        if s is not None:
+            start, start_t, alt0, airborne = (s.x_nm, s.y_nm), now_t, s.alt_ft, True
+            gs = s.gs_kt
+            hdg = s.hdg_deg
+        else:
+            start = pts[0] if f.x_nm is None else (f.x_nm, f.y_nm)
+            start_t, alt0, gs, hdg = f.entry_time_s, f.alt_ft, f.gs_kt, f.hdg_deg
+            airborne = f.entry_time_s <= now_t
+        # Airborne: the preferred level is whatever the flight is currently cleared to, so the
+        # ideal candidate holds it and level changes are expressed relative to it.
+        pref_alt = s.target_alt_ft if s is not None else f.alt_ft
+        fl = _Flight(f.callsign, start, start_t, alt0, pref_alt, gs, exit_pt, exit_name, airborne,
+                     False, hdg, route_pts=pts)
+        p = prev.get(f.callsign)
+        if p is not None:
+            arr = samples_array(p)
+            fl.prev = arr
+            fl.prev_changes = list(p.changes)
+            if airborne and arr.shape[0] and s is not None:
+                k = int(np.argmin(np.abs(arr[:, 0] - now_t)))
+                off = math.hypot(arr[k, 1] - s.x_nm, arr[k, 2] - s.y_nm) if abs(arr[k, 0] - now_t) <= DT else float("inf")
+                fl.deviated = off > DEVIATION_NM
+            if airborne and frozen_s > 0 and arr.shape[0] and not fl.deviated:
+                keep = (arr[:, 0] >= now_t - 1e-6) & (arr[:, 0] <= now_t + frozen_s + 1e-6)
+                fl.prefix = arr[keep]
+        if s is not None and frozen_s > 0 and fl.prefix.shape[0] == 0:
+            # Off plan (or no plan): freeze a straight projection of what the plane is doing now.
+            fl.prefix = sample_straight(s.x_nm, s.y_nm, s.hdg_deg, s.gs_kt, now_t, s.alt_ft, frozen_s)
+            if s.target_alt_ft != s.alt_ft and fl.prefix.shape[0]:
+                step = 1500.0 / 60.0 * (fl.prefix[:, 0] - now_t)
+                fl.prefix[:, 3] = s.alt_ft + np.sign(s.target_alt_ft - s.alt_ft) * np.minimum(step, abs(s.target_alt_ft - s.alt_ft))
+        out.append(fl)
+    return out
+
+
+def _candidate_samples(fl: _Flight, points: list[tuple[float, float]], gs: float, alt_target: float,
+                       t0: float) -> np.ndarray:
+    """Frozen prefix followed by the new leg. `points[0]` must be the leg start."""
+    if fl.prefix.shape[0]:
+        last = fl.prefix[-1]
+        leg = sample_path([(last[1], last[2])] + points[1:], gs, float(last[0]), float(last[3]), alt_target)
+        leg = leg[leg[:, 0] > last[0] + 1e-6] if leg.shape[0] else leg
+        return np.vstack([fl.prefix, leg]) if leg.shape[0] else fl.prefix
+    return sample_path(points, gs, t0, fl.alt0, alt_target)
+
+
+def _leg_start(fl: _Flight) -> tuple[tuple[float, float], float, float]:
+    """(point, t, alt) where new planning begins: end of the frozen prefix or the entry."""
+    if fl.prefix.shape[0]:
+        last = fl.prefix[-1]
+        return (float(last[1]), float(last[2])), float(last[0]), float(last[3])
+    return fl.start, fl.start_t, fl.alt0
+
+
+def _prev_deviation(fl: _Flight, samples: np.ndarray) -> float:
+    if fl.prev is None or samples.shape[0] == 0:
+        return 0.0
+    a = fl.prev
+    ia = np.rint(a[:, 0] / DT).astype(int)
+    ib = np.rint(samples[:, 0] / DT).astype(int)
+    common, xa, xb = np.intersect1d(ia, ib, return_indices=True)
+    if common.size == 0:
+        return 0.0
+    d = np.hypot(a[xa, 1] - samples[xb, 1], a[xa, 2] - samples[xb, 2])
+    return float(d.mean()) * PREV_DEVIATION_S_PER_NM
+
+
+@dataclass
+class _Cand:
+    samples: np.ndarray
+    cost: float
+    changes: list[str]
+    tag: str
+
+
+def _candidates(fl: _Flight, grid: Grid, zones: list[Zone], with_direct: bool,
+                blocker: str | None = None) -> list[_Cand]:
+    """First-tier candidates. `blocker` names who the ideal conflicted with, for the change text."""
+    start, t0, alt0 = _leg_start(fl)
+    ideal_pts = [start, fl.exit]
+    direct_len = polyline_length(ideal_pts)
+    ideal = _candidate_samples(fl, ideal_pts, fl.gs, fl.pref_alt, t0)
+    ideal_time = direct_len / fl.gs * 3600.0
+    base_changes: list[str] = []
+    if with_direct:
+        fixed = polyline_length(fl.route_pts) if fl.route_pts else direct_len
+        saved = fixed - direct_len if not fl.airborne else _remaining_fixed(fl) - direct_len
+        if saved > 0.5:
+            base_changes.append(f"direct {fl.exit_name} saves {saved:.1f} NM")
+    who = blocker or "traffic"
+    at = f" from t={t0:.0f}s" if fl.prefix.shape[0] else ""
+    if at and base_changes:
+        base_changes[0] += at
+    cands = [_Cand(ideal, _prev_deviation(fl, ideal), list(base_changes), "ideal")]
+
+    if not fl.airborne:
+        for d in (60, 120, 180):
+            s = _candidate_samples(fl, ideal_pts, fl.gs, fl.pref_alt, t0 + d)
+            cands.append(_Cand(s, d + _prev_deviation(fl, s), base_changes + [f"delay entry {d} s to clear {who}"], "delay"))
+    for pct in (-5, 5, -10, 10):
+        gs = round(fl.gs * (1 + pct / 100.0) / 5) * 5
+        s = _candidate_samples(fl, ideal_pts, gs, fl.pref_alt, t0)
+        added_t = max(0.0, direct_len / gs * 3600.0 - ideal_time)
+        cost = added_t + abs(pct) * SPEED_PENALTY_S_PER_PCT + _prev_deviation(fl, s)
+        cands.append(_Cand(s, cost, base_changes + [f"speed {gs:.0f} kt ({pct:+d}%){at} to clear {who}"], "speed"))
+    for dalt in (1000, -1000, 2000, -2000):
+        alt = fl.pref_alt + dalt
+        if not (MIN_ALT_FT <= alt <= MAX_ALT_FT):
+            continue
+        s = _candidate_samples(fl, ideal_pts, fl.gs, alt, t0)
+        cost = abs(dalt) / 1000.0 * ALT_PENALTY_S_PER_1000FT + _prev_deviation(fl, s)
+        cands.append(_Cand(s, cost, base_changes + [f"altitude {alt:.0f} ft ({dalt:+d}){at} to clear {who}"], "altitude"))
+
+    # Doglegs around the first conflict point (traffic) and around crossed zones.
+    pivots: list[tuple[float, float, float]] = []  # (x, y, extra offset)
+    fc = grid.first_conflict(ideal)
+    if fc is not None:
+        j = fc[1]
+        pivots.append((float(ideal[j, 1]), float(ideal[j, 2]), 0.0))
+    for z in zones:
+        if crosses_zone(ideal, [z]):
+            px, py = _project(start, fl.exit, (z.x_nm, z.y_nm))
+            pivots.append((px, py, z.radius_nm))
+    ux, uy = fl.exit[0] - start[0], fl.exit[1] - start[1]
+    L = math.hypot(ux, uy) or 1.0
+    ux, uy = ux / L, uy / L
+    nx, ny = uy, -ux  # right-hand normal
+    for px, py, extra in pivots:
+        for off in (5, -5, 10, -10):
+            o = off + math.copysign(extra + 3.0, off) if extra else off
+            dog = (px + nx * o, py + ny * o)
+            pts = [start, dog, fl.exit]
+            s = _candidate_samples(fl, pts, fl.gs, fl.pref_alt, t0)
+            added_d = polyline_length(pts) - direct_len
+            cost = DOGLEG_FIXED_S + added_d * 3600.0 / fl.gs * 2 + _prev_deviation(fl, s)
+            hdg = bearing_deg(start[0], start[1], dog[0], dog[1])
+            side = "right" if o > 0 else "left"
+            txt = f"heading {hdg:03.0f} from t={t0:.0f}s ({abs(o):.0f} NM {side} dogleg, then direct {fl.exit_name}) to clear {who}"
+            cands.append(_Cand(s, cost, base_changes + [txt], "dogleg"))
+    cands.sort(key=lambda c: c.cost)
+    return cands
+
+
+def _second_tier(fl: _Flight, first: list[_Cand]) -> list[_Cand]:
+    """Dogleg x altitude combinations, tried only when every first-tier candidate failed."""
+    out = []
+    doglegs = [c for c in first if c.tag == "dogleg"]
+    start, t0, alt0 = _leg_start(fl)
+    for c in doglegs:
+        # Recover the dogleg point from the samples' turn: cheaper to re-derive from text is messy,
+        # so rebuild geometry from the candidate's max lateral offset sample.
+        s = c.samples
+        if s.shape[0] < 3:
+            continue
+        k = _farthest_from_line(s, start, fl.exit)
+        dog = (float(s[k, 1]), float(s[k, 2]))
+        for dalt in (1000, -1000, 2000, -2000):
+            alt = fl.pref_alt + dalt
+            if not (MIN_ALT_FT <= alt <= MAX_ALT_FT):
+                continue
+            pts = [start, dog, fl.exit]
+            ss = _candidate_samples(fl, pts, fl.gs, alt, t0)
+            cost = c.cost + abs(dalt) / 1000.0 * ALT_PENALTY_S_PER_1000FT
+            who = c.changes[-1].rsplit(" to clear ", 1)[-1] if c.changes else "traffic"
+            at = f" from t={t0:.0f}s" if fl.prefix.shape[0] else ""
+            out.append(_Cand(ss, cost, c.changes + [f"altitude {alt:.0f} ft ({dalt:+d}){at} to clear {who}"], "combo"))
+    out.sort(key=lambda c: c.cost)
+    return out
+
+
+def _farthest_from_line(s: np.ndarray, a: tuple[float, float], b: tuple[float, float]) -> int:
+    ux, uy = b[0] - a[0], b[1] - a[1]
+    L = math.hypot(ux, uy) or 1.0
+    d = np.abs((s[:, 1] - a[0]) * uy - (s[:, 2] - a[1]) * ux) / L
+    return int(np.argmax(d))
+
+
+def _project(a: tuple[float, float], b: tuple[float, float], p: tuple[float, float]) -> tuple[float, float]:
+    ux, uy = b[0] - a[0], b[1] - a[1]
+    L2 = ux * ux + uy * uy or 1.0
+    t = max(0.0, min(1.0, ((p[0] - a[0]) * ux + (p[1] - a[1]) * uy) / L2))
+    return a[0] + ux * t, a[1] + uy * t
+
+
+def _remaining_fixed(fl: _Flight) -> float:
+    """Length of the fixed route from the flight's current position, joining at the nearest leg."""
+    pts = fl.route_pts
+    if len(pts) < 2:
+        return math.hypot(fl.exit[0] - fl.start[0], fl.exit[1] - fl.start[1])
+    if math.hypot(pts[0][0] - fl.start[0], pts[0][1] - fl.start[1]) < 0.5:
+        return polyline_length(pts)
+    best_i, best_d = 0, float("inf")
+    for i in range(len(pts) - 1):
+        px, py = _project(pts[i], pts[i + 1], fl.start)
+        d = math.hypot(px - fl.start[0], py - fl.start[1])
+        if d < best_d:
+            best_i, best_d = i, d
+    return polyline_length([fl.start] + pts[best_i + 1:])
+
+
+def _plan_one(fl: _Flight, grid: Grid, zones: list[Zone], buffer_nm: float, with_direct: bool) -> _Result:
+    cands = _candidates(fl, grid, zones, with_direct)
+    fc = grid.first_conflict(cands[0].samples) if cands else None
+    if fc is not None:
+        cands = _candidates(fl, grid, zones, with_direct, blocker=fc[0])
+    tiers = [cands]
+    least: tuple[int, _Cand, list[str]] | None = None
+    for tier_i in range(2):
+        for c in tiers[tier_i]:
+            if crosses_zone(c.samples, zones, margin_nm=SAMPLING_MARGIN_NM):
+                continue
+            m = grid.conflicts(c.samples)
+            if not m.any():
+                return _Result(c.samples, c.cost, c.changes, [])
+            n = int(m.sum())
+            if least is None or n < least[0]:
+                least = (n, c, [grid.names[i] for i in np.where(m.any(axis=1))[0]])
+        if tier_i == 0:
+            tiers.append(_second_tier(fl, cands))
+    if least is None:  # everything crosses a zone: fly the ideal and say so
+        c = cands[0]
+        return _Result(c.samples, c.cost, c.changes + ["unresolved: crosses blocked zone"], [])
+    n, c, who = least
+    return _Result(c.samples, c.cost + 1e6, c.changes + [f"unresolved conflict with {', '.join(who)}"], who)
+
+
+def _add_to_grid(grid: Grid, fl: _Flight, samples: np.ndarray, buffer_nm: float, now_t: float) -> None:
+    if fl.is_intruder:
+        grid.add(fl.callsign, samples, intruder_radius(samples, now_t), INTRUDER_SEP_FT)
+    else:
+        grid.add(fl.callsign, samples, HARD_SEP_NM + max(0.0, buffer_nm) + SAMPLING_MARGIN_NM, HARD_SEP_FT)
+
+
+def _sequential(order: list[_Flight], grid: Grid, zones: list[Zone], buffer_nm: float, now_t: float,
+                with_direct: bool) -> dict[str, _Result]:
+    results: dict[str, _Result] = {}
+    for fl in order:
+        r = _plan_one(fl, grid, zones, buffer_nm, with_direct)
+        results[fl.callsign] = r
+        _add_to_grid(grid, fl, r.samples, buffer_nm, now_t)
+    return results
+
+
+def _intruder_grid(flights: list[_Flight], now_t: float) -> Grid:
+    grid = Grid()
+    for fl in flights:
+        if fl.is_intruder:
+            s = predict_intruder(fl.start[0], fl.start[1], fl.hdg or 0.0, fl.gs, fl.alt0, fl.start_t)
+            _add_to_grid(grid, fl, s, 0.0, now_t)
+    return grid
+
+
+def _finish(results: dict[str, _Result], flights: list[_Flight], buffer_nm: float,
+            base_dist: float, base_time: float, trigger: str) -> Plan:
+    paths: list[PlannedPath] = []
+    intruder_conf = 0
+    for fl in flights:
+        if fl.is_intruder or fl.callsign not in results:
+            continue
+        r = results[fl.callsign]
+        cost = r.cost if r.cost < 1e6 else r.cost - 1e6
+        paths.append(to_planned_path(fl.callsign, r.samples, cost, r.changes))
+        intruder_conf += sum(1 for w in r.conflicts_with if any(f.callsign == w and f.is_intruder for f in flights))
+    conflicts = len(pairwise_conflicts(paths, HARD_SEP_NM + max(0.0, buffer_nm), HARD_SEP_FT)) + intruder_conf
+    return Plan(
+        paths=paths, total_distance_nm=sum(p.distance_nm for p in paths),
+        total_time_s=sum(p.time_s for p in paths), baseline_distance_nm=base_dist,
+        baseline_time_s=base_time, conflicts=conflicts, trigger=trigger,
+    )
+
+
+# --------------------------------------------------------------------------- public API
+
+def baseline(scenario: Scenario, buffer_nm: float | None = None) -> Plan:
+    """Same flights on their fixed waypoint routes, first come first served, no changes.
+
+    `conflicts` counts pairs that breach 5 NM + buffer / 1,000 ft. Reported honestly.
+    """
+    wps = _wp_dict(scenario.waypoints)
+    buf = scenario.separation_buffer_nm if buffer_nm is None else buffer_nm
+    paths = []
+    for f in scenario.flights:
+        if f.is_intruder:
+            continue
+        pts = route_points(f.route, wps)
+        s = sample_path(pts, f.gs_kt, f.entry_time_s, f.alt_ft, None)
+        paths.append(to_planned_path(f.callsign, s, 0.0, []))
+    dist = sum(p.distance_nm for p in paths)
+    dur = sum(p.time_s for p in paths)
+    return Plan(paths=paths, total_distance_nm=dist, total_time_s=dur, baseline_distance_nm=dist,
+                baseline_time_s=dur, conflicts=len(pairwise_conflicts(paths, HARD_SEP_NM + buf, HARD_SEP_FT)),
+                trigger="baseline")
+
+
+def plan(scenario_or_flights: Scenario | list[FlightSpec], waypoints, zones: list[Zone],
+         buffer_nm: float, previous: Plan | None = None, frozen_s: float = 0.0,
+         time_budget_s: float = 1.5, *, now_t: float = 0.0, states: list[AircraftState] | None = None,
+         trigger: str = "initial") -> Plan:
+    """Prioritized plan for every flight. See module docstring.
+
+    `states` (current radar picture) makes airborne flights start from where they are.
+    `previous` adds a deviation penalty and, with `frozen_s`, freezes the near-term path.
+    """
+    t_start = time.perf_counter()
+    wps = _wp_dict(waypoints)
+    specs = _flights_of(scenario_or_flights)
+    zones = list(zones or [])
+    flights = _build_flights(specs, wps, states, now_t, previous, frozen_s)
+    regular = [f for f in flights if not f.is_intruder]
+    order = sorted(regular, key=lambda f: (not f.airborne, f.start_t))
+
+    def run(seq: list[_Flight]) -> tuple[dict[str, _Result], float]:
+        grid = _intruder_grid(flights, now_t)
+        res = _sequential(seq, grid, zones, buffer_nm, now_t, True)
+        return res, sum(r.cost for r in res.values())
+
+    best, best_cost = run(order)
+    tried: set[str] = set()
+    while time.perf_counter() - t_start < time_budget_s and len(tried) < len(order):
+        worst = max((f for f in order if f.callsign not in tried), key=lambda f: best[f.callsign].cost, default=None)
+        if worst is None:
+            break
+        tried.add(worst.callsign)
+        if best[worst.callsign].cost <= 0:
+            break
+        cand_order = [worst] + [f for f in order if f is not worst]
+        res, cost = run(cand_order)
+        if cost < best_cost - 1e-6:
+            best, best_cost, order = res, cost, cand_order
+
+    if previous is not None:
+        base_d, base_t = previous.baseline_distance_nm, previous.baseline_time_s
+    elif isinstance(scenario_or_flights, Scenario):
+        b = baseline(scenario_or_flights, buffer_nm)
+        base_d, base_t = b.total_distance_nm, b.total_time_s
+    else:
+        base_d = sum(polyline_length(f.route_pts) for f in regular)
+        base_t = sum(polyline_length(f.route_pts) / f.gs * 3600 for f in regular)
+    return _finish(best, flights, buffer_nm, base_d, base_t, trigger)
+
+
+def _specs_from_plan(previous: Plan, states: list[AircraftState], wps: dict[str, Waypoint]) -> list[FlightSpec]:
+    """Reconstruct flight specs when the caller has no scenario: exit = last sample, alt = final alt."""
+    st = {s.callsign: s for s in states}
+    specs = []
+    for p in previous.paths:
+        a = samples_array(p)
+        if a.shape[0] < 2:
+            continue
+        gs = float(np.hypot(np.diff(a[:, 1]), np.diff(a[:, 2])).mean() / DT * 3600)
+        exit_name = _nearest_wp(a[-1, 1], a[-1, 2], wps)
+        s = st.get(p.callsign)
+        specs.append(FlightSpec(callsign=p.callsign, entry_time_s=float(a[0, 0]), route=[exit_name],
+                                alt_ft=float(a[-1, 3]), gs_kt=gs, x_nm=float(a[0, 1]), y_nm=float(a[0, 2]),
+                                actype=s.actype if s else "A320"))
+    for s in states:
+        if s.is_intruder:
+            specs.append(FlightSpec(callsign=s.callsign, route=[], entry_time_s=s.t, alt_ft=s.alt_ft, gs_kt=s.gs_kt,
+                                    is_intruder=True, x_nm=s.x_nm, y_nm=s.y_nm, hdg_deg=s.hdg_deg, actype=s.actype))
+    return specs
+
+
+def _emergency(fl: _Flight, threats: Grid, now_t: float) -> _Result | None:
+    """If a LoS at the hard floor is predicted within EMERGENCY_LOOKAHEAD_S, pick an immediate escape."""
+    if fl.prev is None or fl.hdg is None:
+        return None
+    near = fl.prev[(fl.prev[:, 0] >= now_t) & (fl.prev[:, 0] <= now_t + EMERGENCY_LOOKAHEAD_S)]
+    fc = threats.first_conflict(near)
+    if fc is None:
+        return None
+    who = fc[0]
+    leg_nm = fl.gs / 3600.0 * EMERGENCY_LEG_S
+    options: list[tuple[float, np.ndarray, str]] = []
+    for side, sign in (("left", -1), ("right", 1)):
+        hdg = (fl.hdg + sign * 30) % 360
+        r = math.radians(hdg)
+        p1 = (fl.start[0] + math.sin(r) * leg_nm, fl.start[1] + math.cos(r) * leg_nm)
+        s = sample_path([fl.start, p1, fl.exit], fl.gs, now_t, fl.alt0, fl.pref_alt)
+        options.append((threats.min_distance(s), s, f"emergency turn {side} heading {hdg:03.0f} to clear {who}"))
+    for dalt in (1000, -1000):
+        alt = fl.alt0 + dalt
+        if MIN_ALT_FT <= alt <= MAX_ALT_FT:
+            s = sample_path([fl.start, fl.exit], fl.gs, now_t, fl.alt0, alt)
+            verb = "climb" if dalt > 0 else "descend"
+            options.append((threats.min_distance(s), s, f"emergency {verb} {alt:.0f} ft to clear {who}"))
+    d, s, txt = max(options, key=lambda o: o[0])
+    return _Result(s, 0.0, [txt], [])
+
+
+def replan(previous_plan: Plan, states: list[AircraftState], waypoints, zones: list[Zone], buffer: float,
+           disruption: Disruption | None = None, frozen_s: float = 60.0, *,
+           flights: list[FlightSpec] | None = None, now_t: float | None = None,
+           time_budget_s: float = 1.0) -> Plan:
+    """Repair the previous plan: only conflicting flights move, widened to neighbours if needed.
+
+    Intruders (from `states` or `disruption`) are predicted straight-line with a buffer that
+    starts at 10 NM and grows 1 NM per minute. Storm/closed disruptions become zones.
+    The first `frozen_s` of every airborne path is kept as flown. Emergency layer: a LoS
+    at the hard floor predicted within 120 s gets an immediate 30-degree turn or 1,000 ft
+    level change, skipping optimization.
+    """
+    t_start = time.perf_counter()
+    wps = _wp_dict(waypoints)
+    now = now_t if now_t is not None else (max((s.t for s in states), default=0.0))
+    zones = list(zones or [])
+    specs = list(flights) if flights is not None else _specs_from_plan(previous_plan, states, wps)
+    trigger = "replan"
+    # Trigger label: disruption kind, else "deviation" if someone is off plan, else "replan".
+    if disruption is not None:
+        trigger = disruption.kind
+        if disruption.kind == "intruder":
+            if not any(s.callsign == disruption.id for s in specs):
+                specs.append(FlightSpec(callsign=disruption.id, route=[], entry_time_s=now, is_intruder=True,
+                                        x_nm=disruption.x_nm, y_nm=disruption.y_nm, hdg_deg=disruption.hdg_deg or 0.0,
+                                        gs_kt=disruption.gs_kt or 450.0, alt_ft=_intruder_alt(disruption, states)))
+        else:
+            zones.append(Zone(id=disruption.id, x_nm=disruption.x_nm, y_nm=disruption.y_nm,
+                              radius_nm=disruption.radius_nm, kind=disruption.kind))
+    all_fl = _build_flights(specs, wps, states, now, previous_plan, frozen_s)
+    regular = [f for f in all_fl if not f.is_intruder]
+    if disruption is None and any(f.deviated for f in regular):
+        trigger = "deviation"
+    threats = _intruder_grid(all_fl, now)
+
+    # Emergency layer first.
+    fixed: dict[str, _Result] = {}
+    for fl in regular:
+        if fl.airborne:
+            r = _emergency(fl, threats, now)
+            if r is not None:
+                fixed[fl.callsign] = r
+
+    # Hold everyone else on their previous path; find who now conflicts.
+    def prev_from_now(fl: _Flight) -> np.ndarray:
+        if fl.prev is None:
+            return np.zeros((0, 4))
+        return fl.prev[fl.prev[:, 0] >= now - 1e-6]
+
+    held = [fl for fl in regular if fl.callsign not in fixed]
+    grid = Grid()
+    for name, r in fixed.items():
+        fl = next(f for f in all_fl if f.callsign == name)
+        _add_to_grid(grid, fl, r.samples, buffer, now)
+    for i in range(len(threats.names)):
+        grid.names.append(threats.names[i])
+        grid.X = np.vstack([grid.X, threats.X[i]]); grid.Y = np.vstack([grid.Y, threats.Y[i]])
+        grid.A = np.vstack([grid.A, threats.A[i]]); grid.rad = np.vstack([grid.rad, threats.rad[i]])
+        grid.vert = np.vstack([grid.vert, threats.vert[i:i + 1]])
+    moving: list[_Flight] = []
+    for fl in held:
+        s = prev_from_now(fl)
+        if fl.deviated or s.shape[0] == 0 or grid.conflicting_names(s) or crosses_zone(s, zones):
+            moving.append(fl)
+        else:
+            _add_to_grid(grid, fl, s, buffer, now)
+    # Pairwise among held flights (prev plan may already be stale).
+    held_paths = [to_planned_path(fl.callsign, prev_from_now(fl)) for fl in held if fl not in moving]
+    for a, b, _t in pairwise_conflicts(held_paths, HARD_SEP_NM + max(0.0, buffer), HARD_SEP_FT):
+        for name in (a, b):
+            fl = next(f for f in held if f.callsign == name)
+            if fl not in moving:
+                moving.append(fl)
+                grid.remove(name)
+
+    results: dict[str, _Result] = dict(fixed)
+    for fl in held:
+        if fl not in moving:
+            results[fl.callsign] = _Result(prev_from_now(fl), 0.0, list(fl.prev_changes), [])
+
+    for _round in range(4):
+        order = sorted(moving, key=lambda f: (not f.airborne, f.start_t))
+        g = _clone(grid)
+        res = _sequential(order, g, zones, buffer, now, True)
+        bad = [cs for cs, r in res.items() if r.conflicts_with]
+        results.update(res)
+        if not bad or time.perf_counter() - t_start > time_budget_s:
+            break
+        neighbours = {w for cs in bad for w in res[cs].conflicts_with}
+        widened = [fl for fl in held if fl.callsign in neighbours and fl not in moving]
+        if not widened:
+            widened = [fl for fl in held if fl not in moving]  # last resort: replan everyone
+        if not widened:
+            break
+        for fl in widened:
+            grid.remove(fl.callsign)
+            moving.append(fl)
+    return _finish(results, all_fl, buffer, previous_plan.baseline_distance_nm, previous_plan.baseline_time_s, trigger)
+
+
+def _clone(g: Grid) -> Grid:
+    return Grid(list(g.names), g.X.copy(), g.Y.copy(), g.A.copy(), g.rad.copy(), g.vert.copy())
+
+
+def _intruder_alt(d: Disruption, states: list[AircraftState]) -> float:
+    for s in states:
+        if s.callsign == d.id:
+            return s.alt_ft
+    return 30000.0

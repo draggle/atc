@@ -1,0 +1,252 @@
+"""Turn plan changes into instruction cards with correct radio phraseology.
+
+Parses the change-string grammar written by planner/plan.py. One card per changed flight,
+sorted by urgency (seconds until the change must take effect).
+"""
+from __future__ import annotations
+
+import math
+import re
+from dataclasses import dataclass
+
+import numpy as np
+
+from planner.trajectory import samples_array
+from schemas import AircraftState, InstructionCard, Item, Plan, PlannedPath, SimCommand
+
+TELEPHONY = {
+    "ACA": "Air Canada", "WJA": "WestJet", "POE": "Porter", "JZA": "Jazz",
+    "DAL": "Delta", "UAL": "United", "AAL": "American",
+}
+DIGITS = {"0": "zero", "1": "one", "2": "two", "3": "three", "4": "four", "5": "five",
+          "6": "six", "7": "seven", "8": "eight", "9": "nine"}
+NATO = {c: w for c, w in zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", [
+    "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliett",
+    "kilo", "lima", "mike", "november", "oscar", "papa", "quebec", "romeo", "sierra", "tango",
+    "uniform", "victor", "whiskey", "xray", "yankee", "zulu"])}
+TRANSITION_FT = 18000
+DOGLEG_CAPTURE_NM = 2.0
+
+_AT = re.compile(r" from t=(\d+)s")
+_RE = {
+    "direct": re.compile(r"^direct (\w+)"),
+    "delay": re.compile(r"^delay entry (\d+) s"),
+    "speed": re.compile(r"^speed (\d+) kt \(([+-]\d+)%\)"),
+    "altitude": re.compile(r"^altitude (\d+) ft \(([+-]\d+)\)"),
+    "heading": re.compile(r"^heading (\d{3}) from t=(\d+)s \((\d+) NM (left|right) dogleg, then direct (\w+)\)"),
+    "emerg_turn": re.compile(r"^emergency turn (left|right) heading (\d{3})"),
+    "emerg_alt": re.compile(r"^emergency (climb|descend) (\d+) ft"),
+}
+
+
+@dataclass
+class Change:
+    kind: str
+    value: str | float
+    text: str
+    at_t: float | None = None
+    extra: dict | None = None
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return self.kind, str(self.value)
+
+    @property
+    def reason_who(self) -> str:
+        m = re.search(r"to clear (\S+)$", self.text)
+        return m.group(1) if m else "traffic"
+
+
+def parse_change(text: str) -> Change | None:
+    """Structured view of one change string; None for unresolved/notes."""
+    at = _AT.search(text)
+    at_t = float(at.group(1)) if at else None
+    if m := _RE["direct"].match(text):
+        saved = re.search(r"saves ([\d.]+) NM", text)
+        return Change("direct", m.group(1), text, at_t, extra={"saves": float(saved.group(1)) if saved else 0.0})
+    if m := _RE["delay"].match(text):
+        return Change("delay", float(m.group(1)), text)
+    if m := _RE["speed"].match(text):
+        return Change("speed", float(m.group(1)), text, at_t, extra={"pct": int(m.group(2))})
+    if m := _RE["altitude"].match(text):
+        return Change("altitude", float(m.group(1)), text, at_t, extra={"delta": int(m.group(2))})
+    if m := _RE["heading"].match(text):
+        return Change("heading", float(m.group(1)), text, at_t=float(m.group(2)),
+                      extra={"offset": float(m.group(3)), "side": m.group(4), "then_direct": m.group(5)})
+    if m := _RE["emerg_turn"].match(text):
+        return Change("heading", float(m.group(2)), text, at_t=0.0, extra={"side": m.group(1), "emergency": True})
+    if m := _RE["emerg_alt"].match(text):
+        return Change("altitude", float(m.group(2)), text, at_t=0.0,
+                      extra={"delta": 1000 if m.group(1) == "climb" else -1000, "emergency": True})
+    return None
+
+
+# --------------------------------------------------------------------------- phraseology
+
+def say_digits(s: str | int | float) -> str:
+    s = str(int(s)) if isinstance(s, float) and s.is_integer() else str(s)
+    return " ".join(DIGITS.get(ch, NATO.get(ch.upper(), ch)) for ch in s)
+
+
+def say_callsign(callsign: str) -> str:
+    m = re.match(r"^([A-Z]{3})(\w+)$", callsign)
+    if m and m.group(1) in TELEPHONY:
+        return f"{TELEPHONY[m.group(1)]} {say_digits(m.group(2))}"
+    return say_digits(callsign)
+
+
+def say_altitude(alt_ft: float) -> str:
+    if alt_ft >= TRANSITION_FT:
+        return f"flight level {say_digits(int(round(alt_ft / 100)))}"
+    thousands, rem = divmod(int(round(alt_ft)), 1000)
+    parts = [f"{say_digits(thousands)} thousand"] if thousands else []
+    if rem:
+        parts.append(f"{say_digits(rem // 100)} hundred")
+    return " ".join(parts)
+
+
+def say_item(item: Item, current_alt_ft: float | None = None) -> str:
+    if item.type == "altitude":
+        ft = item.value * 100 if item.unit == "FL" else item.value
+        verb = item.action or "maintain"
+        return f"{verb} and maintain {say_altitude(float(ft))}"
+    if item.type == "heading":
+        hdg = f"{int(item.value):03d}"
+        if item.action in ("turn_left", "turn_right"):
+            return f"turn {item.action.split('_')[1]} heading {say_digits(hdg)}"
+        return f"fly heading {say_digits(hdg)}"
+    if item.type == "speed":
+        verb = {"reduce": "reduce speed to", "increase": "increase speed to"}.get(item.action or "", "maintain")
+        return f"{verb} {say_digits(int(item.value))} knots"
+    if item.type == "route":
+        return f"proceed direct {item.value}"
+    return str(item.value)
+
+
+def phrase_for(callsign: str, items: list[Item]) -> str:
+    return f"{say_callsign(callsign)}, " + ", ".join(say_item(i) for i in items)
+
+
+# --------------------------------------------------------------------------- items
+
+def item_for(ch: Change, current_alt_ft: float | None = None) -> Item | None:
+    if ch.kind == "altitude":
+        ft = float(ch.value)
+        delta = (ch.extra or {}).get("delta", 0)
+        if current_alt_ft is not None:
+            delta = ft - current_alt_ft
+        action = "climb" if delta > 0 else "descend" if delta < 0 else "maintain"
+        if ft >= TRANSITION_FT:
+            return Item(type="altitude", value=int(round(ft / 100)), unit="FL", action=action)
+        return Item(type="altitude", value=int(round(ft)), unit="ft", action=action)
+    if ch.kind == "heading":
+        side = (ch.extra or {}).get("side")
+        return Item(type="heading", value=int(ch.value), unit="deg", action=f"turn_{side}" if side else "fly")
+    if ch.kind == "speed":
+        pct = (ch.extra or {}).get("pct", 0)
+        return Item(type="speed", value=int(ch.value), unit="kt", action="reduce" if pct < 0 else "increase")
+    if ch.kind == "direct":
+        return Item(type="route", value=str(ch.value), unit=None, action="direct")
+    return None
+
+
+def item_to_sim_command(item: Item) -> SimCommand:
+    """What the plane does with an item. Frequency/squawk/altimeter have no motion effect."""
+    if item.type == "altitude":
+        ft = float(item.value) * 100 if item.unit == "FL" else float(item.value)
+        return SimCommand(kind="altitude", value=ft)
+    if item.type == "heading":
+        return SimCommand(kind="heading", value=float(item.value))
+    if item.type == "speed":
+        return SimCommand(kind="speed", value=float(item.value))
+    if item.type == "route" and item.action == "direct":
+        return SimCommand(kind="direct", value=str(item.value))
+    return SimCommand(kind="none")
+
+
+def reason_for(ch: Change, callsign: str) -> str:
+    who = ch.reason_who
+    ex = ch.extra or {}
+    if ex.get("emergency"):
+        return f"Immediate: predicted loss of separation with {who} within two minutes."
+    if ch.kind == "direct":
+        return f"Direct routing saves {ex.get('saves', 0):.0f} NM with no conflicts on the direct track."
+    if ch.kind == "speed":
+        return f"{'Slower' if ex.get('pct', 0) < 0 else 'Faster'} by {abs(ex.get('pct', 0))}% so {callsign} crosses behind {who}."
+    if ch.kind == "altitude":
+        return f"Level change of {abs(ex.get('delta', 0)):.0f} ft keeps {callsign} vertically clear of {who}."
+    if ch.kind == "heading":
+        return f"{ex.get('offset', 0):.0f} NM dogleg {ex.get('side', '')} of the crossing with {who}, then direct {ex.get('then_direct', '')}."
+    return f"Keeps {callsign} clear of {who}."
+
+
+# --------------------------------------------------------------------------- cards
+
+def _changes(path: PlannedPath) -> list[Change]:
+    return [c for c in (parse_change(t) for t in path.changes) if c is not None]
+
+
+def cards_from_plan(plan: Plan, previous_plan: Plan | None = None, now_t: float = 0.0,
+                    states: list[AircraftState] | None = None) -> list[InstructionCard]:
+    """One card per flight whose plan changed (relative to previous_plan, or to nothing).
+
+    Entry delays produce no card: they are applied upstream, not on frequency.
+    Cards are sorted by urgency: seconds until the change must be flying.
+    """
+    prev = {p.callsign: {c.key for c in _changes(p)} for p in previous_plan.paths} if previous_plan else {}
+    st = {s.callsign: s for s in (states or [])}
+    cards: list[InstructionCard] = []
+    for path in plan.paths:
+        changes = [c for c in _changes(path) if c.kind != "delay" and c.key not in prev.get(path.callsign, set())]
+        if not changes:
+            continue
+        alt_now = st[path.callsign].alt_ft if path.callsign in st else None
+        items = [i for i in (item_for(c, alt_now) for c in changes) if i is not None]
+        if any(i.type == "heading" for i in items):
+            items = [i for i in items if i.type != "route"]  # the heading supersedes; direct comes as a follow-up
+        if not items:
+            continue
+        arr = samples_array(path)
+        start_t = float(arr[0, 0]) if arr.shape[0] else now_t
+        at = [c.at_t for c in changes if c.at_t is not None]
+        urgency = max(0.0, (min(at) if at else start_t) - now_t) if not any((c.extra or {}).get("emergency") for c in changes) else 0.0
+        primary = max(changes, key=lambda c: 2 if (c.extra or {}).get("emergency") else 1 if c.kind != "direct" else 0)
+        cards.append(InstructionCard(
+            id=f"card-{path.callsign}-{int(now_t)}-{'-'.join(sorted(k for k, _ in (c.key for c in changes)))}",
+            callsign=path.callsign, items=items, phrase=phrase_for(path.callsign, items),
+            reason=reason_for(primary, path.callsign), urgency_s=urgency,
+        ))
+    cards.sort(key=lambda c: c.urgency_s)
+    return cards
+
+
+def followup_cards(plan: Plan, states: list[AircraftState], now_t: float) -> list[InstructionCard]:
+    """'Direct <exit>' cards for flights on a dogleg heading that have reached the dogleg point."""
+    st = {s.callsign: s for s in states}
+    out = []
+    for path in plan.paths:
+        s = st.get(path.callsign)
+        if s is None or s.target_hdg_deg is None:
+            continue
+        for c in _changes(path):
+            if c.kind != "heading" or not (c.extra or {}).get("then_direct"):
+                continue
+            arr = samples_array(path)
+            if arr.shape[0] < 3:
+                continue
+            k = _dogleg_index(arr)
+            if math.hypot(arr[k, 1] - s.x_nm, arr[k, 2] - s.y_nm) <= DOGLEG_CAPTURE_NM or now_t >= arr[k, 0] + 60:
+                item = Item(type="route", value=c.extra["then_direct"], unit=None, action="direct")
+                out.append(InstructionCard(
+                    id=f"card-{path.callsign}-{int(now_t)}-direct", callsign=path.callsign, items=[item],
+                    phrase=phrase_for(path.callsign, [item]), reason="Dogleg complete, resume direct routing.",
+                    urgency_s=0.0))
+    return out
+
+
+def _dogleg_index(arr: np.ndarray) -> int:
+    a, b = arr[0, 1:3], arr[-1, 1:3]
+    u = b - a
+    L = float(np.hypot(*u)) or 1.0
+    d = np.abs((arr[:, 1] - a[0]) * u[1] - (arr[:, 2] - a[1]) * u[0]) / L
+    return int(np.argmax(d))
