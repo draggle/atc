@@ -101,14 +101,26 @@ def test_conformance_wrong_way_for_20s_alerts():
 
 
 def test_conformance_heading_converges_or_alerts():
-    m = ConformanceMonitor()
+    from tower.conform import TURN_MARGIN_S, TURN_RATE_DEG_S
+
     c = clr("c1", "ACA123", items=[Item(type="heading", value=270, unit="deg", action="turn_left")])
+    # It never starts to turn: caught quickly, without waiting a whole turn's worth of time.
+    m = ConformanceMonitor()
     m.watch(c, now=0.0)
-    assert m.tick([state("ACA123", 30000, hdg=90)], 30.0) == []
-    v = m.tick([state("ACA123", 30000, hdg=120)], 61.0)
-    assert len(v) == 1 and "not converged" in v[0].reason
+    assert m.tick([state("ACA123", 30000, hdg=90)], 5.0) == []
+    v = m.tick([state("ACA123", 30000, hdg=91)], 40.0)
+    assert len(v) == 1 and "not turning" in v[0].reason
+    # It turns, slowly, and is given the time a 180 degree turn needs. Then it is called out.
+    m = ConformanceMonitor()
     m.watch(c, now=100.0)
-    assert m.tick([state("ACA123", 30000, hdg=265)], 130.0) == [] and m.watches == []
+    assert m.tick([state("ACA123", 30000, hdg=90)], 101.0) == []
+    assert m.tick([state("ACA123", 30000, hdg=140)], 140.0) == []
+    v = m.tick([state("ACA123", 30000, hdg=200)], 101.0 + 180 / TURN_RATE_DEG_S + TURN_MARGIN_S + 1)
+    assert len(v) == 1 and "not converged" in v[0].reason
+    # It gets there: the watch closes quietly.
+    m = ConformanceMonitor()
+    m.watch(c, now=400.0)
+    assert m.tick([state("ACA123", 30000, hdg=265)], 430.0) == [] and m.watches == []
 
 
 def test_conformance_direct_uses_bearing():
@@ -117,5 +129,6 @@ def test_conformance_direct_uses_bearing():
     m.watch(c, now=0.0)
     assert m.tick([state("ACA123", 30000, hdg=5)], 10.0) == [] and m.watches == []
     m.watch(c, now=20.0)
-    v = m.tick([state("ACA123", 30000, hdg=180)], 90.0)
+    assert m.tick([state("ACA123", 30000, hdg=180)], 25.0) == []  # first look
+    v = m.tick([state("ACA123", 30000, hdg=180)], 60.0)  # 35 s on and still flying away from it
     assert len(v) == 1 and "BOSOX" in v[0].reason

@@ -610,6 +610,8 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
         towerEnabled = msg.enabled;
         send({ type: "state", payload: stateEvent(), t: simT });
         return;
+      case "set_auto_voice":
+        return;
       case "set_auto_speak":
         autoSpeak = msg.enabled;
         send({ type: "state", payload: stateEvent(), t: simT });

@@ -176,7 +176,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
         await ws.send_text(json.dumps(hub.last_state, default=_json_default))
     if hub.last_plan:
         await ws.send_text(json.dumps(hub.last_plan, default=_json_default))
-    for card in world.cards.values():
+    for card in [c for c in world.cards.values() if not c.minor]:  # minor shortcuts are never shown
         await ws.send_text(json.dumps({"type": "instruction_card", "payload": card.model_dump(), "t": world.sim.t}))
     if world.scenario is not None:
         # A screen that connects to a loaded-but-not-started world still needs to see the aircraft.
@@ -251,6 +251,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 world.set_tower(bool(data.get("enabled", True)))
             elif typ == "set_auto_speak":
                 world.set_auto_speak(bool(data.get("enabled", False)))
+            elif typ == "set_auto_voice":  # Auto with Tower's voice (one exchange at a time) or silent and instant
+                world.set_auto_voice(bool(data.get("enabled", False)))
             elif typ == "set_mode":  # {"mode": "manual" | "auto"}: the same switch, by its real name
                 world.set_auto_speak(str(data.get("mode", "manual")) == "auto")
             elif typ == "add_disruption":

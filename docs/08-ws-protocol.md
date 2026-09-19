@@ -125,4 +125,8 @@ In Auto, Tower issues pending cards itself: one voice exchange at a time, the re
 
 - `InstructionCard.via`: `human`, `voice` or `datalink`, set when the card is issued.
 - A data link instruction appears as a `transcript` event with `speaker: "datalink"`, no audio, `asr_confidence: 1`, and a `clearance_opened` whose status is already `matched`. Radar verification watches it like any other.
+- `{"type":"set_auto_voice","enabled":bool}` and `state.auto_voice`: in Auto, whether Tower also speaks. Off is the default and is instant: everything by data link.
+- A data link reroute is the planned path: the transcript line reads "reroute heading 120 for 59 miles then direct PIKAR", and the aircraft flies the plan's own turn point (`PlannedPath.via`), then direct to its exit.
+- `InstructionCard.minor`: a shortcut too small to be worth a transmission. Never sent to the screen. In silent Auto it is applied quietly by data link.
+- `scoreboard` gained `rerouted`, `reaction_s`, `datalink_sent`, `in_zone_now`, `zone_incursions`.
 

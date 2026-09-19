@@ -266,6 +266,13 @@ export interface Scoreboard {
   mean_alert_latency_s: number | null;
   transmissions: number;
   tier1_latency_s: number | null;
+  /** Reaction, measured live by the backend. */
+  rerouted?: number;
+  /** Sim seconds from the last disruption appearing to the first rerouted aircraft visibly turning. */
+  reaction_s?: number | null;
+  datalink_sent?: number;
+  in_zone_now?: number;
+  zone_incursions?: number;
 }
 
 export interface Stats {
@@ -325,6 +332,8 @@ export interface SimState {
   scenario: string | null;
   tower_enabled: boolean;
   auto_speak: boolean;
+  /** In Auto: Tower also speaks, one exchange at a time. Off means every instruction goes by data link. */
+  auto_voice?: boolean;
   lifecycle?: Lifecycle;
   /** sim seconds per real second */
   speed?: number;
@@ -398,6 +407,8 @@ export type ClientMessage =
   | { type: "set_tower"; enabled: boolean }
   /** Auto: Tower issues the instructions itself. Manual: Tower proposes, the human says it. */
   | { type: "set_auto_speak"; enabled: boolean }
+  /** Auto with Tower's voice (one exchange at a time), or silent: everything by data link, instantly. */
+  | { type: "set_auto_voice"; enabled: boolean }
   /** No position, or kind "random": Tower puts it where it will matter. Seeded, so it repeats. */
   | { type: "add_disruption"; kind: DisruptionKind | "random"; x_nm?: number; y_nm?: number }
   | { type: "remove_disruption"; id: string }

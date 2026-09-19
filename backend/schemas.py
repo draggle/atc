@@ -116,8 +116,11 @@ class AircraftState(BaseModel):
 
 class SimCommand(BaseModel):
     """What a clearance does to a plane. Frequency/squawk/altimeter have no motion effect."""
-    kind: Literal["altitude", "heading", "direct", "speed", "none"]
+    kind: Literal["altitude", "heading", "direct", "speed", "route", "none"]
     value: float | str | None = None  # ft, deg, waypoint name, kt
+    # "route": fly these (x, y) points in order, then direct to the waypoint named in `value`.
+    # Only a data link clearance can carry this. By voice a reroute is a heading, then a direct.
+    via: list[tuple[float, float]] = Field(default_factory=list)
 
 
 class Waypoint(BaseModel):
@@ -206,6 +209,7 @@ class PlannedPath(BaseModel):
     changes: list[str] = Field(default_factory=list)  # human-readable deltas from ideal
     distance_nm: float = 0.0
     time_s: float = 0.0
+    via: list[tuple[float, float]] = Field(default_factory=list)  # turn points of a reroute, before the exit
 
 
 class Plan(BaseModel):
@@ -230,6 +234,9 @@ class InstructionCard(BaseModel):
     # Who issued it: the human on the mic, Tower's own voice (Auto), or Tower by data link (Auto,
     # when the voice channel cannot keep up). None while it is still pending.
     via: Literal["human", "voice", "datalink"] | None = None
+    # A shortcut that saves too little to be worth a transmission. Never shown or spoken. In silent
+    # Auto it still goes out by data link, which costs nobody anything, so the aircraft is on its line.
+    minor: bool = False
 
 
 DisruptionKind = Literal["fighter", "drone", "balloon", "emergency", "unknown", "storm", "closed", "rocket",
@@ -276,6 +283,13 @@ class Scoreboard(BaseModel):
     mean_alert_latency_s: float | None = None
     transmissions: int = 0
     tier1_latency_s: float | None = None
+    # Reaction, measured live. rerouted: flights given a new path since the run started.
+    # reaction_s: from the last disruption appearing to the first rerouted aircraft visibly turning.
+    rerouted: int = 0
+    reaction_s: float | None = None
+    datalink_sent: int = 0
+    in_zone_now: int = 0
+    zone_incursions: int = 0
 
 
 # ---------------------------------------------------------------------------

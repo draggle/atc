@@ -25,6 +25,7 @@ NATO = {c: w for c, w in zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", [
 TRANSITION_FT = 18000
 MIN_DIRECT_SAVING_NM = 3.0  # below this a direct routing is not worth the radio time
 DOGLEG_CAPTURE_NM = 2.0
+SAME_HEADING_DEG = 4.0  # a new heading this close to the last one issued is not worth a transmission
 
 _AT = re.compile(r" from t=(\d+)s")
 _RE = {
@@ -193,17 +194,27 @@ def cards_from_plan(plan: Plan, previous_plan: Plan | None = None, now_t: float 
     Cards are sorted by urgency: seconds until the change must be flying.
     """
     prev = {p.callsign: {c.key for c in _changes(p)} for p in previous_plan.paths} if previous_plan else {}
+    prev_hdg = {p.callsign: [float(c.value) for c in _changes(p) if c.kind == "heading"]
+                for p in previous_plan.paths} if previous_plan else {}
     st = {s.callsign: s for s in (states or [])}
     cards: list[InstructionCard] = []
+
+    def is_new(callsign: str, c: Change) -> bool:
+        if c.key in prev.get(callsign, set()):
+            return False
+        if c.kind == "heading" and not (c.extra or {}).get("emergency"):
+            # A heading within a few degrees of the one already issued is the same instruction.
+            return not any(abs((float(c.value) - h + 180) % 360 - 180) <= SAME_HEADING_DEG for h in prev_hdg.get(callsign, []))
+        return True
+
     for path in plan.paths:
-        changes = [c for c in _changes(path) if c.kind != "delay" and c.key not in prev.get(path.callsign, set())]
+        changes = [c for c in _changes(path) if c.kind != "delay" and is_new(path.callsign, c)]
         # A shortcut that saves next to nothing is not worth a transmission. Real cruise traffic
         # already flies nearly straight, so without this the controller drowns in "saves 0 NM"
         # cards. A direct is still issued when it comes with another change (it is then part of a
         # conflict fix), and the planner's path is unaffected either way.
-        if changes and all(c.kind == "direct" and (c.extra or {}).get("saves", 0.0) < MIN_DIRECT_SAVING_NM
-                           for c in changes):
-            continue
+        minor = bool(changes) and all(c.kind == "direct" and (c.extra or {}).get("saves", 0.0) < MIN_DIRECT_SAVING_NM
+                                      for c in changes)
         if not changes:
             continue
         alt_now = st[path.callsign].alt_ft if path.callsign in st else None
@@ -220,7 +231,7 @@ def cards_from_plan(plan: Plan, previous_plan: Plan | None = None, now_t: float 
         cards.append(InstructionCard(
             id=f"card-{path.callsign}-{int(now_t)}-{'-'.join(sorted(k for k, _ in (c.key for c in changes)))}",
             callsign=path.callsign, items=items, phrase=phrase_for(path.callsign, items),
-            reason=reason_for(primary, path.callsign), urgency_s=urgency,
+            reason=reason_for(primary, path.callsign), urgency_s=urgency, minor=minor,
         ))
     cards.sort(key=lambda c: c.urgency_s)
     return cards

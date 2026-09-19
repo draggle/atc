@@ -59,7 +59,7 @@ PROFILES: dict[str, Profile] = {p.kind: p for p in [
             "UNKNOWN", 1.5, gs_kt=(200, 350), base_nm=10, growth_nm_per_min=1.5, max_nm=26, vert_ft=ALL_LEVELS_FT,
             actype="ZZZZ", duration_s=(900, 1200)),
     Profile("storm", "Storm cell", "Drifts and swells. Blocked from the ground up.", "circle", "STORM", 3.0,
-            radius_nm=(12, 20), drift_kt=(15, 30), swell_nm_per_min=0.25, duration_s=(1800, 2400)),
+            radius_nm=(12, 20), drift_kt=(8, 18), swell_nm_per_min=0.2, duration_s=(1500, 2100)),
     Profile("closed", "Closed airspace", "A block of levels shut for a while. Flights can go around, over or under.", "circle",
             "AREA", 2.0, radius_nm=(15, 24), band_ft=(2000, 1000), duration_s=(1080, 1500)),
     Profile("rocket", "Rocket launch", "A tall column, shut at every level, gone in minutes.", "circle", "LAUNCH", 1.5,
@@ -87,8 +87,13 @@ def catalog() -> list[dict[str, str]]:
     return [{"kind": p.kind, "label": p.label, "blurb": p.blurb, "shape": p.shape} for p in PROFILES.values()]
 
 
+# What the Random button draws from. Two kinds for now, one of each shape, until the reaction to
+# them is perfect: every other kind is one of these with different numbers, and stays in the menu.
+RANDOM_KINDS = ("storm", "fighter")
+
+
 def pick_kind(rng: np.random.Generator, allow_emergency: bool) -> str:
-    kinds = [p for p in PROFILES.values() if allow_emergency or p.kind != "emergency"]
+    kinds = [p for p in PROFILES.values() if p.kind in RANDOM_KINDS and (allow_emergency or p.kind != "emergency")]
     w = np.array([p.weight for p in kinds], dtype=float)
     return kinds[int(rng.choice(len(kinds), p=w / w.sum()))].kind
 

@@ -158,7 +158,7 @@ export default function MapView() {
   const state = useTowerState();
   const dispatch = useTowerDispatch();
   const { send } = useClient();
-  const { sim, tracks, plan, planView, flashUntil, disruptions, watching, selected, follow } = state;
+  const { sim, tracks, plan, planView, flashUntil, disruptions, watching, selected, follow, ghosts, simClock } = state;
 
   const mapRef = useRef<MapRef | null>(null);
   const [mapStyle, setMapStyle] = useState<string | StyleSpecification>(BASEMAP);
@@ -265,10 +265,28 @@ export default function MapView() {
     const busy = (plan?.paths.length ?? 0) > 40 && (lifecycle === "running" || lifecycle === "paused");
     const airborne = new Set(airborneKey ? airborneKey.split(",") : []);
     const show = (cs: string) => !busy || airborne.has(cs);
-    const flown = (plan?.baseline_paths ?? []).filter((p) => show(p.callsign)).map((p) => ({ callsign: p.callsign, path: pathCoords(p, frame, zOf) }));
-    const tower = (plan?.paths ?? []).filter((p) => show(p.callsign)).map((p) => ({ callsign: p.callsign, path: pathCoords(p, frame, zOf) }));
+    // "changed": only the flights Tower actually moved, so a reroute is not lost in eighty lines.
+    const moved = new Set((plan?.paths ?? []).filter((p) => p.changes.some((c) => !c.startsWith("direct"))).map((p) => p.callsign));
+    const want = (cs: string) => show(cs) && (planView !== "changed" || moved.has(cs) || cs === selected);
+    const flown = planView === "tower" ? [] : (plan?.baseline_paths ?? []).filter((p) => want(p.callsign)).map((p) => ({ callsign: p.callsign, path: pathCoords(p, frame, zOf) }));
+    const tower = planView === "today" ? [] : (plan?.paths ?? []).filter((p) => want(p.callsign)).map((p) => ({ callsign: p.callsign, path: pathCoords(p, frame, zOf) }));
     return { flown, tower };
-  }, [plan, frame, zOf, lifecycle, airborneKey]);
+  }, [plan, frame, zOf, lifecycle, airborneKey, planView, selected]);
+
+  // What each rerouted flight WAS going to fly, and a ghost aircraft still flying it.
+  const wall = Date.now();
+  const ghostList = Object.values(ghosts).filter((g) => g.until > wall);
+  const simNow = simClock.t + Math.min(Math.max(0, (now - simClock.at) / 1000), 1.5) * (lifecycle === "running" ? (sim?.speed ?? 1) : 0);
+  const ghostPlanes = ghostList.flatMap((g) => {
+    const p = g.path;
+    const k = p.findIndex((v) => v[3] > simNow);
+    if (k <= 0) return [];
+    const [a, b] = [p[k - 1], p[k]];
+    const f = (simNow - a[3]) / Math.max(1e-6, b[3] - a[3]);
+    const lat = a[1] + (b[1] - a[1]) * f;
+    const hdg = (Math.atan2((b[0] - a[0]) * Math.cos((lat * Math.PI) / 180), b[1] - a[1]) * 180) / Math.PI;
+    return [{ callsign: g.callsign, lon: a[0] + (b[0] - a[0]) * f, lat, alt: a[2] + (b[2] - a[2]) * f, hdg, fade: Math.max(0, (g.until - wall) / (g.until - g.born)) }];
+  });
 
   const circular = sim?.geo?.shape === "circle";
   const sectorRing = useMemo(() => {
@@ -354,7 +372,7 @@ export default function MapView() {
 
     new PathLayer({
       id: "tower-plan",
-      data: planView === "tower" ? pathData.tower : [],
+      data: pathData.tower,
       getPath: (d: { path: [number, number, number][] }) => d.path,
       getColor: (d: { callsign: string }) => ((flashUntil[d.callsign] ?? 0) > wallNow ? C.flash : d.callsign === selected ? [255, 255, 255, 235] : C.tower),
       getWidth: (d: { callsign: string }) => ((flashUntil[d.callsign] ?? 0) > wallNow ? 4 : d.callsign === selected ? 3 : 1.8),
@@ -362,6 +380,34 @@ export default function MapView() {
       capRounded: true,
       jointRounded: true,
       updateTriggers: { getColor: [flashSlot, selected], getWidth: [flashSlot, selected] },
+    }),
+
+    // The shadow of a reroute: the path the flight was on, and a ghost still flying it, fading out.
+    new PathLayer({
+      id: "ghost-paths",
+      data: ghostList,
+      getPath: (g: { path: [number, number, number, number][] }) => g.path.map(([lon, lat, alt]) => [lon, lat, zOf(alt)] as [number, number, number]),
+      getColor: (g: { born: number; until: number }) => [226, 232, 240, Math.round(150 * Math.max(0, (g.until - wall) / (g.until - g.born)))] as RGBA,
+      getWidth: 1.6,
+      widthUnits: "pixels",
+      extensions: [new PathStyleExtension({ dash: true })],
+      getDashArray: [2, 3],
+      updateTriggers: { getColor: Math.floor(now / 500), getPath: exaggeration },
+    }),
+    new IconLayer({
+      id: "ghost-planes",
+      data: ghostPlanes,
+      iconAtlas: ATLAS,
+      iconMapping: ICONS,
+      getIcon: () => "plane",
+      getPosition: (g: { lon: number; lat: number; alt: number }) => [g.lon, g.lat, zOf(g.alt)],
+      getAngle: (g: { hdg: number }) => -g.hdg,
+      getSize: 24,
+      sizeUnits: "pixels",
+      billboard: false,
+      getColor: (g: { fade: number }) => [226, 232, 240, Math.round(120 * g.fade)] as RGBA,
+      parameters: ALWAYS_ON_TOP,
+      updateTriggers: { getPosition: [now, exaggeration], getAngle: now, getColor: Math.floor(now / 500) },
     }),
 
     new PathLayer({
@@ -635,6 +681,7 @@ export default function MapView() {
           <span><span style={{ color: "rgb(132,146,162)" }}>╌╌</span> {sim?.source === "real" ? (sim.meta?.live ? "projected" : "flown") : "standard"}</span>
           <span><span style={{ color: "rgb(70,200,255)" }}>──</span> Tower</span>
           <span><span style={{ color: "rgb(255,176,46)" }}>──</span> replanned</span>
+          <span><span style={{ color: "rgb(226,232,240)" }}>┄┄</span> was going to fly</span>
           <span><span style={{ color: "rgb(255,77,94)" }}>◯</span> alert</span>
           <span><span style={{ color: "rgb(255,176,46)" }}>◯</span> checking</span>
           <span><span style={{ color: "rgb(34,211,238)" }}>◯</span> watching</span>

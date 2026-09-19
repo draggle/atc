@@ -56,6 +56,9 @@ SOURCES = {
     },
     # Optional second source. Its file names are resolved from the Hub API at run time.
     "atco2": {"repo": "jlvdoorn/atco2-asr-atcosim", "files": None},
+    # ATCOSIM: 10 h of controllers in en-route simulations, clean headset audio. New to us: jacktol is
+    # ATCO2 + UWB-ATCC. Free for research (Graz University of Technology and Eurocontrol).
+    "atcosim": {"repo": "Jzuluaga/atcosim_corpus", "files": None},
 }
 
 SAY_VOICES = ["Daniel", "Karen", "Moira", "Rishi", "Samantha", "Tessa"]
@@ -188,7 +191,32 @@ def run_real(args: argparse.Namespace) -> None:
     rng.shuffle(train_all)
     n_val = max(1, int(len(train_all) * args.val_frac))
     val, train = train_all[:n_val], train_all[n_val:]
+    # Extra training data is added AFTER the split, so val and test are the same clips as in every
+    # earlier run and the numbers stay comparable. Its own test clips get their own manifests.
+    extra_tests: dict[str, list[dict]] = {}
+    if args.atcosim:
+        rows = prep_source("atcosim", args.subset, args.seed, stats)
+        train += rows["train"]
+        extra_tests["atcosim_test"] = rows["test"]
+    if args.sim_dir:
+        sim = Path(args.sim_dir).resolve()
+        for split in ("train", "test"):
+            rows = [json.loads(line) for line in open(sim / f"sim_{split}.jsonl") if line.strip()]
+            rows = [{"path": str(sim / r["path"]), "text": r["text"], "duration": r["duration"]} for r in rows]
+            rows = [r for r in rows if Path(r["path"]).exists() and r["text"]]
+            print(f"sim/{split}: kept {len(rows)}")
+            if split == "train":
+                train += rows
+            else:
+                extra_tests["sim_test"] = rows
+    if extra_tests:
+        random.Random(args.seed + 1).shuffle(train)
     write_manifests(train, val, test_all)
+    for name, rows in extra_tests.items():
+        with open(MANIFESTS / f"{name}.jsonl", "w") as fh:
+            for r in rows:
+                fh.write(json.dumps(r) + "\n")
+        print(f"wrote {MANIFESTS / (name + '.jsonl')}  ({len(rows)} clips)")
     print("filter stats:", json.dumps(stats))
     # Spot-check: print a few random transcripts so a human can eyeball label quality.
     print("spot check (10 random training rows):")
@@ -263,6 +291,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--subset", type=int, default=None, help="keep at most N clips per split (tiny runs)")
     ap.add_argument("--atco2", action="store_true", help="also pull jlvdoorn/atco2-asr-atcosim")
+    ap.add_argument("--atcosim", action="store_true", help="add Jzuluaga/atcosim_corpus to training (its test split gets its own manifest)")
+    ap.add_argument("--sim-dir", default=None, help="folder from gen_sim_audio.py: our own phrases through our own radio effect")
     ap.add_argument("--val-frac", type=float, default=0.05)
     ap.add_argument("--seed", type=int, default=13)
     ap.add_argument("--synthetic", action="store_true", help="generate clips with macOS say instead")

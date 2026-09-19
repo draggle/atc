@@ -30,7 +30,7 @@ import numpy as np
 
 import disruptions as DZ
 from planner.conflicts import Grid, SEP_FT, SEP_NM, ZONE_VERT_MARGIN_FT, crosses_zone, pairwise_conflicts, zone_at, zone_mask
-from planner.trajectory import DT, polyline_length, route_points, sample_path, sample_straight, samples_array, to_planned_path
+from planner.trajectory import DT, flyable, polyline_length, route_points, sample_path, sample_straight, samples_array, to_planned_path
 from schemas import AircraftState, Disruption, FlightSpec, Plan, PlannedPath, Scenario, Waypoint, Zone
 from sim.geo import bearing_deg
 
@@ -47,7 +47,7 @@ ESCAPE_CLEAR_NM = 6.0  # an escape leg ends this far outside the zone
 ZONE_LEVEL_REACH_FT = 6000.0  # how far a flight will climb or descend to go over or under a zone
 EMERGENCY_LOOKAHEAD_S = 120.0
 EMERGENCY_LEG_S = 90.0
-DEVIATION_NM = 1.5  # off the previous path by more than this => replan from the real position
+DEVIATION_NM = 2.0  # off the previous path by more than this => replan from the real position
 MIN_ALT_FT, MAX_ALT_FT = 20000.0, 41000.0
 
 # Cost weights, all in "seconds equivalent".
@@ -74,8 +74,11 @@ class _Flight:
     prefix: np.ndarray = field(default_factory=lambda: np.zeros((0, 4)))
     prev: np.ndarray | None = None
     prev_changes: list[str] = field(default_factory=list)
+    prev_via: list[tuple[float, float]] = field(default_factory=list)
     route_pts: list[tuple[float, float]] = field(default_factory=list)
     deviated: bool = False
+    keep_ok: bool = False  # its current path may compete with the new candidates (see _plan_one)
+    now_t: float = 0.0
 
 
 @dataclass
@@ -84,6 +87,7 @@ class _Result:
     cost: float
     changes: list[str]
     conflicts_with: list[str]
+    via: list[tuple[float, float]] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- helpers
@@ -159,6 +163,7 @@ def _build_flights(specs: list[FlightSpec], wps: dict[str, Waypoint], states: li
             arr = samples_array(p)
             fl.prev = arr
             fl.prev_changes = list(p.changes)
+            fl.prev_via = list(p.via)
             if airborne and arr.shape[0] and s is not None:
                 k = int(np.argmin(np.abs(arr[:, 0] - now_t)))
                 off = math.hypot(arr[k, 1] - s.x_nm, arr[k, 2] - s.y_nm) if abs(arr[k, 0] - now_t) <= DT else float("inf")
@@ -181,10 +186,16 @@ def _candidate_samples(fl: _Flight, points: list[tuple[float, float]], gs: float
     """Frozen prefix followed by the new leg. `points[0]` must be the leg start."""
     if fl.prefix.shape[0]:
         last = fl.prefix[-1]
-        leg = sample_path([(last[1], last[2])] + points[1:], gs, float(last[0]), float(last[3]), alt_target)
+        hdg0 = fl.hdg
+        if fl.prefix.shape[0] >= 2:  # the heading it will have when the frozen stretch ends
+            dx, dy = last[1] - fl.prefix[-2, 1], last[2] - fl.prefix[-2, 2]
+            if dx or dy:
+                hdg0 = math.degrees(math.atan2(dx, dy)) % 360.0
+        pts = flyable([(float(last[1]), float(last[2]))] + points[1:], hdg0, gs)
+        leg = sample_path(pts, gs, float(last[0]), float(last[3]), alt_target)
         leg = leg[leg[:, 0] > last[0] + 1e-6] if leg.shape[0] else leg
         return np.vstack([fl.prefix, leg]) if leg.shape[0] else fl.prefix
-    return sample_path(points, gs, t0, fl.alt0, alt_target)
+    return sample_path(flyable(points, fl.hdg if fl.airborne else None, gs), gs, t0, fl.alt0, alt_target)
 
 
 def _leg_start(fl: _Flight) -> tuple[tuple[float, float], float, float]:
@@ -214,6 +225,8 @@ class _Cand:
     cost: float
     changes: list[str]
     tag: str
+    dog: tuple[float, float] | None = None  # the turn point of a dogleg, so it can be tightened
+    who: str = "traffic"
 
 
 def _candidates(fl: _Flight, grid: Grid, zones: list[Zone], with_direct: bool,
@@ -310,17 +323,55 @@ def _candidates(fl: _Flight, grid: Grid, zones: list[Zone], with_direct: bool,
             o = off + math.copysign(extra + ZONE_MARGIN_NM + 1.0, off) if extra else off
             dogs.append(((px + nx * o, py + ny * o), pw))
     for dog, pw in dogs:
-        pts = [start, dog, fl.exit]
-        s = _candidate_samples(fl, pts, fl.gs, fl.pref_alt, t0)
-        added_d = polyline_length(pts) - direct_len
-        cost = DOGLEG_FIXED_S + added_d * 3600.0 / fl.gs * 2 + _prev_deviation(fl, s)
-        hdg = bearing_deg(start[0], start[1], dog[0], dog[1])
-        o = (dog[0] - start[0]) * nx + (dog[1] - start[1]) * ny  # signed offset from the direct track
-        side = "right" if o > 0 else "left"
-        txt = f"heading {hdg:03.0f} from t={t0:.0f}s ({abs(o):.0f} NM {side} dogleg, then direct {fl.exit_name}) to clear {pw}"
-        cands.append(_Cand(s, cost, base_changes + [txt], "dogleg"))
+        cands.append(_dogleg(fl, start, t0, dog, pw, base_changes, direct_len))
     cands.sort(key=lambda c: c.cost)
     return cands
+
+
+def _dogleg(fl: _Flight, start: tuple[float, float], t0: float, dog: tuple[float, float], who: str,
+            base_changes: list[str], direct_len: float) -> _Cand:
+    """One turn point, then direct to the exit."""
+    pts = [start, dog, fl.exit]
+    s = _candidate_samples(fl, pts, fl.gs, fl.pref_alt, t0)
+    added_d = polyline_length(pts) - direct_len
+    cost = DOGLEG_FIXED_S + added_d * 3600.0 / fl.gs * 2 + _prev_deviation(fl, s)
+    hdg = bearing_deg(start[0], start[1], dog[0], dog[1])
+    ux, uy = fl.exit[0] - start[0], fl.exit[1] - start[1]
+    L = math.hypot(ux, uy) or 1.0
+    o = (dog[0] - start[0]) * (uy / L) + (dog[1] - start[1]) * (-ux / L)  # signed offset from the direct track
+    side = "right" if o > 0 else "left"
+    txt = f"heading {hdg:03.0f} from t={t0:.0f}s ({abs(o):.0f} NM {side} dogleg, then direct {fl.exit_name}) to clear {who}"
+    return _Cand(s, cost, list(base_changes) + [txt], "dogleg", dog=dog, who=who)
+
+
+def _tighten(fl: _Flight, c: _Cand, grid: Grid, zones: list[Zone]) -> _Cand:
+    """The smallest detour that is still safe.
+
+    Doglegs come from a coarse menu of offsets, so the first one that works usually goes wider
+    than it has to. Pull the turn point back toward the direct track by bisection and keep the
+    tightest version that still clears the traffic and the zones. Four steps: within a mile or two.
+    """
+    if c.dog is None:
+        return c
+    start, t0, _alt0 = _leg_start(fl)
+    px, py = _project(start, fl.exit, c.dog)
+    off = (c.dog[0] - px, c.dog[1] - py)
+    if math.hypot(*off) < 3.0:
+        return c
+    direct_len = polyline_length([start, fl.exit])
+    base = c.changes[:-1]
+    _, inside_s = _zone_verdict(fl, c.samples, zones)  # never buy a shorter path with longer in a zone
+    best, lo, hi = c, 0.0, 1.0
+    for _ in range(4):
+        mid = (lo + hi) / 2.0
+        trial = _dogleg(fl, start, t0, (px + off[0] * mid, py + off[1] * mid), c.who, base, direct_len)
+        ok, escape_s = _zone_verdict(fl, trial.samples, zones)
+        if ok and escape_s <= inside_s and not grid.conflicts(trial.samples).any():
+            trial.cost += escape_s * ESCAPE_S_PER_S
+            best, hi = trial, mid
+        else:
+            lo = mid
+    return best
 
 
 def _zone_verdict(fl: _Flight, samples: np.ndarray, zones: list[Zone]) -> tuple[bool, float]:
@@ -408,6 +459,14 @@ def _plan_one(fl: _Flight, grid: Grid, zones: list[Zone], buffer_nm: float, with
     fc = grid.first_conflict(cands[0].samples) if cands else None
     if fc is not None:
         cands = _candidates(fl, grid, zones, with_direct, blocker=fc[0])
+    if fl.keep_ok and fl.prev is not None:
+        # Stability: the path it is already flying goes first. It wins if it is still safe, and
+        # when nothing is safe (a storm on its exit) it wins ties, so a flight that cannot be
+        # helped is not sent a slightly different heading every few seconds.
+        kept = fl.prev[fl.prev[:, 0] >= fl.now_t - 1e-6]
+        if kept.shape[0] >= 2:
+            cands.insert(0, _Cand(kept, -1.0, list(fl.prev_changes), "keep",
+                                  dog=fl.prev_via[0] if fl.prev_via else None))
     tiers = [cands]
     least: tuple[int, _Cand, list[str]] | None = None
     through: tuple[int, _Cand] | None = None  # nothing avoids the zone: the least time inside it
@@ -426,7 +485,10 @@ def _plan_one(fl: _Flight, grid: Grid, zones: list[Zone], buffer_nm: float, with
         for c in ranked:
             m = grid.conflicts(c.samples)
             if not m.any():
-                return _Result(c.samples, c.cost, c.changes, [])
+                if c.tag != "keep":
+                    c = _tighten(fl, c, grid, zones)
+                return _Result(c.samples, max(c.cost, 0.0), [x for x in c.changes if not x.startswith("unresolved")],
+                               [], [c.dog] if c.dog else [])
             n = int(m.sum())
             if least is None or n < least[0]:
                 least = (n, c, [grid.names[i] for i in np.where(m.any(axis=1))[0]])
@@ -434,7 +496,8 @@ def _plan_one(fl: _Flight, grid: Grid, zones: list[Zone], buffer_nm: float, with
             tiers.append(_second_tier(fl, cands))
     if least is None:  # nothing stays out of the zone: take the shortest way through, and say so
         c = through[1] if through is not None else cands[0]
-        return _Result(c.samples, c.cost, c.changes + ["unresolved: crosses blocked zone"], [])
+        changes = [x for x in c.changes if not x.startswith("unresolved")] + ["unresolved: crosses blocked zone"]
+        return _Result(c.samples, max(c.cost, 0.0), changes, [], [c.dog] if c.dog else [])
     n, c, who = least
     return _Result(c.samples, c.cost + 1e6, c.changes + [f"unresolved conflict with {', '.join(who)}"], who)
 
@@ -477,7 +540,7 @@ def _finish(results: dict[str, _Result], flights: list[_Flight], buffer_nm: floa
             continue
         r = results[fl.callsign]
         cost = r.cost if r.cost < 1e6 else r.cost - 1e6
-        paths.append(to_planned_path(fl.callsign, r.samples, cost, r.changes))
+        paths.append(to_planned_path(fl.callsign, r.samples, cost, r.changes, r.via))
         intruder_conf += sum(1 for w in r.conflicts_with if any(f.callsign == w and f.is_intruder for f in flights))
     conflicts = len(pairwise_conflicts(paths, HARD_SEP_NM + max(0.0, buffer_nm), HARD_SEP_FT)) + intruder_conf
     return Plan(
@@ -500,7 +563,7 @@ def baseline(scenario: Scenario, buffer_nm: float | None = None) -> Plan:
     for f in scenario.flights:
         if f.is_intruder:
             continue
-        pts = route_points(f.route, wps)
+        pts = flyable(route_points(f.route, wps), None, f.gs_kt)  # corners cut the way the aircraft cut them
         s = sample_path(pts, f.gs_kt, f.entry_time_s, f.alt_ft, None)
         paths.append(to_planned_path(f.callsign, s, 0.0, []))
     dist = sum(p.distance_nm for p in paths)
@@ -686,6 +749,8 @@ def replan(previous_plan: Plan, states: list[AircraftState], waypoints, zones: l
     for fl in held:
         s = prev_from_now(fl)
         freed = bool(ended) and any(c.endswith(ended) for c in fl.prev_changes)
+        fl.now_t = now
+        fl.keep_ok = not freed and not fl.deviated and fl.airborne
         if freed or fl.deviated or s.shape[0] == 0 or grid.conflicting_names(s) or crosses_zone(s, zones, SAMPLING_MARGIN_NM):
             moving.append(fl)
         else:
@@ -702,7 +767,7 @@ def replan(previous_plan: Plan, states: list[AircraftState], waypoints, zones: l
     results: dict[str, _Result] = dict(fixed)
     for fl in held:
         if fl not in moving:
-            results[fl.callsign] = _Result(prev_from_now(fl), 0.0, list(fl.prev_changes), [])
+            results[fl.callsign] = _Result(prev_from_now(fl), 0.0, list(fl.prev_changes), [], list(fl.prev_via))
 
     for _round in range(4):
         order = sorted(moving, key=lambda f: (not f.airborne, f.start_t))

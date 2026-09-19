@@ -16,6 +16,7 @@ import type {
   Stats,
   TowerEvent,
   Transmission,
+  LonLatAlt,
 } from "./types";
 
 export type Connection = "connecting" | "live" | "mock" | "closed";
@@ -82,7 +83,12 @@ export interface TowerState {
   /** the camera follows the selected aircraft */
   follow: boolean;
   sliders: Sliders;
-  planView: "today" | "tower";
+  /** Which lines the map draws: the original routes, Tower's, both, or only flights Tower moved. */
+  planView: PlanView;
+  /** The path a flight was on before its last reroute, kept for a while so the change can be seen. */
+  ghosts: Record<string, Ghost>;
+  /** Last radar frame's sim time and when it arrived, so anything can be placed at "sim now". */
+  simClock: { t: number; at: number };
   showStock: boolean;
 }
 
@@ -110,7 +116,9 @@ export const initialState: TowerState = {
   selected: null,
   follow: false,
   sliders: { buffer_nm: 3, error_rate: 0.1, noise: 0.2 },
-  planView: "tower",
+  planView: "both",
+  ghosts: {},
+  simClock: { t: 0, at: 0 },
   showStock: false,
 };
 
@@ -120,7 +128,7 @@ export type Action =
   | { type: "dismiss_alert"; clearance_id: string }
   | { type: "user_chat"; text: string }
   | { type: "set_sliders"; sliders: Sliders }
-  | { type: "set_plan_view"; view: "today" | "tower" }
+  | { type: "set_plan_view"; view: PlanView }
   | { type: "toggle_stock" }
   | { type: "local_toggle"; key: "tower_enabled" | "auto_speak"; value: boolean }
   | { type: "dismiss_notice"; id: number }
@@ -130,6 +138,25 @@ export type Action =
   | { type: "reset" };
 
 const TRANSCRIPT_CAP = 200;
+const GHOST_MS = 30000; // how long the old path stays on screen after a reroute
+
+export type PlanView = "today" | "tower" | "both" | "changed";
+
+export interface Ghost {
+  callsign: string;
+  /** [lon, lat, alt_ft, t] */
+  path: LonLatAlt[];
+  born: number;
+  until: number;
+}
+
+/** Is the new path a different line, or the same one a few seconds further along? */
+function differs(a: LonLatAlt[], b: LonLatAlt[]): boolean {
+  const mid = (p: LonLatAlt[]) => p[Math.floor(p.length / 2)];
+  const [ma, mb] = [mid(a), mid(b)];
+  return a.length !== b.length || Math.abs(ma[0] - mb[0]) > 0.03 || Math.abs(ma[1] - mb[1]) > 0.02;
+}
+
 const FLASH_MS = 4000;
 
 let noticeSeq = 0;
@@ -143,6 +170,7 @@ function clearWorld(state: TowerState): TowerState {
     watching: [],
     plan: null,
     flashUntil: {},
+    ghosts: {},
     cards: [],
     cardT: {},
     clearances: {},
@@ -196,10 +224,11 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
           : { cur: a, curAt: now, prev: null, prevAt: now };
       }
       const t = Array.isArray(ev.payload) ? (list[0]?.t ?? state.sim?.t ?? 0) : (ev.payload.t ?? state.sim?.t ?? 0);
+      const simClock = { t, at: now };
       const zones = Array.isArray(ev.payload) ? undefined : ev.payload.zones; // drifting storms
       const sim = state.sim ? { ...state.sim, t, ...(zones ? { zones } : {}) } : state.sim;
       const watching = Array.isArray(ev.payload) ? state.watching : (ev.payload.watching ?? state.watching);
-      return { ...state, aircraft, tracks, sim, watching };
+      return { ...state, aircraft, tracks, sim, watching, simClock };
     }
 
     case "plan":
@@ -212,6 +241,16 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
       const flashUntil = { ...state.flashUntil };
       for (const cs of changed) flashUntil[cs] = now + FLASH_MS;
       if (!base) return { ...state, plan: ev.payload, flashUntil };
+      // Keep what each rerouted flight WAS going to fly: a ghost line, and a ghost aircraft on it.
+      const ghosts: Record<string, Ghost> = {};
+      for (const [cs, g] of Object.entries(state.ghosts)) if (g.until > now) ghosts[cs] = g;
+      for (const cs of changed) {
+        const old = base.paths.find((p) => p.callsign === cs);
+        const next = ev.payload.paths.find((p) => p.callsign === cs);
+        if (old?.lonlat && old.lonlat.length > 1 && next?.lonlat && differs(old.lonlat, next.lonlat) && !ghosts[cs]) {
+          ghosts[cs] = { callsign: cs, path: old.lonlat, born: now, until: now + GHOST_MS };
+        }
+      }
       const byCs = new Map(base.paths.map((p) => [p.callsign, p]));
       for (const p of ev.payload.paths) byCs.set(p.callsign, p);
       const plan: Plan = {
@@ -220,7 +259,7 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
         paths: Array.from(byCs.values()),
         baseline_paths: ev.payload.baseline_paths ?? base.baseline_paths,
       };
-      return { ...state, plan, flashUntil };
+      return { ...state, plan, flashUntil, ghosts };
     }
 
     case "instruction_card": {

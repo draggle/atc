@@ -28,6 +28,10 @@ export default function ScoreboardPanel() {
         <p className="text-xs text-muted text-center py-2">No numbers yet.</p>
       ) : (
         <div className="grid grid-cols-3 gap-1.5">
+          {/* Reaction first: how fast the traffic turned, and that it stayed out. */}
+          <Stat label="first turn" value={fmt(s.reaction_s, 0, " s")} tone={s.reaction_s != null && s.reaction_s <= 5 ? "ok" : "fg"} />
+          <Stat label="rerouted" value={String(s.rerouted ?? 0)} />
+          <Stat label="in a zone" value={`${s.in_zone_now ?? 0} now · ${s.zone_incursions ?? 0} ever`} tone={(s.zone_incursions ?? 0) > 0 ? "bad" : "ok"} />
           <Stat label="miles saved" value={projected ? "n/a" : fmt(s.miles_saved)} tone={projected ? "fg" : "ok"} />
           <Stat label="time saved" value={projected ? "n/a" : fmt(s.time_saved_s / 60, 1, " min")} tone={projected ? "fg" : "ok"} />
           <Stat label="loss of sep" value={String(s.losses_of_separation)} tone={s.losses_of_separation > 0 ? "bad" : "ok"} />
@@ -37,6 +41,7 @@ export default function ScoreboardPanel() {
           <Stat label="alert latency" value={fmt(s.mean_alert_latency_s, 1, " s")} />
           <Stat label="tier 1" value={fmt(s.tier1_latency_s ?? (typeof stats?.tier1_latency_s === "number" ? stats.tier1_latency_s : null), 1, " s")} />
           <Stat label="transmissions" value={String(s.transmissions)} />
+          <Stat label="by data link" value={String(s.datalink_sent ?? 0)} />
         </div>
       )}
     </section>

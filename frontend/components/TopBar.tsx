@@ -123,16 +123,27 @@ export default function TopBar() {
         })}
       </div>
 
+      {(sim?.auto_speak ?? false) && (
+        <button
+          onClick={() => send({ type: "set_auto_voice", enabled: !(sim?.auto_voice ?? false) })}
+          title="Off: every instruction goes by data link the instant the plan changes. On: Tower also talks one aircraft round at a time, which takes real seconds."
+          className={`px-2.5 py-1 rounded-md border text-xs font-medium transition-colors ${sim?.auto_voice ? "bg-warn/15 text-warn border-warn/40" : "bg-panel-2 text-muted border-line hover:text-fg"}`}
+        >
+          Voice <span className="font-mono">{sim?.auto_voice ? "ON" : "OFF"}</span>
+        </button>
+      )}
+
       <div className="h-6 w-px bg-line" />
 
       <div className="flex rounded-md border border-line overflow-hidden text-xs">
-        {(["today", "tower"] as const).map((v) => (
+        {(["today", "tower", "both", "changed"] as const).map((v) => (
           <button
             key={v}
+            title={{ today: "Only the routes as filed or flown", tower: "Only Tower's paths", both: "Original routes underneath, Tower's paths on top", changed: "Only the flights Tower has moved, with what they were going to fly" }[v]}
             onClick={() => dispatch({ type: "set_plan_view", view: v })}
             className={`px-3 py-1 capitalize ${planView === v ? "bg-accent/20 text-accent" : "bg-panel-2 text-muted hover:text-fg"}`}
           >
-            {v === "today" ? "Today" : "Tower plan"}
+            {{ today: "Original", tower: "Tower", both: "Both", changed: "Changed" }[v]}
           </button>
         ))}
       </div>

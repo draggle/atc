@@ -14,8 +14,15 @@ apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq libsndfile1 ffmpeg 
 DATA="${DATA_DIR:-$TRAIN_DIR/../data}"
 mkdir -p "$DATA"
 # Download and decode jacktol/atc-dataset (public, ~820 MB) if manifests are missing.
+# EXTRA_DATA=1 adds ATCOSIM (2.4 GB) and, if a ./sim folder was staged beside this script, our own
+# simulator clips from gen_sim_audio.py. Validation and the held-out test stay the same clips.
+PREP_FLAGS=""
+if [ -n "${EXTRA_DATA:-}" ]; then
+  PREP_FLAGS="--atcosim"
+  if [ -f "$TRAIN_DIR/sim/sim_train.jsonl" ]; then PREP_FLAGS="$PREP_FLAGS --sim-dir $TRAIN_DIR/sim"; fi
+fi
 if [ ! -f "$DATA/asr/manifests/train.jsonl" ]; then
-  python "$TRAIN_DIR/prep_data.py"
+  python "$TRAIN_DIR/prep_data.py" $PREP_FLAGS
 fi
 
 CKPT="${BT_CHECKPOINT_DIR:-$DATA/checkpoints/whisper-atc}"
@@ -26,6 +33,7 @@ if [ -n "${EVAL_STEPS:-}" ]; then EXTRA="$EXTRA --eval-steps $EVAL_STEPS"; fi
 if [ -n "${WARMUP_STEPS:-}" ]; then EXTRA="$EXTRA --warmup-steps $WARMUP_STEPS"; fi
 if [ -n "${BATCH_SIZE:-}" ]; then EXTRA="$EXTRA --batch-size $BATCH_SIZE"; fi
 if [ -n "${VAL_LIMIT:-}" ]; then EXTRA="$EXTRA --val-limit $VAL_LIMIT"; fi
+if [ -n "${EPOCHS:-}" ]; then EXTRA="$EXTRA --epochs $EPOCHS"; fi
 
 python "$TRAIN_DIR/finetune_whisper.py" \
   --model "${WHISPER_BASE:-openai/whisper-small}" \
@@ -39,6 +47,14 @@ python "$TRAIN_DIR/finetune_whisper.py" \
 python "$TRAIN_DIR/eval_wer.py" --manifest "$DATA/asr/manifests/test.jsonl" \
   --stock "${WHISPER_BASE:-openai/whisper-small}" --tuned "$CKPT/best" --limit "${EVAL_LIMIT:-500}" \
   --tag "baseten_${RUN_LABEL:-run}" --label "${RUN_LABEL:-baseten}-heldout"
+# The same comparison on our own simulator's audio (a voice never used in training) and on ATCOSIM.
+for extra in sim_test atcosim_test; do
+  if [ -f "$DATA/asr/manifests/$extra.jsonl" ]; then
+    python "$TRAIN_DIR/eval_wer.py" --manifest "$DATA/asr/manifests/$extra.jsonl" \
+      --stock "${WHISPER_BASE:-openai/whisper-small}" --tuned "$CKPT/best" --limit 300 \
+      --tag "baseten_${RUN_LABEL:-run}_$extra" --label "${RUN_LABEL:-baseten}-$extra" || true
+  fi
+done
 python "$TRAIN_DIR/export_ct2.py" --ckpt "$CKPT/best" --out "$CKPT/ct2-float16" --quantization float16 --no-check
 cp "$TRAIN_DIR/RUNS.md" "$CKPT/RUNS.md" 2>/dev/null || true
 cp -r "$TRAIN_DIR/results" "$CKPT/results" 2>/dev/null || true

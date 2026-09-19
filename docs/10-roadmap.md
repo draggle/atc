@@ -160,6 +160,24 @@ How Auto works (`World._auto_dispatch`): pending cards for flights already on fr
 
 Still open in this phase: the Manual review step (see what Tower heard against the card before it goes out), the ElevenLabs character counter, and a wrong readback in Auto with real voices has not been watched end to end.
 
+### Phase 6b. Reaction: the centre of the demo. Saturday evening
+
+The team's call: the path reaction is the show, the voice side waits. What we found when we looked at why it felt slow, and what changed:
+
+- **Voice was throttling the paths.** A plane only turns after a full radio exchange (6 to 10 s), one exchange at a time, so the planner started every new path 60 s ahead. Auto now has a **Voice** switch. Off (the default): every instruction goes by data link in the same second the plan changes (`World._auto_links`, called from `_replan`). On: one aircraft is talked round at a time and everything else still goes by link.
+- **A spoken reroute cannot put a plane on the drawn line.** It is a heading now and a "direct" later, so the plane drifted off the orange path, was seen as deviating, and was replanned again. By data link a reroute is the planned path itself (`SimCommand(kind="route", via=[...])`), and the simulator flies it.
+- **The planner planned sharp corners and the simulator could not fly them.** Turn rate is now 1.5 deg/s (a 25 degree bank at cruise, radius near 5 NM; the old 3 deg/s was a light aircraft), the simulator starts each turn early and cuts the corner, and `planner/trajectory.py::flyable` puts the same curves into every planned path. The plan, the line on the map and the aircraft now agree to within a mile or two.
+- **Detours came from a coarse menu.** `_tighten` pulls a working dogleg back toward the direct track by bisection: the smallest detour that is still safe, never at the price of more time inside a zone.
+- **Jitter.** The worst case was a storm on a flight's exit gate: nothing avoids it, and every re-check produced a near-identical path with a heading a degree or two different, sent as a new instruction (nine in a row). Now the path a flight is already flying competes first and wins ties (`keep_ok`), a heading within 4 degrees of the last one issued is not re-sent, and random zones land mid-sector.
+- Paths are re-checked every 15 s while a disruption is active (60 s otherwise). Small shortcuts that are not worth a transmission still go out quietly by data link in silent Auto (`InstructionCard.minor`), so on real traffic every aircraft is on its cyan line.
+- Random draws only **storm** and **fighter** for now (`disruptions.RANDOM_KINDS`): one of each shape, until the reaction to them is perfect. The other six are still in the Choose menu.
+- On the map: **Original / Tower / Both / Changed** line views, and the shadow of a reroute: the path the flight was going to fly stays as a fading dotted line for 30 s with a **ghost aircraft** still flying it.
+- The scoreboard leads with the reaction: seconds to first turn, flights rerouted, aircraft in a zone now and ever.
+
+Measured in silent Auto, six disruptions (storm, fighter, alternating) four minutes apart, nobody at the controls: demo, dense, Europe 16:00Z (80 flights), Toronto 21:00Z (92 flights). **No new loss of separation in any. Reroutes leave in the same tick; a replan takes 15 to 155 ms. At most 2 or 3 instructions per flight across all six disruptions** (it was 9 and 11). One aircraft in the dense run clips a storm by 1.7 NM: the storm formed too close for it to avoid and Tower says so at the time. Furthest any aircraft got from its planned line: 1.6 to 2.8 NM.
+
+Not done: the tripwire (replan one flight the moment its projected track enters a zone, instead of waiting for the 15 s check), a click-a-plane comparison of original, current and shadow with the miles, and none of this has been watched at length by a human yet.
+
 ### Phase 7. Scale and robustness. About 2 hours
 - [ ] Planner: initial plan for 150 flights in under 5 seconds, replans inside their budget. If not, cap the scenario and say so
 - [ ] The investigating agent runs off the clock's critical path so the map never freezes while it thinks

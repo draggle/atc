@@ -136,3 +136,26 @@ Measured from the laptop on a 2.7 s pilot clip, steady state, round trip: beam 1
 
 **What it does not fix.** Our simulator's made-up fix names. "direct ESTIR" comes back as "direct to six" from the tuned model (confidence 0.95) and "direct to sit" from stock, with or without the fix names in the prompt. The training data is real ATC audio and has never heard ESTIR. The pipeline already treats "routing read back but fix not understood" as ambiguous and hands it to the agent, so this does not raise a false alarm, but the right fix is a second run with a few thousand synthetic clips of our own phrases mixed in.
 
+## The mixed run (run 2)
+
+Run 1 only ever heard real European radio. The demo is synthetic voices through our radio effect saying names we invented, and run 1 hears "direct ESTIR" as "direct to six". Run 2 trains on the same real data plus ATCOSIM plus our own simulator's audio. Config: `whisper/config_mix.py`.
+
+```bash
+cd training
+../backend/.venv/bin/python gen_sim_audio.py --train 2400 --test 300     # about 10 minutes, macOS only, free
+stage_mix() {
+  rm -rf /tmp/tower-whisper-mix && mkdir -p /tmp/tower-whisper-mix
+  cp whisper/run.sh *.py requirements.txt /tmp/tower-whisper-mix/
+  cp whisper/config_mix.py /tmp/tower-whisper-mix/config.py
+  cp -R ../data/asr/sim /tmp/tower-whisper-mix/sim                        # about 170 MB of FLAC, limit is 5 GB
+  echo /tmp/tower-whisper-mix
+}
+stage_mix
+cd /tmp/tower-whisper-mix && ~/projects/htn/atc/training/.venv/bin/truss train push config.py --team "13"
+```
+
+- `gen_sim_audio.py` takes its text from the app's own phrase builders and its sound from the app's own radio effect, with every callsign and fix name from every scenario we ship. Voices are macOS `say`. One voice (Tessa) is only ever in the test set.
+- Validation and the 1,000 held-out real clips are the same clips as run 1 (`tests/test_prep_extra.py` holds that), so the headline number is comparable. The job also reports stock versus tuned on `sim_test` (our audio, unseen voice) and `atcosim_test`.
+- Swap it in only if it is no worse on the real clips and clearly better on `sim_test`: change `training_job_id` in `serve_asr/config.yaml` and `truss push --team "13" --promote`.
+- Limits to say out loud: the synthetic voices are macOS, the demo voices are ElevenLabs. It should transfer, and it is not proven until we hear it.
+

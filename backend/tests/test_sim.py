@@ -20,7 +20,7 @@ def test_turn_rate_and_climb_rate():
     sim.step(10.0)
     assert math.isclose(a.hdg, 90 + TURN_RATE_DEG_S * 10, abs_tol=1e-6)
     assert math.isclose(a.alt, 30000 + CLIMB_FPM / 60 * 10, abs_tol=1e-6)
-    for _ in range(30):
+    for _ in range(int(90 / TURN_RATE_DEG_S)):
         sim.step(1.0)
     assert math.isclose(a.hdg, 180.0, abs_tol=1e-6)
     assert a.target_hdg == 180.0  # route following suspended

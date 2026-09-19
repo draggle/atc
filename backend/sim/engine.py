@@ -17,7 +17,10 @@ import disruptions as DZ
 from schemas import AircraftState, Disruption, FlightSpec, Scenario, SimCommand, Waypoint, Zone
 from sim.geo import NM_PER_KT_S, bearing_deg, dist_nm, unit_vector, wrap180
 
-TURN_RATE_DEG_S = 3.0
+# About a 25 degree bank at cruise speed: a turn radius near 5 NM. The old 3 deg/s was a light
+# aircraft's turn, and it made airliners pivot on the spot and overshoot every fix.
+TURN_RATE_DEG_S = 1.5
+FLYBY_MAX_NM = 12.0  # never start a turn further out than this, however sharp the corner
 CLIMB_FPM = 1500.0
 ACCEL_KT_S = 1.0
 CAPTURE_NM = 1.0
@@ -39,6 +42,7 @@ class Aircraft:
     gs: float
     target_gs: float
     route: list[str] = field(default_factory=list)
+    via: list[tuple[float, float]] = field(default_factory=list)  # unnamed points to fly before `route`
     target_hdg: float | None = None  # set => route following suspended
     actype: str = "A320"
     is_intruder: bool = False
@@ -109,6 +113,15 @@ class Simulator:
                 a.route = a.route[a.route.index(name):]
             else:
                 a.route = [name]
+            a.via = []
+            a.target_hdg = None
+            a._last_wp_dist = None
+        elif cmd.kind == "route":
+            # A data link reroute: the planned path itself, so the aircraft flies the line on the map.
+            name = str(cmd.value) if cmd.value is not None else ""
+            if name in self.waypoints:
+                a.route = a.route[a.route.index(name):] if name in a.route else [name]
+            a.via = [(float(x), float(y)) for x, y in cmd.via]
             a.target_hdg = None
             a._last_wp_dist = None
 
@@ -140,7 +153,7 @@ class Simulator:
             a = self.active.get(d.id) if kind == "emergency" else None
             if a is not None:
                 a.is_intruder, a.threat = True, kind
-                a.target_hdg, a.route = hdg, []
+                a.target_hdg, a.route, a.via = hdg, [], []
                 a.target_alt = d.target_alt_ft if d.target_alt_ft is not None else a.target_alt
                 a.climb_fpm, a.expires_t = prof.climb_fpm, d.expires_t
                 return
@@ -181,11 +194,23 @@ class Simulator:
         return not self.pending and all(a.is_intruder for a in self.active.values())
 
     def next_waypoint(self, a: Aircraft) -> Waypoint | None:
+        if a.via:
+            return Waypoint(name="", x_nm=a.via[0][0], y_nm=a.via[0][1], kind="hidden")
         while a.route and a.route[0] not in self.waypoints:
             a.route.pop(0)
         return self.waypoints[a.route[0]] if a.route else None
 
     # -- internals ----------------------------------------------------------
+
+    def _point_after_next(self, a: Aircraft) -> tuple[float, float] | None:
+        """Where the aircraft goes after the point it is flying to now, if anywhere."""
+        if len(a.via) > 1:
+            return a.via[1]
+        names = [n for n in (a.route if a.via else a.route[1:]) if n in self.waypoints]
+        if not names:
+            return None
+        w = self.waypoints[names[0]]
+        return (w.x_nm, w.y_nm)
 
     def _spawn_due(self) -> None:
         while self.pending and self.pending[0].entry_time_s <= self.t:
@@ -264,16 +289,23 @@ class Simulator:
                 dist = dist_nm(a.x, a.y, wp.x_nm, wp.y_nm)
                 # Scale with the step distance so coarse batch steps cannot fly past a fix.
                 capture = max(CAPTURE_NM, d)
+                # Fly-by: start the turn before the fix so the aircraft rolls out on the next leg
+                # instead of overshooting and coming back. Lead distance = radius * tan(turn / 2).
+                after = self._point_after_next(a)
+                if after is not None:
+                    turn = abs(wrap180(bearing_deg(wp.x_nm, wp.y_nm, after[0], after[1]) - bearing_deg(a.x, a.y, wp.x_nm, wp.y_nm)))
+                    radius = a.gs * NM_PER_KT_S / math.radians(TURN_RATE_DEG_S)
+                    capture = max(capture, min(radius * math.tan(math.radians(min(turn, 150.0)) / 2.0), FLYBY_MAX_NM))
                 abeam = max(ABEAM_NM, 2 * d)
                 passed = a._last_wp_dist is not None and dist < abeam and dist > a._last_wp_dist
                 if dist <= capture or passed:
-                    a.route.pop(0)
+                    (a.via if a.via else a.route).pop(0)
                     a._last_wp_dist = None
                 else:
                     a._last_wp_dist = dist
 
     def _should_remove(self, a: Aircraft) -> bool:
-        if a.target_hdg is None and not a.route and not a.is_intruder:
+        if a.target_hdg is None and not a.route and not a.via and not a.is_intruder:
             return True  # past the exit waypoint
         lim = self.sector_nm / 2 + EXIT_MARGIN_NM
         return abs(a.x) > lim or abs(a.y) > lim

@@ -65,7 +65,15 @@ PILOT_DELAY_S = 1.5  # seconds between a clearance and the pilot keying up
 REPLAN_EVERY_S = 60.0
 # Auto mode. One voice exchange at a time; whatever the voice cannot get to in time goes by data link.
 AUTO_VOICE_MAX_SPEED = 1.5  # faster than this and speech, which takes real seconds, cannot keep up
-AUTO_VOICE_QUEUE_MAX = 3  # cards allowed to wait for the voice channel
+AUTO_VOICE_QUEUE_MAX = 0  # cards allowed to wait for the voice channel. None: reaction comes first,
+#                           so one aircraft is talked round and every other reroute goes out at once
+# How far ahead a new path may start. The aircraft cannot change what it does before the instruction
+# reaches it: a minute for a human to say it and hear it back, seconds for Tower in Auto.
+FROZEN_MANUAL_S = 60.0
+FROZEN_AUTO_S = 10.0  # Auto with Tower's voice on
+FROZEN_LINK_S = 0.0  # Auto, silent: the reroute is on the flight deck in the same second
+REPLAN_ACTIVE_S = 15.0  # how often every path is re-checked while a disruption is in the sector
+ROUTE_MIN_OFFSET_NM = 1.0  # a planned path this close to a straight line is just "direct"
 AUTO_EXCHANGE_S = 12.0  # a spoken instruction and its readback, roughly
 AUTO_EXCHANGE_TIMEOUT_S = 30.0  # stop waiting for a readback that never came
 CARD_VERIFY_S = 30.0  # a matched clearance with no radar alert for this long is "verified"
@@ -133,7 +141,13 @@ class World:
         self._voice_card: str | None = None  # the card Tower is saying right now, in Auto
         self._voice_since = 0.0
         self.human_on_mic = False  # the controller is holding the mic: Tower keeps quiet
+        self.auto_voice = False  # Auto speaks one exchange at a time. Off: every instruction by data link
         self.datalink_sent = 0
+        self.rerouted: set[str] = set()
+        self.reaction_s: float | None = None
+        self._react: tuple[float, dict[str, float]] | None = None  # (disruption time, heading of each rerouted flight then)
+        self.zone_incursions: set[tuple[str, str]] = set()
+        self.in_zone_now = 0
         self.disruptions: dict[str, Disruption] = {}  # the ones still active
         self.disruption_count = 0  # seeds Random, so a rehearsed demo repeats
         # Lifecycle: nothing moves until start(). idle -> ready -> running <-> paused -> ended.
@@ -179,6 +193,8 @@ class World:
         self.pending.clear()
         self.card_t.clear()
         self._voice_card, self.human_on_mic, self.datalink_sent = None, False, 0
+        self.rerouted, self.reaction_s, self._react, self.in_zone_now = set(), None, None, 0
+        self.zone_incursions = set()
         self.disruptions.clear()
         self.disruption_count = 0
         self.buffer_nm = sc.separation_buffer_nm
@@ -247,6 +263,7 @@ class World:
             "tower_enabled": self.tower_enabled,
             "auto_speak": self.auto_speak,
             "mode": "auto" if self.auto_speak else "manual",
+            "auto_voice": self.auto_voice,
             "t": self.sim.t,
             "waypoints": self._with_latlon([w.model_dump() for w in (sc.waypoints if sc else [])
                                             if w.kind != "hidden"]),
@@ -308,6 +325,8 @@ class World:
             mean_alert_latency_s=(round(float(np.mean(self.alert_latencies)), 2) if self.alert_latencies else None),
             transmissions=self.transmissions,
             tier1_latency_s=(round(float(np.mean(self.tier1_latencies)), 2) if self.tier1_latencies else None),
+            rerouted=len(self.rerouted), reaction_s=self.reaction_s, datalink_sent=self.datalink_sent,
+            in_zone_now=self.in_zone_now, zone_incursions=len(self.zone_incursions),
         )
 
     def _emit_core_events(self, events: list[dict[str, Any]]) -> None:
@@ -346,14 +365,16 @@ class World:
     def _add_card(self, card: InstructionCard) -> None:
         self.cards[card.id] = card
         self.card_t[card.id] = self.sim.t
-        self.emit(event("instruction_card", card, t=self.sim.t))
+        if not card.minor:  # a minor shortcut is never shown: see InstructionCard.minor
+            self.emit(event("instruction_card", card, t=self.sim.t))
 
     def _drop_pending_cards(self, callsign: str) -> None:
         """A newer plan, or an emergency, makes a flight's unspoken cards wrong. Tell the screen."""
         for old in list(self.cards.values()):
             if old.callsign == callsign and old.status == "pending":
                 old.status = "superseded"
-                self.emit(event("instruction_card", old, t=self.sim.t))
+                if not old.minor:
+                    self.emit(event("instruction_card", old, t=self.sim.t))
                 del self.cards[old.id]
 
     def _set_card_status(self, clearance_id: str | None, status: str) -> None:
@@ -434,6 +455,16 @@ class World:
     def set_ptt(self, down: bool) -> None:
         self.human_on_mic = bool(down)
 
+    def set_auto_voice(self, enabled: bool) -> None:
+        """Auto with or without Tower's voice. Silent is instant: nothing waits for a radio exchange."""
+        self.auto_voice = bool(enabled)
+        if not enabled:
+            self._voice_card = None
+        self.emit_state()
+
+    def _links_only(self) -> bool:
+        return not self.auto_voice or self.speed > AUTO_VOICE_MAX_SPEED
+
     def set_sliders(self, buffer_nm: float | None = None, error_rate: float | None = None,
                     noise: float | None = None) -> None:
         if buffer_nm is not None:
@@ -466,6 +497,7 @@ class World:
                 ended = self.sim.pop_ended()
                 if ended:
                     self._disruptions_ended(ended)
+                self._measure_reaction()
                 self.monitor.observe(list(self.sim.active.values()), now)
                 states = self.sim.aircraft()
                 self._emit_core_events(self.core.tick(now, states))
@@ -474,7 +506,8 @@ class World:
                             self.core.store.get(cid).callsign if self.core.store.get(cid) else ""):
                         self._set_card_status(cid, "verified")
                         del self.matched_at[cid]
-                if now - self.last_replan_t >= REPLAN_EVERY_S:
+                every = REPLAN_ACTIVE_S if (self.disruptions and self.auto_speak) else REPLAN_EVERY_S
+                if now - self.last_replan_t >= every:
                     self._replan("periodic")
             now = self.sim.t
             states = self.sim.aircraft()
@@ -502,12 +535,38 @@ class World:
     def _due(self, card: InstructionCard) -> float:
         return self.card_t.get(card.id, self.sim.t) + card.urgency_s
 
-    async def _auto_dispatch(self) -> None:
-        """Issue pending cards without a human: most urgent first, one voice exchange at a time.
+    def _auto_ready(self) -> list[InstructionCard]:
+        """Pending cards Auto may issue now, most urgent first: only flights already on frequency."""
+        minor_too = self._links_only()  # a small shortcut costs nothing by data link, and a transmission by voice
+        return sorted((c for c in self.cards.values()
+                       if c.status == "pending" and c.id != self._voice_card and c.callsign in self.sim.active
+                       and (minor_too or not c.minor)
+                       and not self.sim.active[c.callsign].is_intruder), key=self._due)
 
-        Only flights already on frequency are addressed. A card goes by data link, which is
-        text and cannot be misheard, when the clock runs too fast for speech, when more than a
-        few cards are waiting, or when it is due before the voice channel could get to it.
+    def _auto_links(self) -> None:
+        """Send by data link everything Auto will not say. Synchronous, so a reroute is instant.
+
+        Silent Auto, or a clock too fast for speech: everything. With Tower's voice on: every card
+        except the one the voice channel is free to take next.
+        """
+        if not (self.auto_speak and self.tower_enabled and self.lifecycle == "running"):
+            return
+        ready = self._auto_ready()
+        if not self._links_only() and self._voice_card is None and not self.human_on_mic:
+            ready = ready[1:]  # the most urgent one is for the voice, on the next tick
+        if not self._links_only():
+            now = self.sim.t
+            ready = [c for i, c in enumerate(ready)
+                     if i >= AUTO_VOICE_QUEUE_MAX or self._due(c) - now < (i + 1) * AUTO_EXCHANGE_S]
+        for card in ready:
+            self._send_by_datalink(card)
+
+    async def _auto_dispatch(self) -> None:
+        """Issue pending cards without a human. Runs on every tick of the clock.
+
+        Data link carries whatever the voice will not (`_auto_links`). With Tower's voice on, one
+        exchange runs at a time, most urgent first, and the channel stays busy until the readback
+        is validated or the wait times out.
         """
         now = self.sim.t
         if self._voice_card is not None:
@@ -515,26 +574,44 @@ class World:
             done = vc is None or vc.status in ("validated", "verified", "superseded")
             if done or now - self._voice_since > AUTO_EXCHANGE_TIMEOUT_S:
                 self._voice_card = None
-        ready = sorted((c for c in self.cards.values()
-                        if c.status == "pending" and c.id != self._voice_card and c.callsign in self.sim.active
-                        and not self.sim.active[c.callsign].is_intruder), key=self._due)
-        if not ready:
-            return
-        if self.speed > AUTO_VOICE_MAX_SPEED:
-            by_link = ready
-        else:
-            if self._voice_card is None and not self.human_on_mic:
-                first = ready.pop(0)
+        if not self._links_only() and self._voice_card is None and not self.human_on_mic:
+            ready = self._auto_ready()
+            if ready:
+                first = ready[0]
                 self._voice_card, self._voice_since = first.id, now
                 first.via = "voice"
                 if self.realtime:
                     asyncio.create_task(self.speak_card(first.id))  # TTS and ASR must not stall the clock
                 else:
                     await self.speak_card(first.id)
-            by_link = [c for i, c in enumerate(ready)
-                       if i >= AUTO_VOICE_QUEUE_MAX or self._due(c) - now < (i + 1) * AUTO_EXCHANGE_S]
-        for card in by_link:
-            self._send_by_datalink(card)
+        self._auto_links()
+
+    def _planned_route(self, callsign: str) -> tuple[list[tuple[float, float]], str, float, float] | None:
+        """(turn points, exit fix, first heading, first leg NM) of the flight's planned path from here.
+
+        None when the path is as good as straight, or the flight has no exit to go direct to.
+        """
+        a = self.sim.active.get(callsign)
+        path = next((p for p in (self.plan.paths if self.plan else []) if p.callsign == callsign), None)
+        if a is None or path is None or not a.route:
+            return None
+        if path.via:  # the planner's own turn point
+            turn = (float(path.via[0][0]), float(path.via[0][1]))
+        else:
+            arr = np.asarray(path.samples, dtype=float).reshape(-1, 4)
+            arr = arr[arr[:, 0] >= self.sim.t - 1e-6]
+            if arr.shape[0] < 3:
+                return None
+            end = arr[-1, 1:3]
+            u = end - np.array([a.x, a.y])
+            length = float(np.hypot(*u)) or 1.0
+            off = np.abs((arr[:, 1] - a.x) * u[1] - (arr[:, 2] - a.y) * u[0]) / length
+            k = int(np.argmax(off))
+            if off[k] < ROUTE_MIN_OFFSET_NM:
+                return None
+            turn = (float(arr[k, 1]), float(arr[k, 2]))
+        hdg = float(np.degrees(np.arctan2(turn[0] - a.x, turn[1] - a.y)) % 360)
+        return [turn], a.route[-1], hdg, float(math.hypot(turn[0] - a.x, turn[1] - a.y))
 
     def _send_by_datalink(self, card: InstructionCard) -> None:
         """Controller-pilot data link: the instruction arrives as text and the crew accepts it.
@@ -548,12 +625,34 @@ class World:
         if a is None or a.is_intruder:
             return
         now = self.sim.t
+        if card.minor:  # applied quietly: no card, no transcript line, nothing to watch
+            for cmd in items_to_sim_commands(card.items):
+                self.sim.apply(card.callsign, cmd)
+            card.via, card.status = "datalink", "validated"
+            return
+        commands = items_to_sim_commands(card.items)
+        watched = list(card.items)
+        text = card.phrase
+        reroute = self._planned_route(card.callsign) if any(i.type == "heading" for i in card.items) else None
+        if reroute is not None:
+            # By voice a reroute is a heading now and a "direct" later. By data link it is the planned
+            # path itself, so the aircraft flies the line drawn on the map, turn for turn.
+            via, exit_name, hdg, leg_nm = reroute
+            commands = [c for c in commands if c.kind not in ("heading", "direct")]
+            commands.append(SimCommand(kind="route", value=exit_name, via=via))
+            watched = [i if i.type != "heading" else i.model_copy(update={"value": int(round(hdg)) % 360 or 360})
+                       for i in card.items if i.type != "route"]
+            from pilots.readback import say_callsign, say_digits
+            rest = [p for p in card.phrase.split(", ")[1:] if "heading" not in p and "direct" not in p]
+            text = ", ".join([say_callsign(card.callsign),
+                              f"reroute heading {say_digits(f'{int(round(hdg)) % 360:03d}')} for {leg_nm:.0f} miles then direct {exit_name}",
+                              *rest])
         c = OpenClearance(id=self.core.store.next_id(), callsign=card.callsign, items=card.items,
                           issued_at=now, card_id=card.id)
         self.core.store.open(c)
         self.core.store.resolve(c.id, "matched")
-        self.core.conformance.watch(c, c.items, now=now)
-        for cmd in items_to_sim_commands(card.items):
+        self.core.conformance.watch(c, watched, now=now)
+        for cmd in commands:
             self.sim.apply(card.callsign, cmd)
         card.via = "datalink"
         self._link_card(card, c.id)
@@ -563,7 +662,7 @@ class World:
         self.datalink_sent += 1
         self.emit(event("clearance_opened", c, t=now))
         tx = Transmission(id=f"tx-{uuid.uuid4().hex[:8]}", t_start=now, t_end=now, audio_ref="",
-                          text_raw=f"{card.phrase}  ·  WILCO", text_norm=card.phrase, asr_confidence=1.0,
+                          text_raw=f"{text}  ·  WILCO", text_norm=text, asr_confidence=1.0,
                           speaker="datalink")
         p = tx.model_dump()
         p["callsign"] = card.callsign
@@ -580,7 +679,9 @@ class World:
         prev = self.plan
         self.plan = PL.replan(prev, states, self.scenario.waypoints, self.sim.zones, self.buffer_nm,
                               disruption=disruption, flights=self.scenario.flights, now_t=self.sim.t,
-                              time_budget_s=0.5, release=release)
+                              time_budget_s=0.5, release=release,
+                              frozen_s=(FROZEN_MANUAL_S if not self.auto_speak else
+                                        FROZEN_LINK_S if self._links_only() else FROZEN_AUTO_S))
         self.plan.trigger = trigger
         self.last_replan_t = self.sim.t
         new_cards = C.cards_from_plan(self.plan, prev, now_t=self.sim.t, states=states)
@@ -596,6 +697,7 @@ class World:
         for card in new_cards:
             self._drop_pending_cards(card.callsign)  # superseded by this one
             self._add_card(card)
+        self._auto_links()  # in Auto the reroutes leave now, not on the next tick of the clock
         return changed
 
     # ------------------------------------------------------------------ disruptions
@@ -635,7 +737,11 @@ class World:
         self.emit(event("disruption", self._disruption_payload(d), t=self.sim.t))
         self.emit_state()
         before = self._unresolved()
+        headings = {a.callsign: a.hdg_deg for a in self.sim.aircraft()}
         changed = self._replan(f"{d.label} {d.id}", disruption=d)
+        self.rerouted.update(changed)
+        self._react = (self.sim.t, {cs: headings[cs] for cs in changed if cs in headings})
+        self.reaction_s = None
         self._disruption_notice(d, changed, before)
         if kind == "emergency" and self.lifecycle == "running":
             self._mayday(d)
@@ -669,8 +775,8 @@ class World:
             t = max(now, float(arr[0, 0])) + lead
             k = int(np.argmin(np.abs(arr[:, 0] - t)))
             x, y = float(arr[k, 1]), float(arr[k, 2])
-            if not DZ.inside_sector(x, y, half * 0.8, circle):
-                continue
+            if not DZ.inside_sector(x, y, half * (0.8 if clear_nm <= 0 else 0.6), circle):
+                continue  # a zone goes mid-sector: on an exit gate nobody can route around it
             room = min((math.hypot(x - ax, y - ay) for ax, ay in now_at), default=999.0)
             spot = (x, y, float(arr[k, 3]), max(60.0, float(arr[k, 0]) - now))
             if room >= clear_nm:
@@ -775,6 +881,24 @@ class World:
         px = a.x_nm + math.sin(r) * a.gs_kt * lead_s / 3600.0
         py = a.y_nm + math.cos(r) * a.gs_kt * lead_s / 3600.0
         return float(np.degrees(np.arctan2(px - x, py - y)) % 360)
+
+    def _measure_reaction(self) -> None:
+        """Live proof of the two things that matter: how fast the traffic turns, and that it stays out."""
+        if self._react is not None and self.reaction_s is None:
+            t0, headings = self._react
+            for cs, h0 in headings.items():
+                a = self.sim.active.get(cs)
+                if a is not None and abs((a.hdg - h0 + 180) % 360 - 180) >= 2.0:
+                    self.reaction_s = round(self.sim.t - t0, 1)
+                    break
+        inside = 0
+        for z in self.sim.zones:
+            for a in self.sim.active.values():
+                if (not a.is_intruder and z.floor_ft - 1000 < a.alt < z.ceiling_ft + 1000
+                        and (a.x - z.x_nm) ** 2 + (a.y - z.y_nm) ** 2 < z.radius_nm ** 2):
+                    inside += 1
+                    self.zone_incursions.add((z.id, a.callsign))
+        self.in_zone_now = inside
 
     def _unresolved(self) -> set[str]:
         return {p.callsign for p in (self.plan.paths if self.plan else [])

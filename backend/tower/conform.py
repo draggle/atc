@@ -15,6 +15,10 @@ WRONG_WAY_S = 20.0
 STALL_S = 30.0  # no movement toward the cleared level at all
 STALL_MIN_PROGRESS_FT = 200.0
 HDG_CONVERGE_S = 60.0
+TURN_RATE_DEG_S = 1.5  # keep in step with sim/engine.py
+STALL_S = 25.0  # this long after the first look, a turn must at least have begun
+STALL_PROGRESS_DEG = 5.0
+TURN_MARGIN_S = 30.0  # on top of the time the turn itself needs
 HDG_TOLERANCE_DEG = 10.0
 DIRECT_TOLERANCE_DEG = 15.0
 MAX_WATCH_S = 180.0
@@ -142,13 +146,34 @@ class ConformanceMonitor:
         w.last_alt, w.last_t = alt, now
         return None
 
+    @staticmethod
+    def _late(w: Watch, diff: float, elapsed: float) -> str | None:
+        """Is this turn overdue? An airliner at cruise turns about 1.5 degrees a second.
+
+        "stalled": STALL_S after we first looked, it has barely begun to turn. That is the wrong
+        readback case, and it should not wait for a full turn's worth of time.
+        "overdue": it is turning, and has had the time the whole turn needs plus a margin.
+        """
+        first_diff = w.extra.setdefault("turn_deg", diff)
+        first_seen = w.extra.setdefault("first_seen", elapsed)
+        if elapsed - first_seen >= STALL_S and first_diff - diff < STALL_PROGRESS_DEG:
+            return "stalled"
+        if elapsed >= first_seen + first_diff / TURN_RATE_DEG_S + TURN_MARGIN_S:
+            return "overdue"
+        return None
+
     def _heading(self, w: Watch, s: AircraftState, elapsed: float) -> Verdict | None:
         cleared = float(w.item.value) % 360
         diff = _ang_diff(s.hdg_deg, cleared)
         if diff <= HDG_TOLERANCE_DEG:
             w.reached = True
             return None
-        if elapsed >= HDG_CONVERGE_S:
+        late = self._late(w, diff, elapsed)
+        if late == "stalled":
+            w.reached = True
+            return self._verdict(w, Item(type="heading", value=int(round(s.hdg_deg)) % 360, unit="deg"),
+                                 f"{w.callsign} is not turning toward {int(cleared):03d}: still heading {int(s.hdg_deg):03d} after {int(elapsed)} s")
+        if late == "overdue":
             w.reached = True
             return self._verdict(w, Item(type="heading", value=int(round(s.hdg_deg)) % 360, unit="deg"),
                                  f"{w.callsign} heading {int(s.hdg_deg):03d} has not converged on {int(cleared):03d} after {int(elapsed)} s")
@@ -164,7 +189,7 @@ class ConformanceMonitor:
         if dist < 2.0 or _ang_diff(s.hdg_deg, brg) <= DIRECT_TOLERANCE_DEG:
             w.reached = True
             return None
-        if elapsed >= HDG_CONVERGE_S:
+        if self._late(w, _ang_diff(s.hdg_deg, brg), elapsed):
             w.reached = True
             return self._verdict(w, Item(type="heading", value=int(round(s.hdg_deg)) % 360, unit="deg"),
                                  f"{w.callsign} heading {int(s.hdg_deg):03d} is not tracking to {w.item.value} (bearing {int(brg):03d})")
