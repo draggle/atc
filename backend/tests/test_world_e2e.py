@@ -306,6 +306,21 @@ def test_an_uncertain_verdict_reaches_the_screen_with_something_to_say(world, mo
     assert [e for e in events if e["type"] == "clearance_updated"][-1]["payload"]["status"] == "uncertain"
 
 
+def test_say_again_voids_the_instruction_instead_of_timing_out(world):
+    """The pilot did not get it and said so. That is not a missing readback 25 s later: nothing was
+    cleared, and the controller says it again."""
+    w, ev = world
+    cs = w.sim.aircraft()[0].callsign
+    ev.clear()
+    asyncio.run(w._controller(f"{cs} descend and maintain flight level two four zero", conf=0.3))  # badly heard
+    for _ in range(40):
+        asyncio.run(w.tick(1.0))
+    assert not [e for e in ev if e["type"] == "alert"], [e["payload"].get("reason") for e in ev if e["type"] == "alert"]
+    assert not w.core.store.open_clearances(cs)
+    assert any(e["type"] == "notice" and "say again" in e["payload"]["text"].lower() for e in ev)
+    assert w.sim.get(cs).target_alt != 24000, "nothing was read back, so nothing is flown"
+
+
 def test_snap_waypoints_uses_route_prior():
     from world import snap_waypoints
     wps = ["WAKOL", "GALTO", "ESTIR", "PIKAR", "CENTA"]

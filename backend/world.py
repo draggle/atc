@@ -1041,7 +1041,11 @@ class World:
             if card is not None:
                 card.via = card.via or "human"
                 self._link_card(card, c.id)
-            self._schedule_pilot(c, heard_ok=(conf >= 0.5))
+            # Tower only guessed this instruction (the language model filled it in): a pilot who
+            # heard the same garble asks for it again. Flying a guess put an aircraft on heading 021.
+            ext = self.core.last_extraction
+            guessed = ext is not None and ext.transmission_id == tx.id and ext.method == "llm" and card is None
+            self._schedule_pilot(c, heard_ok=(conf >= 0.5 and not guessed))
 
     def _trust_the_card(self, card: InstructionCard, events: list[dict[str, Any]]) -> bool:
         """Tower spoke this card itself, so the card is what was said, whatever its own ears heard.
@@ -1155,6 +1159,14 @@ class World:
         self.tier1_latencies.append(time.perf_counter() - t0)
         self.emit(event("transcript", self._tx_payload(tx), t=self.sim.t))
         if resp.kind == "say_again":
+            # The pilot did not get it and said so. Nothing was read back, so nothing is cleared and
+            # nothing is owed: left open, this timed out 25 s later as "no readback, heard nothing".
+            async with self._lock:
+                closed = self.core.store.resolve(c.id, "uncertain")
+            if closed is not None:
+                self.emit(event("clearance_updated", closed, t=self.sim.t))
+            self._set_card_status(c.id, "pending")  # the card is there to be said again
+            self.notice(f"{c.callsign} asked you to say again. Nothing was read back, so say it again.", "warn")
             return
         self._emit_core_events(events)
         alert = next((e for e in events if e["type"] == "alert"), None)

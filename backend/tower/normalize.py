@@ -297,11 +297,38 @@ def _runways(toks: list[_Tok]) -> list[_Tok]:
     return out
 
 
+_NUMBER_LEADS = {"heading", "level", "speed"}
+
+
+def _two_heard_as_to(words: list[str]) -> list[str]:
+    """Whisper writes the digit "two" as "to" or "too": "heading to one one" is heading 211.
+
+    Read it as the digit only where the word "to" cannot be meant:
+      - between two spoken digits ("zero to one" is 021)
+      - straight after heading, level or speed with exactly two digits following, which makes the
+        three-digit value those always have. "reduce speed to two five zero" has three digits
+        after it, so that "to" is a word and stays one.
+    Found live: the grammar could not read "heading to one one", and the language model fallback
+    turned it into a confident "heading 011" against a pilot who had read back 211.
+    """
+    out = list(words)
+    for i, w in enumerate(words):
+        if w.lower() not in ("to", "too"):
+            continue
+        prev = words[i - 1].lower() if i else ""
+        run = 0
+        while i + 1 + run < len(words) and words[i + 1 + run].lower() in DIGITS:
+            run += 1
+        if run and (prev in DIGITS or (prev in _NUMBER_LEADS and run == 2)):
+            out[i] = "two"
+    return out
+
+
 def normalize(text: str) -> str:
     """Normalize dataset-convention ATC text to digits and ICAO codes. Idempotent."""
     if not text or not text.strip():
         return ""
-    words = _pre_tokenize(text)
+    words = _two_heard_as_to(_pre_tokenize(text))
     toks = _apply_telephony(words)
     toks = _collapse(toks)
     toks = _runways(toks)

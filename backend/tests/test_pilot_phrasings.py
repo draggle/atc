@@ -121,3 +121,49 @@ def test_random_phrasings_never_false_alarm_and_errors_are_still_caught():
                         missed.append((et, said))
     assert not false_alarms, false_alarms[:5]
     assert n_err > 500 and not missed, missed[:5]
+
+
+# --- found live on ACA859: "heading two one one" heard as "heading to one one" -----------------------
+
+@pytest.mark.parametrize("heard,value", [
+    ("turn left heading to one one, air canada one two three", 211),
+    ("turn left heading too one one, air canada one two three", 211),
+    ("air canada one two three, left heading zero to one", 21),
+    ("left heading one to zero, air canada one two three", 120),
+])
+def test_two_heard_as_to_inside_a_number(heard, value):
+    ext = parse(normalize(heard), ACTIVE, "pilot", "t")
+    assert [(i.type, i.value) for i in ext.items] == [("heading", value)], normalize(heard)
+
+
+def test_the_word_to_stays_a_word_where_it_is_one():
+    assert normalize("descend to flight level two four zero") == "descend to flight level 240"
+    assert normalize("reduce speed to two five zero knots") == "reduce speed to 250 knots"
+    assert normalize("climb to five thousand") == normalize("climb to five thousand").replace(" 2 ", " to ")
+    assert "250" in normalize("flight level to five zero")  # "two five zero": two digits follow, so it was "two"
+    ext = parse(normalize("contact tower one one eight decimal seven, good day to you"), ACTIVE, "pilot", "t")
+    assert [(i.type, i.value) for i in ext.items] == [("frequency", 118.7)]
+
+
+class _GuessingLLM:
+    """Stands in for the fallback extractor: it always finds a heading, 011, in whatever it is given."""
+    def extract(self, text, active, transmission_id=""):
+        from schemas import Extraction
+        return Extraction(transmission_id=transmission_id, callsign="ACA123", method="llm",
+                          items=[Item(type="heading", value=11, unit="deg", action="turn_left")])
+
+
+def test_a_value_the_model_guessed_from_garble_is_never_a_confident_alert():
+    """The grammar could not read the readback, so the language model filled one in. That is a
+    reason to look again, not evidence the pilot said it."""
+    from tower.parse import parse_with_fallback
+    item = Item(type="heading", value=211, unit="deg", action="turn_left")
+    c = OpenClearance(id="c1", callsign="ACA123", items=[item], issued_at=0.0)
+    text = "turn left heading garble warble, air canada one two three"
+    n = normalize(text)
+    ext = parse_with_fallback(n, ACTIVE, "pilot", _GuessingLLM(), "t")
+    assert ext.method == "llm" and ext.items[0].value == 11
+    tx = Transmission(id="t", t_start=0, t_end=3, audio_ref="", text_raw=text, text_norm=n,
+                      asr_confidence=0.9, speaker="pilot", n_best=[])
+    v = check(c, ext, tx, active=ACTIVE)
+    assert v.result == "ambiguous" and "guess" in v.reason.lower(), (v.result, v.reason)

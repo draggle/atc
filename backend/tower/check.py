@@ -321,6 +321,14 @@ def check(clearance: OpenClearance, readback: Extraction, tx: Transmission,
 
     v.correction_phrase = correction_phrase(clearance, v)
 
+    if readback.method == "llm" and v.error_type in ("wrong_value", "wrong_unit", "wrong_direction", "wrong_runway"):
+        # The grammar could not read this readback, so the language model filled the items in.
+        # A value it guessed out of garble is a reason to listen again, never proof of an error.
+        v.result = "ambiguous"
+        v.confidence = 0.5
+        v.reason = f"{v.reason}; but that value was guessed by the language model from words the parser could not read"
+        return v
+
     hyp = n_best_supports_expected(clearance, v, tx, active)
     if hyp is not None:
         v.result = "ambiguous"
