@@ -192,7 +192,6 @@ export default function MapView() {
   const [exaggeration, setExaggeration] = useState(6);
   const [dropMode, setDropMode] = useState<DropMode>("off");
   const [menuOpen, setMenuOpen] = useState(false);
-  const [globe, setGlobe] = useState(false);
   const [fontReady, setFontReady] = useState(false);
   const trails = useRef(new Map<string, { at: number; pts: [number, number, number][] }>());
 
@@ -247,15 +246,8 @@ export default function MapView() {
     if (loaded) fit();
   }, [sim?.world_id, loaded, fit]);
 
-  useEffect(() => {
-    const map = mapRef.current?.getMap();
-    if (!map || !loaded) return;
-    try {
-      map.setProjection({ type: globe ? "globe" : "mercator" });
-    } catch {
-      /* older styles without projection support: stay flat */
-    }
-  }, [globe, loaded]);
+  // No globe projection. With the deck.gl overlay it drops every aircraft icon, label and ring and
+  // leaves only the lines, and at the scale of one sector the Earth looks flat anyway.
 
   // ---------------------------------------------------------------- aircraft, smoothed
   const planes: Shown[] = useMemo(() => Object.values(tracks).map((tr) => shown(tr, now, frame)), [tracks, now, frame]);
@@ -936,7 +928,6 @@ export default function MapView() {
           <span className="eyebrow">View</span>
           <button className={chip(false)} onClick={() => fit(52, -14)}>Tilt</button>
           <button className={chip(false)} onClick={() => fit(0, 0)}>Top down</button>
-          <button className={chip(globe)} onClick={() => setGlobe((g) => !g)}>Globe</button>
         </div>
         {/* Which lines to draw. Lives here, with the other view controls, so the top bar stays on one row. */}
         <div className="flex items-center gap-2">
