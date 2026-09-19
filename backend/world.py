@@ -1271,7 +1271,7 @@ class World:
 
 _DIRECT_RE = re.compile(r"\b(direct(?:\s+to)?)\s+((?:[a-z]+\s?){1,3})")
 # "estir direct": the shortened readback. Only when no fix follows "direct".
-_DIRECT_POST_RE = re.compile(r"\b((?:[a-z]+\s+){1,3})direct\b(?!\s+(?:to\s+)?[A-Za-z]{3,6}\b)")
+_DIRECT_POST_RE = re.compile(r"\b((?:[a-z]+\s+){1,3})direct\b(?!\s+(?:to\s+)?[A-Za-z]{3,6}\b(?!\s+\d))")
 
 
 def snap_waypoints(text_norm: str, waypoints: list[str], preferred: list[str] | None = None,

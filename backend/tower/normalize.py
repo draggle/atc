@@ -319,8 +319,12 @@ _SPOKEN_DIGIT = {
 _SPOKEN_SIDE = {"L": "left", "R": "right", "C": "centre"}
 
 
-def spell_digits(n: float | str) -> str:
-    """Spell a value one digit at a time in ICAO words: 240 -> 'two four zero', 124.65 -> '... decimal ...'."""
+def spell_digits(n: float | str, sides: bool = True) -> str:
+    """Spell a value one digit at a time in ICAO words: 240 -> 'two four zero', 124.65 -> '... decimal ...'.
+
+    `sides`: L, R and C are a runway's left, right and centre. In a callsign they are letters
+    (`sides=False`): NRL614 is "november romeo lima", never "november right left".
+    """
     s = str(n)
     if isinstance(n, float) and s.endswith(".0"):
         s = s[:-2]
@@ -330,7 +334,7 @@ def spell_digits(n: float | str) -> str:
             words.append(_SPOKEN_DIGIT[ch])
         elif ch == ".":
             words.append("decimal")
-        elif ch.upper() in _SPOKEN_SIDE:
+        elif sides and ch.upper() in _SPOKEN_SIDE:
             words.append(_SPOKEN_SIDE[ch.upper()])
         elif ch.isalpha():
             words.append(_LETTER_WORD[ch.upper()])
@@ -365,9 +369,9 @@ def spoken_callsign(callsign: str) -> str:
     if m and m.group(1) in ICAO_TO_TELEPHONY:
         tail = spell_digits(m.group(2))
         if m.group(3):
-            tail += " " + spell_digits(m.group(3))
+            tail += " " + spell_digits(m.group(3), sides=False)
         return f"{ICAO_TO_TELEPHONY[m.group(1)]} {tail}"
-    return spell_digits(callsign)
+    return spell_digits(callsign, sides=False)
 
 
 def phrase_item(item: Item) -> str:
