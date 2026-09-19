@@ -18,7 +18,7 @@ const STATUS: Record<CardStatus, { label: string; cls: string; bar: string }> = 
 };
 
 /** `arrivedT` and `simT` are both server clock (sim seconds), so the countdown is immune to client lag. */
-function Card({ card, arrivedT, simT, auto, onFrequency }: { card: InstructionCard; arrivedT: number; simT: number; auto: boolean; onFrequency: boolean }) {
+function Card({ card, arrivedT, simT, auto, onFrequency, running }: { card: InstructionCard; arrivedT: number; simT: number; auto: boolean; onFrequency: boolean; running: boolean }) {
   const { send } = useClient();
   const st = STATUS[card.status];
   const remaining = Math.max(0, card.urgency_s - Math.max(0, simT - arrivedT));
@@ -59,7 +59,8 @@ function Card({ card, arrivedT, simT, auto, onFrequency }: { card: InstructionCa
       {card.status === "pending" && !auto && (
         <div className="mt-2 flex items-center gap-2">
           <button
-            disabled={saying}
+            disabled={saying || !running || !onFrequency}
+            title={!running ? "Press Start first. The radio only works while the simulation is running." : !onFrequency ? `${card.callsign} is not on frequency yet.` : undefined}
             onClick={() => {
               setSaying(true);
               send({ type: "speak_card", id: card.id });
@@ -68,7 +69,7 @@ function Card({ card, arrivedT, simT, auto, onFrequency }: { card: InstructionCa
           >
             {saying ? "Saying it…" : "Say it"}
           </button>
-          <span className="text-[10px] text-muted">or hold Space and read it on the radio</span>
+          <span className="text-[10px] text-muted">{!running ? "press Start first: the radio is closed" : !onFrequency ? "waits until the flight checks in" : "or hold Space and read it on the radio"}</span>
         </div>
       )}
       {card.status === "pending" && auto && (
@@ -109,7 +110,7 @@ export default function InstructionCards() {
       ) : (
         <div className="flex flex-col gap-2">
           {visible.map((c) => (
-            <Card key={c.id} card={c} arrivedT={cardT[c.id] ?? simT} simT={simT} auto={auto} onFrequency={c.callsign in aircraft} />
+            <Card key={c.id} card={c} arrivedT={cardT[c.id] ?? simT} simT={simT} auto={auto} onFrequency={c.callsign in aircraft} running={sim?.lifecycle === "running"} />
           ))}
         </div>
       )}
