@@ -17,7 +17,7 @@ import type { Layer, PickingInfo } from "@deck.gl/core";
 import type { StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
-import { highlightMap, useTowerDispatch, useTowerState } from "@/lib/store";
+import { highlightMap, snapshotClock, useTowerDispatch, useTowerState } from "@/lib/store";
 import { DEFAULT_FRAME, latLonToNm, nmToLatLon, type FrameLike } from "@/lib/geo";
 import { latLonOf, shown, type Shown } from "@/lib/interp";
 import type { Disruption, DisruptionKind, DisruptionKindInfo, PlannedPath, Zone } from "@/lib/types";
@@ -632,7 +632,7 @@ export default function MapView() {
           <span className="font-mono w-7 text-right text-fg/80">{exaggeration}x</span>
         </label>
         <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-mono text-muted pt-0.5">
-          <span><span style={{ color: "rgb(132,146,162)" }}>╌╌</span> {sim?.source === "real" ? "flown" : "standard"}</span>
+          <span><span style={{ color: "rgb(132,146,162)" }}>╌╌</span> {sim?.source === "real" ? (sim.meta?.live ? "projected" : "flown") : "standard"}</span>
           <span><span style={{ color: "rgb(70,200,255)" }}>──</span> Tower</span>
           <span><span style={{ color: "rgb(255,176,46)" }}>──</span> replanned</span>
           <span><span style={{ color: "rgb(255,77,94)" }}>◯</span> alert</span>
@@ -640,7 +640,16 @@ export default function MapView() {
           <span><span style={{ color: "rgb(34,211,238)" }}>◯</span> watching</span>
         </div>
         <p className="text-[10px] text-muted/80">Drag to pan, scroll to zoom, right-drag to tilt and rotate.</p>
-        {sim?.source === "real" && (
+        {sim?.source === "real" && sim.meta?.live && state.connection === "mock" ? (
+          <p className="text-[10px] text-muted/80 border-t border-line pt-1.5">
+            Mock snapshot: scripted traffic, not the real sky. Start the backend for a live one.
+          </p>
+        ) : sim?.source === "real" && sim.meta?.live ? (
+          <p className="text-[10px] text-muted/80 border-t border-line pt-1.5">
+            Real flights, one snapshot{snapshotClock(sim.meta.snapshot_utc) && ` taken ${snapshotClock(sim.meta.snapshot_utc)}`}, flown by the simulator from there.
+            {sim.meta.fallback === "saved_snapshot" && " The live feed was unavailable, so this is the saved snapshot from that time."} Dashed lines are each flight&apos;s track projected to the region boundary. Flight data: adsb.lol (ODbL, CC0).{sim.waypoints?.some((w) => w.kind === "gate") && " Gate names are ours."}
+          </p>
+        ) : sim?.source === "real" && (
           <p className="text-[10px] text-muted/80 border-t border-line pt-1.5">
             Real flights, {sim.meta?.date} {String(sim.meta?.hour_utc ?? 0).padStart(2, "0")}:00 UTC. Dashed lines are the tracks actually flown. Flight data: adsb.lol (ODbL, CC0). Gate names are ours.
           </p>

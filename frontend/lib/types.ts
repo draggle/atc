@@ -294,6 +294,18 @@ export interface ScenarioMeta {
   caveats?: string;
   flights_available?: number;
   max_flights?: number;
+  /** Live sky: one snapshot of the traffic over the region, taken when it was loaded. `source` stays "real". */
+  live?: boolean;
+  /** when the snapshot was taken, ISO-8601 */
+  snapshot_utc?: string;
+  /** the live feed was down: "saved_snapshot" is the last snapshot the backend saved (still `live`), "replay" is a recorded hour */
+  fallback?: "saved_snapshot" | "replay";
+}
+
+/** A region live mode can take a snapshot of. */
+export interface LiveRegion {
+  key: string;
+  label: string;
 }
 
 export interface ScenarioInfo {
@@ -319,6 +331,8 @@ export interface SimState {
   /** bumps on every load or reset, so the screen drops the previous world's state */
   world_id?: number;
   scenarios?: ScenarioInfo[];
+  /** absent from backends without live mode */
+  live_regions?: LiveRegion[];
   geo?: GeoFrame;
   /** real: flights and the routes they flew come from recorded traffic */
   source?: "sim" | "real";
@@ -376,6 +390,7 @@ export type ClientMessage =
   | { type: "radio_text"; text: string }
   | { type: "load_scenario"; name: string }
   | { type: "configure"; source: "sim" | "real"; scenario: string; density?: number; max_flights?: number }
+  | { type: "configure"; source: "live"; region: string; max_flights?: number }
   | { type: "start" }
   | { type: "pause" }
   | { type: "reset" }

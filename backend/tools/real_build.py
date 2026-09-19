@@ -13,7 +13,7 @@ For each flight that really crossed the region at cruise:
 Gates: real data has no fix names, and the radio needs one ("proceed direct KOVAL"). Exit points
 cluster naturally where airways leave the region, so we group them (at most 8 NM from a gate) and
 give each group a pronounceable five-letter name. Real fix names are made-up words too. These are
-ours, and the screen says so.
+ours, and the screen says so. The clustering and naming live in sim/gates.py, shared with live mode.
 
 Output: backend/scenarios/real/<region>_<date>_<hhmm>.json, a few hundred KB, committed to the repo
 so nobody else needs the 4 GB archive. Data: adsb.lol, ODbL 1.0 and CC0.
@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import random
 import sys
 import zlib
 from pathlib import Path
@@ -32,13 +31,13 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from schemas import FlightSpec, GeoFrame, Scenario, Waypoint  # noqa: E402
+from sim.gates import cluster_exits  # noqa: E402
 from sim.geoframe import to_xy  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 EXTRACTED = REPO / "data" / "real" / "extracted"
 OUT = REPO / "backend" / "scenarios" / "real"
 
-GATE_SPREAD_NM = 16.0     # a gate serves exits within +-8 NM along the boundary
 EDGE_FRACTION = 0.85      # a clean crossing starts and ends near the boundary
 SIMPLIFY_NM = 1.5         # Douglas-Peucker tolerance for the flown track
 MAX_VERTICES = 8
@@ -62,18 +61,6 @@ def douglas_peucker(pts: np.ndarray, tol: float) -> list[int]:
             keep.add(m)
             stack += [(a, m), (m, b)]
     return sorted(keep)
-
-
-def gate_names(n: int, seed: int, taken: set[str]) -> list[str]:
-    rng = random.Random(seed)
-    cons, vow = "BDGKLMNPRSTVZ", "AEIOU"
-    out: list[str] = []
-    while len(out) < n:
-        name = rng.choice(cons) + rng.choice(vow) + rng.choice(cons) + rng.choice(vow) + rng.choice("KLMNRSTX")
-        if name not in taken:
-            taken.add(name)
-            out.append(name)
-    return out
 
 
 def build(path: Path) -> Path | None:
@@ -117,22 +104,10 @@ def build(path: Path) -> Path | None:
         return None
 
     # ---- gates: cluster exits by angle around the boundary
-    order = sorted(range(len(flights)), key=lambda i: flights[i]["exit_angle"])
-    clusters: list[list[int]] = []
-    for i in order:
-        a = flights[i]["exit_angle"]
-        if clusters and (a - flights[clusters[-1][0]]["exit_angle"]) * R <= GATE_SPREAD_NM:
-            clusters[-1].append(i)
-        else:
-            clusters.append([i])
-    names = gate_names(len(clusters), seed=zlib.crc32(f"{raw['region']}-{raw['hour_utc']}".encode()), taken=set())
-    waypoints: list[Waypoint] = []
-    gate_of: dict[int, str] = {}
-    for name, members in zip(names, clusters):
-        ang = float(np.mean([flights[i]["exit_angle"] for i in members]))
-        waypoints.append(Waypoint(name=name, x_nm=round(R * math.cos(ang), 2), y_nm=round(R * math.sin(ang), 2), kind="gate"))
-        for i in members:
-            gate_of[i] = name
+    gates, gate_names_by_flight = cluster_exits(
+        [f["exit_angle"] for f in flights], R, seed=zlib.crc32(f"{raw['region']}-{raw['hour_utc']}".encode()))
+    waypoints: list[Waypoint] = list(gates)
+    gate_of: dict[int, str] = dict(enumerate(gate_names_by_flight))
 
     specs: list[FlightSpec] = []
     flown_total = 0.0
@@ -155,7 +130,7 @@ def build(path: Path) -> Path | None:
         separation_buffer_nm=3.0, geo=frame, source="real",
         description=f"{len(specs)} airline flights that really crossed {raw['label']} at cruise, {raw['date']} {hh:02d}:00 to {hh + 1:02d}:00 UTC.",
         meta={"region": raw["region"], "label": raw["label"], "date": raw["date"], "hour_utc": hh,
-              "window_s": raw["window_s"], "radius_nm": R, "floor_ft": raw["floor_ft"], "gates": len(clusters),
+              "window_s": raw["window_s"], "radius_nm": R, "floor_ft": raw["floor_ft"], "gates": len(gates),
               "flown_nm_total": round(flown_total, 1), "dropped": dropped,
               "attribution": "Flight data: adsb.lol, ODbL 1.0 and CC0. Gate names are ours.",
               "caveats": "Recorded tracks were shaped by wind, weather and closed airspace we cannot see, so miles saved is an upper bound. Levels and speeds are held constant at each flight's median."},
@@ -163,7 +138,7 @@ def build(path: Path) -> Path | None:
     OUT.mkdir(parents=True, exist_ok=True)
     dest = OUT / f"{raw['region']}_{raw['date']}_{hh:02d}00.json"
     dest.write_text(json.dumps(sc.model_dump(), separators=(",", ":")))
-    print(f"{dest.name}: {len(specs)} flights, {len(clusters)} gates, {dest.stat().st_size // 1024} KB, dropped {dropped}")
+    print(f"{dest.name}: {len(specs)} flights, {len(gates)} gates, {dest.stat().st_size // 1024} KB, dropped {dropped}")
     return dest
 
 

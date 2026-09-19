@@ -14,6 +14,8 @@ phonetically, which is also what a controller does with an unfamiliar operator.
 """
 from __future__ import annotations
 
+import re
+
 ICAO_TO_TELEPHONY: dict[str, str] = {
     # Canada
     "ACA": "Air Canada", "WJA": "WestJet", "JZA": "Jazz", "POE": "Porter", "ROU": "Rouge",
@@ -69,4 +71,15 @@ TELEPHONY_TO_ICAO.update({
     "u p s": "UPS", "sky west": "SKW", "sun express": "SXS", "ice air": "ICE",
 })
 
-__all__ = ["ICAO_TO_TELEPHONY", "TELEPHONY_TO_ICAO"]
+# What counts as an airline flight in real traffic: a three-letter ICAO designator, then a flight
+# identifier that starts with a digit (BAW27G, RYR4JL). Registrations used as callsigns (GABCD,
+# N123AB) and most military and private traffic do not match. Used by the archive extractor and by
+# live mode, so both keep the same flights.
+AIRLINE_CALLSIGN = re.compile(r"^[A-Z]{3}[0-9][A-Z0-9]{0,3}$")
+
+
+def is_airline_callsign(callsign: str | None) -> bool:
+    return bool(callsign) and AIRLINE_CALLSIGN.match(callsign) is not None
+
+
+__all__ = ["AIRLINE_CALLSIGN", "ICAO_TO_TELEPHONY", "TELEPHONY_TO_ICAO", "is_airline_callsign"]

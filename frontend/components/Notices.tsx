@@ -31,7 +31,7 @@ export default function Notices() {
         <button
           key={n.id}
           onClick={() => dispatch({ type: "dismiss_notice", id: n.id })}
-          className={`text-left text-sm rounded-md border px-3 py-2 shadow-lg ${CLS[n.level] ?? CLS.info}`}
+          className={`text-left text-sm rounded-md border px-3 py-2 shadow-lg backdrop-blur-md ${CLS[n.level] ?? CLS.info}`}
         >
           {n.text}
         </button>

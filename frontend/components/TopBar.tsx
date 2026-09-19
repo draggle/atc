@@ -1,6 +1,6 @@
 "use client";
 
-import { useTowerDispatch, useTowerState } from "@/lib/store";
+import { snapshotClock, useTowerDispatch, useTowerState } from "@/lib/store";
 import { useClient } from "./TowerApp";
 import LifecycleControls from "./LifecycleControls";
 
@@ -56,14 +56,33 @@ export default function TopBar() {
   };
   const badge = connBadge[connection];
 
+  // A live snapshot is still source "real": the flights are real, only the moment differs.
+  const place = (sim?.meta?.label ?? sim?.meta?.region ?? "Real traffic").split(" (")[0];
+  const live = sim?.source === "real" && sim.meta?.live === true;
+  const snapshotAt = snapshotClock(sim?.meta?.snapshot_utc);
+  // The mock plays the same scripted flights whatever it is asked for: never call those live.
+  const snapshotTag = connection === "mock" ? "MOCK SNAPSHOT" : sim?.meta?.fallback === "saved_snapshot" ? "SAVED SNAPSHOT" : "LIVE SNAPSHOT";
+  const liveTitle = connection === "mock"
+    ? "Scripted mock traffic, not the real sky. Start the backend for a live snapshot."
+    : `One snapshot of the real sky${snapshotAt ? `, taken ${snapshotAt}` : ""}. The simulator flies it from there.${
+        sim?.meta?.fallback === "saved_snapshot" ? " The live feed was unavailable, so this is the saved snapshot from that time." : ""
+      }`;
+
   return (
     <header className="panel min-h-12 shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1">
       <div className="flex items-baseline gap-2 min-w-0">
         <span className="text-lg font-semibold tracking-tight">Tower</span>
-        <span className="text-xs text-muted truncate max-w-[260px]" title={sim?.scenario ?? undefined}>
-          {sim?.source === "real" && sim.meta
-            ? `${(sim.meta.label ?? "Real traffic").split(" (")[0]} · ${sim.meta.date} ${String(sim.meta.hour_utc ?? 0).padStart(2, "0")}:00Z`
-            : (sim?.scenario ?? "No scenario")}
+        <span className="text-xs text-muted truncate max-w-[300px]" title={live ? liveTitle : (sim?.scenario ?? undefined)}>
+          {live ? (
+            <>
+              <span className="font-mono text-[10px] tracking-wider text-accent">{snapshotTag}</span>
+              {` · ${place}${snapshotAt ? ` · ${snapshotAt}` : ""}`}
+            </>
+          ) : sim?.source === "real" && sim.meta ? (
+            `${place} · ${sim.meta.date} ${String(sim.meta.hour_utc ?? 0).padStart(2, "0")}:00Z`
+          ) : (
+            (sim?.scenario ?? "No scenario")
+          )}
         </span>
       </div>
       <span className="font-mono text-sm text-fg/90 tabular-nums">{fmtClock(sim?.t ?? 0)}</span>
@@ -121,7 +140,8 @@ export default function TopBar() {
       <div className="flex items-center gap-4 text-xs">
         <div>
           <span className="text-muted">miles saved </span>
-          <span className="font-mono text-ok tabular-nums">{milesSaved.toFixed(1)}</span>
+          {/* live snapshot: the standard line is the projected track, so there is nothing to save */}
+          <span className={`font-mono tabular-nums ${live ? "text-muted" : "text-ok"}`}>{live ? "n/a" : milesSaved.toFixed(1)}</span>
         </div>
         <div>
           <span className="text-muted">conflicts </span>

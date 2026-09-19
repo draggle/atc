@@ -48,6 +48,7 @@ from schemas import (
     event,
 )
 from sim import geoframe as GEO
+from sim import regions as REGIONS
 from sim import scenarios as SC
 from sim.engine import Simulator
 from sim.monitor import SeparationMonitor
@@ -139,6 +140,7 @@ class World:
         self.lifecycle: str = "idle"
         self.world_id = 0  # bumps on every load so the screen can drop the previous world's state
         self._base_scenario: Scenario | None = None  # what reset() returns to
+        self.live_loading = False  # a live snapshot is being fetched (sim/live.py); a second request is ignored
         self._lock = asyncio.Lock()
         AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -148,8 +150,15 @@ class World:
         sc = SC.thin(SC.load(name), max_flights)
         self._load_scenario(sc)
 
+    def load_scenario(self, sc: Scenario) -> None:
+        """Load a scenario built elsewhere, such as a live snapshot (sim/live.py). reset() returns to it."""
+        self._load_scenario(sc)
+
     def _load_scenario(self, sc: Scenario) -> None:
         """Build the world and its plan. Does not start the clock: lifecycle becomes "ready"."""
+        # Plan first: if the planner raises on a scenario, the world it was replacing stays whole.
+        baseline = PL.baseline(sc)
+        plan = PL.plan(sc, sc.waypoints, sc.zones, sc.separation_buffer_nm, time_budget_s=1.0)
         self._base_scenario = sc.model_copy(deep=True)
         self.world_id += 1
         self.lifecycle = "ready"
@@ -174,8 +183,8 @@ class World:
         self.disruption_count = 0
         self.buffer_nm = sc.separation_buffer_nm
         self.noise = sc.noise_level
-        self.baseline = PL.baseline(sc)
-        self.plan = PL.plan(sc, sc.waypoints, sc.zones, self.buffer_nm, time_budget_s=1.0)
+        self.baseline = baseline
+        self.plan = plan
         # Planned savings are frozen at the initial plan: after a replan the plan holds remaining
         # distance while the baseline holds full routes, so a live difference would be wrong.
         self.planned_miles_saved = self.baseline.total_distance_nm - self.plan.total_distance_nm
@@ -251,6 +260,7 @@ class World:
             "lifecycle": self.lifecycle,
             "world_id": self.world_id,
             "scenarios": scenario_catalog(),
+            "live_regions": REGIONS.catalog(),  # live mode needs no files, so it is offered even with no replays
             "watching": self.watching(),
             "disruptions": [self._disruption_payload(d) for d in self.disruptions.values()],
             "disruption_kinds": DZ.catalog(),
@@ -877,6 +887,8 @@ class World:
         self.transmissions += 1
         self.tier1_latencies.append(asr_latency + time.perf_counter() - t0)
         self.emit(event("transcript", self._tx_payload(tx), t=self.sim.t))
+        if card is not None and self._trust_the_card(card, events):
+            conf = min(conf, 0.5)
         self._emit_core_events(events)
         opened = [OpenClearance.model_validate(e["payload"]) for e in events if e["type"] == "clearance_opened"]
         if card is not None and not opened:
@@ -897,6 +909,33 @@ class World:
                 card.via = card.via or "human"
                 self._link_card(card, c.id)
             self._schedule_pilot(c, heard_ok=(conf >= 0.5))
+
+    def _trust_the_card(self, card: InstructionCard, events: list[dict[str, Any]]) -> bool:
+        """Tower spoke this card itself, so the card is what was said, whatever its own ears heard.
+
+        Whisper turns a made-up fix into another word ("GEGOR" -> "jigor"), and the clearance then
+        expects a fix nobody was given: the pilot's correct readback alerts and the correction asks
+        for the wrong fix. A human on the mic gets no such benefit of the doubt: they may have misspoken.
+        Returns True if what Tower heard had to be overruled.
+        """
+        overruled = False
+        for e in events:
+            if e["type"] != "clearance_opened":
+                continue
+            heard = OpenClearance.model_validate(e["payload"])
+            if heard.callsign != card.callsign:
+                continue
+            if [(i.type, i.value) for i in heard.items] == [(i.type, i.value) for i in card.items]:
+                continue
+            stored = self.core.store.get(heard.id)
+            if stored is None:
+                continue
+            log.warning("Tower misheard its own card for %s: heard %s, said %s", card.callsign,
+                        [i.value for i in heard.items], [i.value for i in card.items])
+            stored.items = [it.model_copy() for it in card.items]
+            e["payload"] = stored
+            overruled = True
+        return overruled
 
     def _tx_payload(self, tx: Transmission) -> dict[str, Any]:
         """Transmission plus the callsign the parser attached, for the transcript column."""
@@ -976,8 +1015,12 @@ class World:
         alert = next((e for e in events if e["type"] == "alert"), None)
         if alert and self.tower_enabled and self.auto_speak:
             phrase = alert["payload"].get("correction_phrase")
-            if phrase:
+            if phrase and not correction:
                 await self._auto_correct(c, phrase)
+            elif phrase:
+                # One correction, then the human decides. Correcting a correction can loop for ever.
+                self.notice(f"{c.callsign} still reads back wrong after Tower's correction. It is yours to sort out.",
+                            "warn")
 
     async def _hear_pilot(self, resp: PilotResponse) -> Transmission:
         ref = ""
