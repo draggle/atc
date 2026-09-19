@@ -16,22 +16,22 @@ Why the pieces belong together: a tightly optimized plan only works if every ins
 
 ## Status
 
-As of Saturday Sept 19: docs only, no code yet. Update this as pieces land. Items follow the build order in section 12 of `docs/07-build-spec.md`.
+As of Sunday morning Sept 20: steps 0 to 4 work end to end on one laptop with no keys, plus most of 6, 7, 8, 9, 10 in local or mock form. `README.md` has the full table and numbers. `docs/trd/01-pre-ship.md` has what is missing, ordered. Items follow the build order in section 12 of `docs/07-build-spec.md`.
 
-- [ ] 0. Shared schemas and WebSocket events agreed and mocked
-- [ ] 1. Simulator stepping aircraft on routes, radar view drawing them
-- [ ] 2. Mic to stock Whisper to transcript on screen
-- [ ] 3. Spoken clearance moves a plane: normalizer, parser, callsign snapping, state machine, rule checker
-- [ ] 4. One AI pilot reads back by voice with injected errors, first alert fires
-- [ ] 5. Fine-tuned Whisper deployed on Baseten, stock comparison, measured word error rate
-- [ ] 6. Planner: conflict-free plan, fixed-route baseline, instruction cards
-- [ ] 7. Radar verification and the watch tool
-- [ ] 8. Checker cross-encoder trained and combined with rules
-- [ ] 9. Resolver agent with its trace on screen
-- [ ] 10. Replanning around intruders, then Monte Carlo safety evaluation
-- [ ] 11. Sliders, absurd scenarios, data engine
+- [x] 0. Shared schemas and WebSocket events agreed and mocked (`backend/schemas.py`, `docs/08-ws-protocol.md`)
+- [x] 1. Simulator stepping aircraft on routes, radar view drawing them
+- [x] 2. Mic to stock Whisper to transcript on screen (local faster-whisper; Baseten client written)
+- [x] 3. Spoken clearance moves a plane: normalizer, parser, callsign snapping, state machine, rule checker
+- [x] 4. One AI pilot reads back by voice with injected errors, first alert fires (macOS `say`; ElevenLabs client written)
+- [ ] 5. Fine-tuned Whisper deployed on Baseten, stock comparison, measured word error rate. Scripts and Baseten config done; laptop whisper-tiny run only; see `training/RUNS.md`
+- [x] 6. Planner: conflict-free plan, fixed-route baseline, instruction cards
+- [x] 7. Radar verification and the watch tool (backend done; no radar visual yet)
+- [~] 8. Checker cross-encoder trained (laptop, 0.89 accuracy on synthetic pairs) and served; not wired live without `CHECKER_MODEL_URL`
+- [~] 9. Resolver agent with its trace on screen (runs on a deterministic mock without `BASETEN_API_KEY`)
+- [x] 10. Replanning around intruders, then Monte Carlo safety evaluation (three arms, LoS per flight hour, closest approach)
+- [~] 11. Sliders and world-builder agent done; absurd scenarios and data engine not started
 
-Steps 0 to 4 are a complete demo alone and come first.
+Steps 0 to 4 are a complete demo alone and they work.
 
 ## Doc map
 
@@ -45,6 +45,9 @@ Read `docs/01-project.md` first, whatever you are working on. Then:
 | Any new audio source or dataset | `docs/05-data-and-legal.md` before you download anything |
 | What to build next, who owns what, the demo script | `docs/06-plan.md` |
 | **The researched build spec: simulator, planner, safety metrics, AI pilots, checker design, Baseten commands. Wins over 03 and 04 where they differ** | `docs/07-build-spec.md` |
+| The WebSocket protocol the screen and backend speak | `docs/08-ws-protocol.md` |
+| Things the overnight build learned that the spec did not know | `docs/09-overnight-findings.md` |
+| What is missing before judging, and the three teammate TRDs | `docs/trd/` |
 
 Each of `backend/`, `training/`, and `frontend/` has its own short `CLAUDE.md` with that component's contract.
 
@@ -104,7 +107,16 @@ These are proposals. If the team decides otherwise, change them here so every Cl
 
 ## Commands
 
-None yet. When you add a way to run, test, or train something, put the exact command here.
+```bash
+cd backend && uv venv .venv && uv pip install -e ".[dev]"   # once
+cd backend && .venv/bin/pytest -q                              # 145 tests
+cd backend && .venv/bin/uvicorn app:app --port 8000            # backend, first run downloads whisper base.en
+cd frontend && npm install && npm run dev                      # screen at http://localhost:3000, mock mode if no backend
+cd backend && .venv/bin/python -m eval.run_eval --scenario demo --runs 20   # Monte Carlo table
+cd training && uv venv .venv && uv pip install -r requirements.txt && .venv/bin/pytest tests -q
+```
+
+Full run instructions and environment variables are in `README.md`.
 
 ## Keeping this useful
 

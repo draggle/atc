@@ -1,8 +1,0 @@
-Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-device=mps  output=../data/checkpoints/whisper-base-timing
-Loading weights:   0%|          | 0/245 [00:00<?, ?it/s]Loading weights: 100%|██████████| 245/245 [00:00<00:00, 10362.05it/s]
-  0%|          | 0/20 [00:00<?, ?it/s]/Users/josephbarbosa/Desktop/htn/training/.venv/lib/python3.13/site-packages/torch/utils/data/dataloader.py:759: UserWarning: 'pin_memory' argument is set as true but not supported on MPS now, device pinned memory won't be used.
-  super().__init__(loader)
-/Users/josephbarbosa/Desktop/htn/training/.venv/lib/python3.13/site-packages/numba/np/ufunc/dufunc.py:303: RuntimeWarning: invalid value encountered in cast
-  return super().__call__(*args, **kws)
-  5%|▌         | 1/20 [00:05<01:51,  5.84s/it] 10%|█         | 2/20 [00:10<01:28,  4.91s/it] 15%|█▌        | 3/20 [00:14<01:17,  4.58s/it] 20%|██        | 4/20 [00:18<01:11,  4.46s/it] 25%|██▌       | 5/20 [00:22<01:04,  4.30s/it] 30%|███       | 6/20 [00:26<00:59,  4.26s/it] 35%|███▌      | 7/20 [00:31<00:56,  4.34s/it] 40%|████      | 8/20 [00:35<00:52,  4.41s/it] 45%|████▌     | 9/20 [00:40<00:47,  4.34s/it] 50%|█████     | 10/20 [00:44<00:44,  4.41s/it]                                                50%|█████     | 10/20 [00:44<00:44,  4.41s/it] 55%|█████▌    | 11/20 [00:50<00:44,  4.94s/it] 60%|██████    | 12/20 [00:55<00:37,  4.74s/it] 65%|██████▌   | 13/20 [01:00<00:34,  4.88s/it] 70%|███████   | 14/20 [01:06<00:32,  5.37s/it] 75%|███████▌  | 15/20 [01:20<00:39,  7.82s/it]

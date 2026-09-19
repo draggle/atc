@@ -154,6 +154,9 @@ def main() -> None:
     ap.add_argument("--device", default="auto", choices=["auto", "cuda", "mps", "cpu"])
     ap.add_argument("--no-augment", action="store_true")
     ap.add_argument("--limit", type=int, default=None, help="cap train and val rows (smoke)")
+    ap.add_argument("--val-limit", type=int, default=None, help="cap val rows used at eval points (laptop)")
+    ap.add_argument("--eval-batch-size", type=int, default=None, help="default batch-size // 2")
+    ap.add_argument("--grad-checkpoint", action="store_true", help="gradient checkpointing (less memory, ~30%% slower)")
     ap.add_argument("--label", default="run", help="tag for RUNS.md, e.g. SMOKE")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
@@ -174,9 +177,11 @@ def main() -> None:
     model.generation_config.forced_decoder_ids = None
     model.config.forced_decoder_ids = None
     model.config.use_cache = False
+    if args.grad_checkpoint:
+        model.gradient_checkpointing_enable()
 
     train_rows = read_manifest(args.train, args.limit)
-    val_rows = read_manifest(args.val, args.limit)
+    val_rows = read_manifest(args.val, args.val_limit or args.limit)
     aug = None if args.no_augment else AugmentState(1.0)
     train_ds = ManifestDataset(train_rows, processor, aug, seed=args.seed)
     val_ds = ManifestDataset(val_rows, processor, None)
@@ -211,7 +216,7 @@ def main() -> None:
     targs = Seq2SeqTrainingArguments(
         output_dir=str(out_dir),
         per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=max(1, args.batch_size // 2),
+        per_device_eval_batch_size=args.eval_batch_size or max(1, args.batch_size // 2),
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr,
         warmup_steps=args.warmup_steps,
@@ -271,7 +276,7 @@ def main() -> None:
         hyperparams={"lr": args.lr, "warmup": args.warmup_steps, "batch": args.batch_size,
                      "grad_accum": args.grad_accum, "max_steps": args.max_steps, "epochs": args.epochs,
                      "patience": args.patience, "augment": not args.no_augment, "fp16": device == "cuda",
-                     "device": device},
+                     "device": device, "grad_checkpoint": args.grad_checkpoint, "eval_steps": args.eval_steps},
         duration_s=duration,
         result=result,
     )
