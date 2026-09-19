@@ -232,6 +232,9 @@ def cards_from_plan(plan: Plan, previous_plan: Plan | None = None, now_t: float 
             id=f"card-{path.callsign}-{int(now_t)}-{'-'.join(sorted(k for k, _ in (c.key for c in changes)))}",
             callsign=path.callsign, items=items, phrase=phrase_for(path.callsign, items),
             reason=reason_for(primary, path.callsign), urgency_s=urgency, minor=minor,
+            origin="initial" if previous_plan is None else "replan",
+            cause=None if primary.kind == "direct" else (primary.reason_who if primary.reason_who != "traffic" else None),
+            emergency=bool((primary.extra or {}).get("emergency")),
         ))
     cards.sort(key=lambda c: c.urgency_s)
     return cards
@@ -257,7 +260,7 @@ def followup_cards(plan: Plan, states: list[AircraftState], now_t: float) -> lis
                 out.append(InstructionCard(
                     id=f"card-{path.callsign}-{int(now_t)}-direct", callsign=path.callsign, items=[item],
                     phrase=phrase_for(path.callsign, [item]), reason="Dogleg complete, resume direct routing.",
-                    urgency_s=0.0))
+                    urgency_s=0.0, origin="followup"))
     return out
 
 
@@ -280,7 +283,7 @@ def release_cards(plan: Plan, states: list[AircraftState], released: set[str], n
         item = Item(type="route", value=s.route[-1], unit=None, action="direct")
         out.append(InstructionCard(
             id=f"card-{path.callsign}-{int(now_t)}-release", callsign=path.callsign, items=[item],
-            phrase=phrase_for(path.callsign, [item]), reason=why, urgency_s=0.0))
+            phrase=phrase_for(path.callsign, [item]), reason=why, urgency_s=0.0, origin="release"))
     return out
 
 
