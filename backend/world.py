@@ -114,6 +114,10 @@ class World:
         self.noise = sc.noise_level
         self.baseline = PL.baseline(sc)
         self.plan = PL.plan(sc, sc.waypoints, sc.zones, self.buffer_nm, time_budget_s=1.0)
+        # Planned savings are frozen at the initial plan: after a replan the plan holds remaining
+        # distance while the baseline holds full routes, so a live difference would be wrong.
+        self.planned_miles_saved = self.baseline.total_distance_nm - self.plan.total_distance_nm
+        self.planned_time_saved_s = self.baseline.total_time_s - self.plan.total_time_s
         self.last_replan_t = 0.0
         self.emit_state()
         self.emit_plan(self.plan, trigger="initial")
@@ -136,7 +140,12 @@ class World:
             "sector_nm": sc.sector_nm if sc else 200.0,
             "buffer_nm": self.buffer_nm, "error_rate": self.error_rate, "noise": self.noise,
             "speed": self.speed,
+            "watching": self.watching(),
         }, t=self.sim.t))
+
+    def watching(self) -> list[str]:
+        """Callsigns radar verification is currently watching."""
+        return sorted({w.callsign for w in self.core.conformance.watches})
 
     def emit_plan(self, plan: Plan, trigger: str, changed: list[str] | None = None) -> None:
         payload = plan.model_dump()
@@ -157,11 +166,8 @@ class World:
         }, t=self.sim.t))
 
     def scoreboard(self) -> Scoreboard:
-        miles_saved = 0.0
-        time_saved = 0.0
-        if self.plan and self.baseline:
-            miles_saved = self.baseline.total_distance_nm - self.plan.total_distance_nm
-            time_saved = self.baseline.total_time_s - self.plan.total_time_s
+        miles_saved = getattr(self, "planned_miles_saved", 0.0)
+        time_saved = getattr(self, "planned_time_saved_s", 0.0)
         return Scoreboard(
             miles_saved=round(miles_saved, 1), time_saved_s=round(time_saved),
             losses_of_separation=int(self.monitor.losses),
@@ -256,7 +262,8 @@ class World:
             now = self.sim.t
             self.monitor.observe(list(self.sim.active.values()), now)
             states = self.sim.aircraft()
-            self.emit(event("radar", {"aircraft": [a.model_dump() for a in states], "t": now}, t=now))
+            self.emit(event("radar", {"aircraft": [a.model_dump() for a in states], "t": now,
+                                      "watching": self.watching()}, t=now))
             self._emit_core_events(self.core.tick(now, states))
             for cid, t_match in list(self.matched_at.items()):
                 if now - t_match >= CARD_VERIFY_S and not self.core.conformance.watching(
@@ -365,7 +372,7 @@ class World:
             events = self.core.on_transmission(tx, list(self.sim.active), states)
         self.transmissions += 1
         self.tier1_latencies.append(asr_latency + time.perf_counter() - t0)
-        self.emit(event("transcript", tx, t=self.sim.t))
+        self.emit(event("transcript", self._tx_payload(tx), t=self.sim.t))
         self._emit_core_events(events)
         opened = [OpenClearance.model_validate(e["payload"]) for e in events if e["type"] == "clearance_opened"]
         if card is not None and not opened:
@@ -385,6 +392,13 @@ class World:
             if card is not None:
                 self._link_card(card, c.id)
             self._schedule_pilot(c, heard_ok=(conf >= 0.5))
+
+    def _tx_payload(self, tx: Transmission) -> dict[str, Any]:
+        """Transmission plus the callsign the parser attached, for the transcript column."""
+        p = tx.model_dump()
+        ext = self.core.last_extraction
+        p["callsign"] = ext.callsign if ext and ext.transmission_id == tx.id else None
+        return p
 
     def _match_card(self, c: OpenClearance) -> InstructionCard | None:
         for card in self.cards.values():
@@ -447,7 +461,7 @@ class World:
             events = self.core.on_transmission(tx, list(self.sim.active), self.sim.aircraft())
         self.transmissions += 1
         self.tier1_latencies.append(time.perf_counter() - t0)
-        self.emit(event("transcript", tx, t=self.sim.t))
+        self.emit(event("transcript", self._tx_payload(tx), t=self.sim.t))
         if resp.kind == "say_again":
             return
         self._emit_core_events(events)
