@@ -110,7 +110,10 @@ function Card({ card, arrivedT, simT, auto, onFrequency, running, held, tag }: {
 
 /** One word for why a card exists, so nobody has to work it out from the reason text. */
 function tagOf(card: InstructionCard, disruptionIds: Set<string>): { text: string; cls: string } {
-  if (card.emergency) return { text: "Emergency", cls: "border-bad/60 text-bad bg-bad/10" };
+  // A backend from before cards carried `cause` still says it in the reason: "...crossing with STORM1, then...".
+  const named = card.cause ?? (/(?:with|clear of|behind) ([A-Z][A-Z0-9]{2,})/.exec(card.reason)?.[1] ?? null);
+  card = named && !card.cause ? { ...card, cause: named } : card;
+  if (card.emergency || card.reason.startsWith("Immediate")) return { text: "Emergency", cls: "border-bad/60 text-bad bg-bad/10" };
   if (card.origin === "release") return { text: "All clear", cls: "border-ok/50 text-ok bg-ok/10" };
   if (card.origin === "followup") return { text: "Back on course", cls: "border-accent/40 text-accent bg-accent/10" };
   if (card.cause && disruptionIds.has(card.cause)) return { text: `Reroute · ${card.cause}`, cls: "border-warn/60 text-warn bg-warn/10" };

@@ -101,6 +101,17 @@ export default function TopBar() {
           send({ type: "set_tower", enabled: v });
         }}
       />
+      {/* A backend started before the current screen ignores its newer controls, which then look as if
+          they work and snap back. Say so where it cannot be missed, for as long as it is true. */}
+      {sim && sim.lifecycle !== undefined && sim.voice === undefined && (
+        <span
+          className="px-2 py-1 rounded-md border border-bad/60 bg-bad/15 text-bad text-[11px] font-semibold"
+          title="This backend process was started before the Voice switch and card tags were added. Stop it (Ctrl+C, or: lsof -ti:8000 | xargs kill) and start uvicorn again."
+        >
+          BACKEND OUT OF DATE · restart it
+        </span>
+      )}
+
       {/* The one switch, and it is the controller's at any moment.
           Off: Tower sends every instruction by data link, instantly. The path demo.
           On: the real loop. You say each card, the pilot reads it back, Tower checks both. */}
