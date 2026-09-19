@@ -180,6 +180,25 @@ Measured in silent Auto, six disruptions (storm, fighter, alternating) four minu
 
 Not done: the tripwire (replan one flight the moment its projected track enters a zone, instead of waiting for the 15 s check), a click-a-plane comparison of original, current and shadow with the miles, and none of this has been watched at length by a human yet.
 
+### Phase 6c. The spoken loop. Saturday night
+
+One switch now, **Voice: Off | On**, replaces Manual and Auto. Off is the path demo (Tower sends everything by data link, instantly, and the Whisper model is not involved). On is the real loop: Tower proposes a card, the controller says it, the AI pilot reads it back, our Whisper model hears both, and the checker compares. Tower speaking the cards itself is parked; the code is still there (`set_auto_voice`). The screen opens with Voice off (`TOWER_VOICE=on` to change that); `World` itself still defaults to voice on, which is what the tests drive.
+
+**The pilot is a test fixture, not the product.** It is handed the clearance as data and decides, per transmission, to read it back right or make one of the documented pilot errors. It does not listen to the controller. The validator only ever gets the pilot's audio. That is deliberate: a pilot agent that mishears would just be a second speech model making errors we could not count, and we would lose the ground truth that makes "errors caught / injected" an honest number.
+
+Built and checked in a browser with real audio (macOS voices, the deployed run 2 model):
+- **You can hear the frequency.** Before this, a pilot's readback only ever played if it raised an alert. Now every clip goes on the air as a `radio_audio` event *before* it is transcribed, the browser plays clips one at a time in order (`frontend/lib/radio.ts`), the aircraft pulses green while it transmits, and the transcript header says who is speaking. There is a mute.
+- **What you said is checked against the card.** A conflict (heading 210 where the card says 120) is held: nothing goes to the pilot, the card shows what Tower heard, and the controller either says it again or presses **Send as heard**. Tower cannot tell a controller slip from Whisper mishearing the controller, so it asks. Saying only part of a card goes through and the card stays open for the rest. Keying the mic with no callsign or no instruction now says so instead of doing nothing.
+- **The next readback can be scripted:** by chance, correct, wrong value, wrong plane, no reply. One shot. A wrong value on a routing is now a similar-looking *other fix* (`pilots/errors.py::_mutate_route`), and the aircraft really flies to it.
+- **A correction closes the loop.** Saying the correction belongs to the original exchange: the pilot reads it back right, the alert turns green ("corrected and read back right in N s", `alert_resolved`), the card goes to readback OK, the ring comes off the aircraft, and no second alert fires.
+- Cards for flights not yet on frequency say so and have no button.
+
+**Two real bugs this found.**
+- `frontend/lib/ws.ts` has a whitelist of event types and drops anything else without a word. Three new events vanished until they were added there. A new backend event needs a line in three places: that set, `EventMap`, and the reducer.
+- **Waypoint snapping overwrote a clearly spoken fix.** With the aircraft routed to ZAMIR (after a wrong readback), the controller's "proceed direct ESTIR" was rewritten to ZAMIR, because fixes on the aircraft's route were preferred at a very low bar. The correction therefore asked for the wrong fix and the alert could never close. A heard word that *is* a known fix (similarity 88 or more) now stays that fix, and the route preference yields when another fix fits far better.
+
+Still to do from the voice plan: redraw a flight's line from where it really is when the readback is applied (in Voice on, a plane told early leaves its orange line); do not replace a card while the mic is open; the resolver agent still runs inline and can pause the radar for 1 to 3 s; a fixed five-plane voice demo scenario with pre-generated ElevenLabs clips; the ElevenLabs character counter.
+
 ### Phase 7. Scale and robustness. About 2 hours
 - [ ] Planner: initial plan for 150 flights in under 5 seconds, replans inside their budget. If not, cap the scenario and say so
 - [ ] The investigating agent runs off the clock's critical path so the map never freezes while it thinks

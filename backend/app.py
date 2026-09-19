@@ -115,6 +115,9 @@ async def lifespan(_: FastAPI):
     # Nothing runs until the screen sends "start". TOWER_SCENARIO only preloads a world (ready,
     # not running); TOWER_AUTOSTART=1 restores the old behaviour for headless runs.
     world.speed = SPEED
+    # The screen opens on the path demo: voice off, instructions by data link. TOWER_VOICE=on starts
+    # in the spoken loop instead. (World itself defaults to voice on, which is what the tests drive.)
+    world.auto_speak = os.environ.get("TOWER_VOICE", "off").lower() != "on"
     preload = os.environ.get("TOWER_SCENARIO")
     if preload:
         world.load(preload)
@@ -251,6 +254,12 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 world.set_tower(bool(data.get("enabled", True)))
             elif typ == "set_auto_speak":
                 world.set_auto_speak(bool(data.get("enabled", False)))
+            elif typ == "set_voice":  # the one switch: on = you say the cards, off = Tower sends them by data link
+                world.set_voice(bool(data.get("enabled", False)))
+            elif typ == "set_next_readback":  # script the next pilot reply: correct, wrong_value, wrong_aircraft, ...
+                world.set_next_readback(str(data.get("mode", "random")))
+            elif typ == "confirm_heard":  # said-vs-card conflict: the controller meant what Tower heard
+                world.confirm_heard(str(data.get("clearance_id", "")))
             elif typ == "set_auto_voice":  # Auto with Tower's voice (one exchange at a time) or silent and instant
                 world.set_auto_voice(bool(data.get("enabled", False)))
             elif typ == "set_mode":  # {"mode": "manual" | "auto"}: the same switch, by its real name

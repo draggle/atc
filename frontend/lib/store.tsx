@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useReducer, type Dispatch, type ReactNode } from "react";
+import { radio } from "./radio";
 import type {
   AgentReply,
   AircraftState,
@@ -23,6 +24,8 @@ export type Connection = "connecting" | "live" | "mock" | "closed";
 
 export interface ActiveAlert extends AlertPayload {
   received_at: number; // ms wall clock
+  /** Set when the controller's correction was read back right: the alert is closed. */
+  resolved?: { by: "correction"; seconds: number; at: number };
 }
 
 export interface ChatLine {
@@ -91,6 +94,10 @@ export interface TowerState {
   ghosts: Record<string, Ghost>;
   /** Last radar frame's sim time and when it arrived, so anything can be placed at "sim now". */
   simClock: { t: number; at: number };
+  /** card id -> the held clearance, when what you said conflicts with that card */
+  held: Record<string, string>;
+  /** Who is on the frequency right now (the clip being played), for the pulse on the map. */
+  onAir: { speaker: "pilot" | "controller"; callsign: string | null } | null;
   showStock: boolean;
 }
 
@@ -122,6 +129,8 @@ export const initialState: TowerState = {
   planView: "both",
   ghosts: {},
   simClock: { t: 0, at: 0 },
+  held: {},
+  onAir: null,
   showStock: false,
 };
 
@@ -134,6 +143,7 @@ export type Action =
   | { type: "user_chat"; text: string }
   | { type: "set_sliders"; sliders: Sliders }
   | { type: "set_plan_view"; view: PlanView }
+  | { type: "on_air"; clip: { speaker: "pilot" | "controller"; callsign: string | null } | null }
   | { type: "toggle_stock" }
   | { type: "local_toggle"; key: "tower_enabled" | "auto_speak"; value: boolean }
   | { type: "dismiss_notice"; id: number }
@@ -178,6 +188,8 @@ function clearWorld(state: TowerState): TowerState {
     plan: null,
     flashUntil: {},
     ghosts: {},
+    held: {},
+    onAir: null,
     cards: [],
     cardT: {},
     clearances: {},
@@ -273,6 +285,10 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
       if (ev.payload.status === "superseded") {
         return { ...state, cards: state.cards.filter((c) => c.id !== ev.payload.id) };
       }
+      if (!ev.payload.heard_instead && state.held[ev.payload.id]) {
+        const { [ev.payload.id]: _cleared, ...held } = state.held; // said again properly, or sent as heard
+        state = { ...state, held };
+      }
       const idx = state.cards.findIndex((c) => c.id === ev.payload.id);
       const cards = idx >= 0 ? state.cards.map((c, i) => (i === idx ? ev.payload : c)) : [...state.cards, ev.payload];
       const cardT = ev.payload.id in state.cardT ? state.cardT : { ...state.cardT, [ev.payload.id]: ev.t };
@@ -329,6 +345,19 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
       return { ...state, alerts, resolving };
     }
 
+    case "radio_audio":
+      radio?.play(ev.payload); // the clip goes on the air now; its transcript follows a moment later
+      return state;
+
+    case "said_check":
+      return { ...state, held: { ...state.held, [ev.payload.card_id]: ev.payload.clearance_id } };
+
+    case "alert_resolved": {
+      const alerts = state.alerts.map((a) =>
+        a.clearance_id === ev.payload.clearance_id ? { ...a, resolved: { by: ev.payload.by, seconds: ev.payload.seconds, at: Date.now() } } : a);
+      return { ...state, alerts };
+    }
+
     case "disruption": {
       if (ev.payload.active === false) {
         const { [ev.payload.id]: _gone, ...rest } = state.disruptions;
@@ -367,6 +396,8 @@ export function reducer(state: TowerState, action: Action): TowerState {
       return { ...state, chat: [...state.chat, { role: "user" as const, text: action.text, at: Date.now() }].slice(-30) };
     case "set_sliders":
       return { ...state, sliders: action.sliders };
+    case "on_air":
+      return { ...state, onAir: action.clip };
     case "set_plan_view":
       return { ...state, planView: action.view };
     case "toggle_stock":
@@ -400,6 +431,7 @@ export function highlightMap(state: TowerState): Record<string, "alert" | "resol
     if (cs) out[cs] = "resolving";
   }
   for (const a of state.alerts) {
+    if (a.resolved) continue; // corrected and read back right: the red ring comes off the aircraft
     const cs = a.callsign ?? callsignForClearance(state, a.clearance_id);
     if (cs) out[cs] = "alert";
   }

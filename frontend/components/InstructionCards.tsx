@@ -18,7 +18,7 @@ const STATUS: Record<CardStatus, { label: string; cls: string; bar: string }> = 
 };
 
 /** `arrivedT` and `simT` are both server clock (sim seconds), so the countdown is immune to client lag. */
-function Card({ card, arrivedT, simT, auto, onFrequency, running }: { card: InstructionCard; arrivedT: number; simT: number; auto: boolean; onFrequency: boolean; running: boolean }) {
+function Card({ card, arrivedT, simT, auto, onFrequency, running, held }: { card: InstructionCard; arrivedT: number; simT: number; auto: boolean; onFrequency: boolean; running: boolean; held?: string }) {
   const { send } = useClient();
   const st = STATUS[card.status];
   const remaining = Math.max(0, card.urgency_s - Math.max(0, simT - arrivedT));
@@ -56,25 +56,46 @@ function Card({ card, arrivedT, simT, auto, onFrequency, running }: { card: Inst
           <div className={`h-full ${urgent ? "bg-bad" : "bg-accent"}`} style={{ width: `${frac * 100}%`, transition: "width 1s linear" }} />
         </div>
       )}
-      {card.status === "pending" && !auto && (
+      {card.status === "pending" && card.heard_instead && (
+        <div className="mt-2 rounded-md border border-warn/50 bg-warn/10 px-2 py-1.5">
+          <p className="text-[11px] text-warn font-medium">Tower heard something else. Nothing went to the pilot.</p>
+          <p className="mt-0.5 text-xs text-fg/90">&ldquo;{card.heard_instead}&rdquo;</p>
+          <div className="mt-1.5 flex items-center gap-2">
+            <span className="text-[10px] text-muted">Hold Space and say the card again, or</span>
+            {held && (
+              <button
+                onClick={() => send({ type: "confirm_heard", clearance_id: held })}
+                className="px-2 py-0.5 rounded border border-warn/50 text-warn text-[11px] hover:bg-warn/15"
+              >
+                Send as heard
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      {card.status === "pending" && !auto && !onFrequency && (
+        <p className="mt-2 text-[10px] text-muted">Not on frequency yet. Say it when the flight checks in.</p>
+      )}
+      {card.status === "pending" && !auto && onFrequency && (
         <div className="mt-2 flex items-center gap-2">
+          <span className="text-[11px] text-ok font-medium">Hold Space and say it</span>
           <button
             disabled={saying || !running || !onFrequency}
-            title={!running ? "Press Start first. The radio only works while the simulation is running." : !onFrequency ? `${card.callsign} is not on frequency yet.` : undefined}
+            title={!running ? "Press Start first. The radio only works while the simulation is running." : !onFrequency ? `${card.callsign} is not on frequency yet.` : "Tower says it for you in its own voice"}
             onClick={() => {
               setSaying(true);
               send({ type: "speak_card", id: card.id });
             }}
-            className="px-2.5 py-1 rounded-md bg-accent/20 text-accent border border-accent/40 text-xs font-medium hover:bg-accent/30 disabled:opacity-60 disabled:cursor-default"
+            className="ml-auto px-2 py-0.5 rounded-md border border-line text-[11px] text-muted hover:text-fg disabled:opacity-60 disabled:cursor-default"
           >
-            {saying ? "Saying it…" : "Say it"}
+            {saying ? "Saying it…" : "or let Tower say it"}
           </button>
-          <span className="text-[10px] text-muted">{!running ? "press Start first: the radio is closed" : !onFrequency ? "waits until the flight checks in" : "or hold Space and read it on the radio"}</span>
+          {!running && <span className="text-[10px] text-muted">press Start first: the radio is closed</span>}
         </div>
       )}
       {card.status === "pending" && auto && (
         <p className="mt-2 text-[10px] text-warn">
-          {onFrequency ? "Tower has it queued. Hold Space to say it yourself." : "Waits until the flight checks in."}
+          {onFrequency ? "Going out by data link." : "Waits until the flight checks in."}
         </p>
       )}
       {card.via && card.status !== "pending" && (
@@ -87,7 +108,7 @@ function Card({ card, arrivedT, simT, auto, onFrequency, running }: { card: Inst
 }
 
 export default function InstructionCards() {
-  const { cards, cardT, sim, aircraft } = useTowerState();
+  const { cards, cardT, sim, aircraft, held } = useTowerState();
   const auto = sim?.auto_speak ?? false;
   const simT = sim?.t ?? 0;
 
@@ -110,7 +131,7 @@ export default function InstructionCards() {
       ) : (
         <div className="flex flex-col gap-2">
           {visible.map((c) => (
-            <Card key={c.id} card={c} arrivedT={cardT[c.id] ?? simT} simT={simT} auto={auto} onFrequency={c.callsign in aircraft} running={sim?.lifecycle === "running"} />
+            <Card key={c.id} card={c} arrivedT={cardT[c.id] ?? simT} simT={simT} auto={auto} onFrequency={c.callsign in aircraft} running={sim?.lifecycle === "running"} held={held[c.id]} />
           ))}
         </div>
       )}

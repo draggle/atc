@@ -217,7 +217,36 @@ export interface InstructionCard {
   clearance_id: string | null;
   /** Who issued it: the human, Tower's voice (Auto), or Tower by data link (Auto). */
   via?: "human" | "voice" | "datalink" | null;
+  /** What Tower heard you say instead, when it conflicts with this card. The pilot was not told. */
+  heard_instead?: string | null;
 }
+
+/** A clip is on the frequency right now. Sent before it has been transcribed. */
+export interface RadioAudio {
+  speaker: "pilot" | "controller";
+  callsign: string | null;
+  audio_ref: string;
+  duration_s?: number;
+}
+
+/** What the controller said conflicts with the card. Nothing went to the pilot. */
+export interface SaidCheck {
+  clearance_id: string;
+  card_id: string;
+  callsign: string;
+  heard: string;
+  expected: string;
+  detail: string;
+}
+
+export interface AlertResolved {
+  clearance_id: string;
+  callsign: string | null;
+  by: "correction";
+  seconds: number;
+}
+
+export type NextReadback = "random" | "correct" | "wrong_value" | "wrong_aircraft" | "omitted_item" | "missing_readback";
 
 export type PointKind = "fighter" | "drone" | "balloon" | "emergency" | "unknown";
 export type CircleKind = "storm" | "closed" | "rocket";
@@ -334,6 +363,10 @@ export interface SimState {
   auto_speak: boolean;
   /** In Auto: Tower also speaks, one exchange at a time. Off means every instruction goes by data link. */
   auto_voice?: boolean;
+  /** The one switch. On: you say the cards. Off: Tower sends them by data link. (voice === !auto_speak) */
+  voice?: boolean;
+  /** How the next pilot will answer. One shot, then back to "random". */
+  next_readback?: NextReadback;
   lifecycle?: Lifecycle;
   /** sim seconds per real second */
   speed?: number;
@@ -378,6 +411,9 @@ export type EventMap = {
   agent_reply: AgentReply;
   state: SimState;
   notice: Notice;
+  radio_audio: RadioAudio;
+  said_check: SaidCheck;
+  alert_resolved: AlertResolved;
 };
 
 export type EventType = keyof EventMap;
@@ -409,6 +445,9 @@ export type ClientMessage =
   | { type: "set_auto_speak"; enabled: boolean }
   /** Auto with Tower's voice (one exchange at a time), or silent: everything by data link, instantly. */
   | { type: "set_auto_voice"; enabled: boolean }
+  | { type: "set_voice"; enabled: boolean }
+  | { type: "set_next_readback"; mode: NextReadback }
+  | { type: "confirm_heard"; clearance_id: string }
   /** No position, or kind "random": Tower puts it where it will matter. Seeded, so it repeats. */
   | { type: "add_disruption"; kind: DisruptionKind | "random"; x_nm?: number; y_nm?: number }
   | { type: "remove_disruption"; id: string }

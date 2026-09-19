@@ -182,7 +182,8 @@ export default function MapView() {
   const state = useTowerState();
   const dispatch = useTowerDispatch();
   const { send } = useClient();
-  const { sim, tracks, plan, planView, flashUntil, disruptions, watching, selected, follow, ghosts, simClock } = state;
+  const { sim, tracks, plan, planView, flashUntil, disruptions, watching, selected, follow, ghosts, simClock, onAir } = state;
+  const talking = onAir?.callsign ?? null;
 
   const mapRef = useRef<MapRef | null>(null);
   const [mapStyle, setMapStyle] = useState<string | StyleSpecification>(BASEMAP);
@@ -695,7 +696,7 @@ export default function MapView() {
 
     new ScatterplotLayer({
       id: "rings",
-      data: planes.filter((p) => highlights[p.callsign] || watching.includes(p.callsign) || p.callsign === selected),
+      data: planes.filter((p) => highlights[p.callsign] || watching.includes(p.callsign) || p.callsign === selected || p.callsign === talking),
       getPosition: (p: Shown) => [p.lon, p.lat, zOf(p.alt_ft)],
       filled: false,
       stroked: true,
@@ -703,11 +704,12 @@ export default function MapView() {
       radiusUnits: "pixels",
       lineWidthUnits: "pixels",
       getLineWidth: 2,
-      getRadius: (p: Shown) => (highlights[p.callsign] === "alert" ? 14 + pulse * 16 : highlights[p.callsign] === "resolving" ? 15 + pulse * 6 : 16),
+      getRadius: (p: Shown) => (highlights[p.callsign] === "alert" ? 14 + pulse * 16 : highlights[p.callsign] === "resolving" ? 15 + pulse * 6 : p.callsign === talking ? 13 + pulse * 10 : 16),
       getLineColor: (p: Shown) => {
         const h = highlights[p.callsign];
         if (h === "alert") return [255, 77, 94, Math.round(255 * (1 - pulse * 0.8))] as RGBA;
         if (h === "resolving") return C.resolving;
+        if (p.callsign === talking) return [52, 211, 153, Math.round(255 * (1 - pulse * 0.6))] as RGBA; // on the air
         if (watching.includes(p.callsign)) return C.watching;
         return [255, 255, 255, 200] as RGBA;
       },
