@@ -55,9 +55,7 @@ def main() -> int:
     mem.index_waypoints([{"name": "ESTIR", "x_nm": 0, "y_nm": 0, "lat": 43.7, "lon": -79.6},
                          {"name": "PIKAR", "x_nm": 30, "y_nm": 0, "lat": 43.7, "lon": -79.0},
                          {"name": "BOSOX", "x_nm": 60, "y_nm": 0, "lat": 43.7, "lon": -78.4}])
-    print(f"indexed {mem.docs_indexed} documents, {mem.errors} errors")
-    print("waiting 2 s for the cluster to refresh ...")
-    time.sleep(2.0)
+    print(f"indexed {mem.docs_indexed} documents, {mem.errors} errors (each write waited for the refresh)")
 
     ok = True
 
