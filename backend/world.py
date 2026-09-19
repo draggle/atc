@@ -971,11 +971,15 @@ class World:
         wps = self.spoken_waypoints()
         norm0 = normalize(dataset_normalize(text_raw))
         pref = _route_of(self, norm0)
-        norm = snap_waypoints(norm0, wps, pref)
+        # A pilot's readback is the thing being checked: the hint may rescue a garbled fix, but it
+        # must not turn a clearly different fix into the expected one.
+        hint_first = speaker != "pilot"
+        norm = snap_waypoints(norm0, wps, pref, trust_hint=hint_first)
         return Transmission(id=f"tx-{uuid.uuid4().hex[:8]}", t_start=self.sim.t - duration_s,
                             t_end=self.sim.t, audio_ref=audio_ref, text_raw=text_raw,
                             text_norm=norm, asr_confidence=conf, speaker=speaker,
-                            n_best=[snap_waypoints(normalize(h), wps, pref) for h in (n_best or [])],
+                            n_best=[snap_waypoints(normalize(h), wps, pref, trust_hint=hint_first)
+                                    for h in (n_best or [])],
                             text_stock=text_stock)  # type: ignore[arg-type]
 
     async def _transcribe(self, samples: np.ndarray) -> tuple[str, float, list[str], str | None, float]:
@@ -1113,7 +1117,8 @@ class World:
         if c.callsign not in self.sim.active and not correction:
             return
         pilot = self.fleet.get(c.callsign)
-        kw: dict[str, Any] = {"noise_level": self.noise}
+        # the fix names let a pilot read a direct back to the wrong one
+        kw: dict[str, Any] = {"noise_level": self.noise, "waypoints": self.spoken_waypoints()}
         if correction:
             resp: PilotResponse = await asyncio.to_thread(pilot.respond_to_correction, c, self.noise)
         else:
@@ -1255,12 +1260,18 @@ class World:
 _DIRECT_RE = re.compile(r"\b(direct(?:\s+to)?)\s+((?:[a-z]+\s?){1,3})")
 
 
-def snap_waypoints(text_norm: str, waypoints: list[str], preferred: list[str] | None = None) -> str:
+def snap_waypoints(text_norm: str, waypoints: list[str], preferred: list[str] | None = None,
+                   trust_hint: bool = True) -> str:
     """Stock Whisper never gets made-up fix names right ("ESTIR" -> "at better").
 
     Replace the lowercase words after "direct" with the closest known waypoint. Waypoints on the
     addressed aircraft's own route are preferred with a lower bar, the way a controller would
     assume. Deterministic, so it lives in tier 1. See docs/02-domain.md, waypoints.
+
+    `trust_hint=False` is for a pilot's readback. There the route is what we EXPECT to hear, so
+    trying it first at a bar of 30 turns a wrong fix into the right one ("tulick", cleared PIKAR,
+    became PIKAR) and hides the very error Tower exists to catch. A clear match to any real fix
+    is taken first, and the hint only rescues what matches nothing.
     """
     if not waypoints or "direct" not in text_norm:
         return text_norm
@@ -1274,7 +1285,8 @@ def snap_waypoints(text_norm: str, waypoints: list[str], preferred: list[str] | 
 
     def fix(m: "re.Match[str]") -> str:
         heard = m.group(2).strip()
-        for pool, bar in ((pref, 30.0), (names, 60.0)):
+        pools = ((pref, 30.0), (names, 60.0)) if trust_hint else ((names, 60.0), (pref, 30.0))
+        for pool, bar in pools:
             if not pool:
                 continue
             ranked = sorted(((score(heard, n), n) for n in pool), reverse=True)

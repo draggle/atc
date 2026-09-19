@@ -168,6 +168,43 @@ def test_sim_command_follows_spoken_value(tmp_path):
     assert gt["true_items"][0]["value"] == 240
 
 
+FIXES = ["WAKOL", "GALTO", "ESTIR", "PIKAR", "CENTA", "TULEK", "ZAMIR"]
+
+
+def test_a_wrong_fix_can_be_read_back_when_the_pilot_knows_the_fixes():
+    """The headline error: cleared direct ESTIR, reads back another real fix."""
+    direct = [Item(type="route", value="ESTIR", action="direct")]
+    seen = set()
+    for seed in range(40):
+        out, cs, et, desc = inject_error(direct, "ACA123", ACTIVE, random.Random(seed), error_type="wrong_value",
+                                         waypoints=FIXES)
+        assert et == "wrong_value" and cs == "ACA123"
+        assert out[0].type == "route" and out[0].action == "direct"
+        assert out[0].value in FIXES and out[0].value != "ESTIR", "another fix that exists, never the cleared one"
+        assert "ESTIR" in desc and str(out[0].value) in desc
+        seen.add(out[0].value)
+    assert len(seen) > 1, "not always the same wrong fix"
+    assert direct[0].value == "ESTIR", "the true clearance is never mutated"
+
+
+def test_without_a_fix_list_a_direct_cannot_get_a_wrong_value():
+    direct = [Item(type="route", value="ESTIR", action="direct")]
+    for wps in (None, [], ["ESTIR"]):
+        _, _, et, _ = inject_error(direct, "ACA123", ACTIVE, random.Random(1), error_type="wrong_value", waypoints=wps)
+        assert et != "wrong_value"
+
+
+def test_the_plane_flies_to_the_fix_the_pilot_read_back(tmp_path):
+    p = AIPilot("ACA123", rng=random.Random(3), synthesize=False, data_dir=tmp_path)
+    c = clearance([Item(type="route", value="ESTIR", action="direct")])
+    r = p.respond(c, active_callsigns=ACTIVE, error_type="wrong_value", waypoints=FIXES)
+    assert r.injected_error == "wrong_value"
+    wrong = r.spoken_items[0].value
+    assert wrong != "ESTIR" and wrong in FIXES
+    assert r.sim_command.kind == "direct" and r.sim_command.value == wrong, "the plane obeys the readback"
+    assert str(wrong).lower() in r.text
+
+
 def test_ack_only_is_roger_and_flies_true_clearance(tmp_path):
     p = AIPilot("ACA123", rng=random.Random(2), synthesize=False, data_dir=tmp_path)
     c = clearance([Item(type="altitude", value=240, unit="FL", action="descend")])

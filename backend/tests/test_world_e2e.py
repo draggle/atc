@@ -165,6 +165,40 @@ def test_a_correction_is_never_corrected_again(world, monkeypatch):
     assert any(e["type"] == "notice" and "still" in e["payload"]["text"].lower() for e in ev)
 
 
+def test_a_pilots_clear_wrong_fix_is_not_snapped_back_to_the_expected_one():
+    """The route hint rescues a garbled fix. It must not overrule a pilot who said another real fix."""
+    from world import snap_waypoints
+    wps = ["WAKOL", "GALTO", "ESTIR", "PIKAR", "CENTA", "TULEK", "ZAMIR"]
+    # the controller's voice: the hint wins, as before
+    assert snap_waypoints("direct tulick WJA456", wps, ["PIKAR"]) == "direct PIKAR WJA456"
+    # a pilot's readback: a clear match to another real fix is what was said
+    assert snap_waypoints("direct tulick WJA456", wps, ["PIKAR"], trust_hint=False) == "direct TULEK WJA456"
+    assert snap_waypoints("direct zamir UAL210", wps, ["ESTIR"], trust_hint=False) == "direct ZAMIR UAL210"
+    # a pilot's garbled CORRECT readback is still rescued by the hint
+    assert snap_waypoints("ACA123 direct at better", wps, ["ESTIR", "CENTA"], trust_hint=False) == "ACA123 direct ESTIR"
+    assert snap_waypoints("direct jigor ENY3812", ["GEGOR", "MANUM", "KITOR"], ["GEGOR"], trust_hint=False) == "direct GEGOR ENY3812"
+
+
+def test_wrong_fix_readback_alerts_and_the_plane_goes_to_the_wrong_fix(world):
+    w, ev = world
+    a = next(x for x in w.sim.aircraft() if len(w.sim.get(x.callsign).route) >= 2)
+    cs = a.callsign
+    fix = w.sim.get(cs).route[-1]
+    pilot = w.fleet.get(cs)
+    pilot.error_rate = 1.0
+    pilot.error_weights = only("wrong_value")
+    ev.clear()
+    asyncio.run(w.controller_text(f"{cs} proceed direct {fix}"))
+    asyncio.run(w.tick(1.0)); asyncio.run(w.tick(1.0))
+    alerts = [e["payload"] for e in ev if e["type"] == "alert"]
+    assert alerts, types(ev)
+    al = alerts[0]
+    assert al["error_type"] == "wrong_value" and al["callsign"] == cs
+    heard = [i["value"] if isinstance(i, dict) else i.value for i in al["heard"]]
+    assert heard and heard[0] != fix and heard[0] in w.spoken_waypoints(), f"heard {heard}, cleared {fix}"
+    assert w.sim.get(cs).route[:1] == [heard[0]], "the plane obeys the readback, not the clearance"
+
+
 def test_snap_waypoints_uses_route_prior():
     from world import snap_waypoints
     wps = ["WAKOL", "GALTO", "ESTIR", "PIKAR", "CENTA"]
