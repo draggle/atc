@@ -1,5 +1,7 @@
 # 03. Architecture
 
+> **Updated by `07-build-spec.md`.** The schemas and WebSocket events here still hold. The checker design, state machine, extraction strategy, simulator, advisor, and AI pilots are specified there, and that file wins where they differ.
+
 Two tiers. Tier 1 is a fast fixed pipeline that handles most traffic. Tier 2 is a tool-calling agent that wakes only for ambiguous cases.
 
 ```

@@ -6,6 +6,8 @@ When a controller gives an instruction, the pilot must repeat it back, and the c
 
 Mental model: **Whisper hears, the notepad remembers, the agent handles the cases too messy for rules.**
 
+**Scope grew on Sept 19.** Tower now also runs against a simulator, suggests safe shortcuts and conflict fixes, verifies on radar that aircraft do what they were told, and uses AI pilots that read back by voice. The full design is in `docs/07-build-spec.md`. Steps 0 to 4 of its build order are the core and come first.
+
 ## Status
 
 Docs only. No code yet. Update this section as pieces land so nobody has to guess what works.
@@ -28,8 +30,11 @@ Read `docs/01-project.md` first, whatever you are working on. Then:
 | Fine-tuning Whisper, the readback checker, Baseten setup, evaluation | `docs/04-training.md` |
 | Any new audio source or dataset | `docs/05-data-and-legal.md` before you download anything |
 | What to build next, who owns what, the demo script | `docs/06-plan.md` |
+| **The researched build spec: simulator, advisor, AI pilots, checker design, Baseten commands. Wins over 03 and 04 where they differ** | `docs/07-build-spec.md` |
 
 Each of `backend/`, `training/`, and `frontend/` has its own short `CLAUDE.md` with that component's contract.
+
+`docs/00-full-context.md` is a single-file snapshot of everything, including ideas not yet in the numbered docs: the simulator, BlueSky, and the insights view. It is about 900 lines, so do not load it by default. Use it for onboarding or for pasting into a tool that cannot see the repo. The numbered docs win if they disagree.
 
 ## Architecture in ten lines
 
