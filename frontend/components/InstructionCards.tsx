@@ -37,7 +37,7 @@ function Card({ card, arrivedT, simT, auto, onFrequency }: { card: InstructionCa
           <span className="text-[10px] text-muted truncate">{st.label}</span>
         </div>
         <span className={`font-mono text-xs tabular-nums ${urgent ? "text-bad" : "text-muted"}`}>
-          {overdue ? "overdue" : card.status === "pending" || card.status === "spoken" ? `${Math.ceil(remaining)}s` : ""}
+          {overdue ? "overdue" : (card.status === "pending" || card.status === "spoken") && remaining > 0 ? `${Math.ceil(remaining)}s` : ""}
         </span>
       </div>
       <p className="mt-1.5 text-[15px] leading-snug">&ldquo;{card.phrase}&rdquo;</p>
