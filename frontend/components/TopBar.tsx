@@ -39,7 +39,7 @@ function Toggle({
 }
 
 export default function TopBar() {
-  const { sim, plan, connection, planView, scoreboard } = useTowerState();
+  const { sim, plan, connection, scoreboard } = useTowerState();
   const dispatch = useTowerDispatch();
   const { send } = useClient();
 
@@ -135,18 +135,6 @@ export default function TopBar() {
 
       <div className="h-6 w-px bg-line" />
 
-      <div className="flex rounded-md border border-line overflow-hidden text-xs">
-        {(["today", "tower", "both", "changed"] as const).map((v) => (
-          <button
-            key={v}
-            title={{ today: "Only the routes as filed or flown", tower: "Only Tower's paths", both: "Original routes underneath, Tower's paths on top", changed: "Only the flights Tower has moved, with what they were going to fly" }[v]}
-            onClick={() => dispatch({ type: "set_plan_view", view: v })}
-            className={`px-3 py-1 capitalize ${planView === v ? "bg-accent/20 text-accent" : "bg-panel-2 text-muted hover:text-fg"}`}
-          >
-            {{ today: "Original", tower: "Tower", both: "Both", changed: "Changed" }[v]}
-          </button>
-        ))}
-      </div>
 
       <div className="flex items-center gap-4 text-xs">
         <div>

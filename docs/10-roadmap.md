@@ -176,6 +176,8 @@ The team's call: the path reaction is the show, the voice side waits. What we fo
 
 Measured in silent Auto, six disruptions (storm, fighter, alternating) four minutes apart, nobody at the controls: demo, dense, Europe 16:00Z (80 flights), Toronto 21:00Z (92 flights). **No new loss of separation in any. Reroutes leave in the same tick; a replan takes 15 to 155 ms. At most 2 or 3 instructions per flight across all six disruptions** (it was 9 and 11). One aircraft in the dense run clips a storm by 1.7 NM: the storm formed too close for it to avoid and Tower says so at the time. Furthest any aircraft got from its planned line: 1.6 to 2.8 NM.
 
+**Merged with live sky (Ayan's `sim/live.py`) Saturday evening.** A live snapshot is an ordinary scenario, so everything above applies to it unchanged. Checked on the 145-flight Europe fixture with 107 aircraft airborne at once, silent Auto, two storms and two fighters: no new loss of separation, nobody in a zone, reroutes out in the same tick, worst replan about 0.6 s, furthest from a planned line 2.3 NM. Live routes are already straight, so there are no shortcut cards and "miles saved" reads n/a: on live traffic the whole show is the reaction. The line-view switch moved from the top bar to the map's View panel, because with the live label and the Voice switch the top bar wrapped onto a second row and covered the Disrupt control.
+
 Not done: the tripwire (replan one flight the moment its projected track enters a zone, instead of waiting for the 15 s check), a click-a-plane comparison of original, current and shadow with the miles, and none of this has been watched at length by a human yet.
 
 ### Phase 7. Scale and robustness. About 2 hours

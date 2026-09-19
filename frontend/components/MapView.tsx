@@ -672,6 +672,20 @@ export default function MapView() {
           <button className={chip(false)} onClick={() => fit(0, 0)}>Top down</button>
           <button className={chip(globe)} onClick={() => setGlobe((g) => !g)}>Globe</button>
         </div>
+        {/* Which lines to draw. Lives here, with the other view controls, so the top bar stays on one row. */}
+        <div className="flex items-center gap-2">
+          <span className="eyebrow">Lines</span>
+          {(["today", "tower", "both", "changed"] as const).map((v) => (
+            <button
+              key={v}
+              className={chip(planView === v)}
+              title={{ today: "Only the routes as filed, flown or projected", tower: "Only Tower's paths", both: "Original routes underneath, Tower's paths on top", changed: "Only the flights Tower has moved, with what they were going to fly" }[v]}
+              onClick={() => dispatch({ type: "set_plan_view", view: v })}
+            >
+              {{ today: "Original", tower: "Tower", both: "Both", changed: "Changed" }[v]}
+            </button>
+          ))}
+        </div>
         <label className="flex items-center gap-2 text-[11px] text-muted">
           <span className="eyebrow w-[70px]">Altitude</span>
           <input type="range" min={1} max={14} step={1} value={exaggeration} onChange={(e) => setExaggeration(Number(e.target.value))} className="flex-1" />

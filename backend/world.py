@@ -737,11 +737,12 @@ class World:
         self.emit(event("disruption", self._disruption_payload(d), t=self.sim.t))
         self.emit_state()
         before = self._unresolved()
-        headings = {a.callsign: a.hdg_deg for a in self.sim.aircraft()}
+        was = {a.callsign: (a.hdg_deg, a.target_alt_ft, a.target_gs_kt) for a in self.sim.aircraft()}
         changed = self._replan(f"{d.label} {d.id}", disruption=d)
         self.rerouted.update(changed)
-        self._react = (self.sim.t, {cs: headings[cs] for cs in changed if cs in headings})
+        self._react = (self.sim.t, {cs: was[cs] for cs in changed if cs in was})
         self.reaction_s = None
+        self._measure_reaction()  # by data link the new level or speed is already set: that is a reaction too
         self._disruption_notice(d, changed, before)
         if kind == "emergency" and self.lifecycle == "running":
             self._mayday(d)
@@ -885,10 +886,13 @@ class World:
     def _measure_reaction(self) -> None:
         """Live proof of the two things that matter: how fast the traffic turns, and that it stays out."""
         if self._react is not None and self.reaction_s is None:
-            t0, headings = self._react
-            for cs, h0 in headings.items():
+            t0, was = self._react
+            for cs, (hdg0, alt0, gs0) in was.items():
                 a = self.sim.active.get(cs)
-                if a is not None and abs((a.hdg - h0 + 180) % 360 - 180) >= 2.0:
+                if a is None:
+                    continue
+                turning = abs((a.hdg - hdg0 + 180) % 360 - 180) >= 2.0
+                if turning or a.target_alt != alt0 or (gs0 is not None and a.target_gs != gs0):
                     self.reaction_s = round(self.sim.t - t0, 1)
                     break
         inside = 0
