@@ -20,7 +20,7 @@ function Row({ t, showStock }: { t: Transmission; showStock: boolean }) {
   const callsign = callsignOf(t);
   return (
     <div className="grid grid-cols-[4.5rem_5rem_1fr_4rem] gap-2 items-baseline py-1 border-b border-line/40 group" title={t.text_stock ? `stock: ${t.text_stock}` : undefined}>
-      <span className={`text-[10px] uppercase tracking-wider font-semibold ${isCtl ? "text-accent" : t.speaker === "pilot" ? "text-ok" : "text-muted"}`}>{t.speaker}</span>
+      <span className={`text-[10px] uppercase tracking-wider font-semibold ${isCtl ? "text-accent" : t.speaker === "pilot" ? "text-ok" : t.speaker === "datalink" ? "text-warn" : "text-muted"}`}>{t.speaker === "datalink" ? "data link" : t.speaker}</span>
       <span className="font-mono text-xs text-muted truncate">{callsign}</span>
       <div className="min-w-0">
         <span className="text-sm">{showStock && t.text_stock ? t.text_stock : t.text_norm}</span>

@@ -20,10 +20,24 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { highlightMap, useTowerDispatch, useTowerState } from "@/lib/store";
 import { DEFAULT_FRAME, latLonToNm, nmToLatLon, type FrameLike } from "@/lib/geo";
 import { latLonOf, shown, type Shown } from "@/lib/interp";
-import type { PlannedPath, Zone } from "@/lib/types";
+import type { Disruption, DisruptionKind, DisruptionKindInfo, PlannedPath, Zone } from "@/lib/types";
+import FlightStrip from "./FlightStrip";
 import { useClient } from "./TowerApp";
 
-type DropMode = "off" | "intruder" | "storm";
+type DropMode = "off" | DisruptionKind;
+
+/** Used until the backend sends its own menu in `state.disruption_kinds` (and by the mock). */
+const KINDS: DisruptionKindInfo[] = [
+  { kind: "fighter", label: "Fighter jet", blurb: "Fast, straight through, not talking to anyone.", shape: "point" },
+  { kind: "drone", label: "Drone", blurb: "Slow and small, loitering at cruise level.", shape: "point" },
+  { kind: "balloon", label: "Balloon", blurb: "Drifting with the wind.", shape: "point" },
+  { kind: "emergency", label: "Emergency aircraft", blurb: "One of our flights declares a mayday and descends.", shape: "point" },
+  { kind: "unknown", label: "Unknown target", blurb: "No height, no identity. Blocked at every level.", shape: "point" },
+  { kind: "storm", label: "Storm cell", blurb: "Drifts and swells.", shape: "circle" },
+  { kind: "closed", label: "Closed airspace", blurb: "A block of levels shut for a while.", shape: "circle" },
+  { kind: "rocket", label: "Rocket launch", blurb: "A tall column, gone in minutes.", shape: "circle" },
+];
+const ALL_LEVELS_FT = 90000;
 type RGBA = [number, number, number, number];
 
 const BASEMAP = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
@@ -41,6 +55,7 @@ const C = {
   flash: [255, 176, 46, 255] as RGBA,
   aircraft: [224, 232, 242, 255] as RGBA,
   intruder: [255, 77, 94, 255] as RGBA,
+  mayday: [255, 176, 46, 255] as RGBA,
   alert: [255, 77, 94, 255] as RGBA,
   resolving: [255, 176, 46, 255] as RGBA,
   watching: [34, 211, 238, 255] as RGBA,
@@ -56,19 +71,40 @@ const NM_TO_M = 1852;
 const TRAIL_POINTS = 48;
 const TRAIL_EVERY_MS = 700;
 
-// Two glyphs in one atlas, both pointing north: an airliner and a dart for anything uncooperative.
+// One atlas, every glyph pointing north: an airliner, a dart for a jet, a quadcopter, a balloon,
+// and a hollow diamond for a return nobody can identify.
 const ATLAS =
   "data:image/svg+xml;charset=utf-8," +
   encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="64" viewBox="0 0 128 64"><g fill="#fff">` +
+    `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="64" viewBox="0 0 320 64"><g fill="#fff">` +
       `<path d="M32 3 L36.5 22 L61 39 L61 45 L36.5 37 L35.5 52 L43.5 58 L43.5 61.5 L32 58.5 L20.5 61.5 L20.5 58 L28.5 52 L27.5 37 L3 45 L3 39 L27.5 22 Z"/>` +
       `<path d="M96 3 L117 60 L96 49 L75 60 Z"/>` +
+      `<g transform="translate(128 0)"><circle cx="13" cy="13" r="10"/><circle cx="51" cy="13" r="10"/><circle cx="13" cy="51" r="10"/><circle cx="51" cy="51" r="10"/>` +
+      `<path d="M10 16 L16 10 L54 48 L48 54 Z M48 10 L54 16 L16 54 L10 48 Z"/><rect x="24" y="22" width="16" height="20" rx="4"/></g>` +
+      `<g transform="translate(192 0)"><circle cx="32" cy="23" r="21"/><path d="M21 41 L43 41 L37 53 L27 53 Z"/><rect x="26" y="54" width="12" height="9" rx="1.5"/></g>` +
+      `<g transform="translate(256 0)"><path fill-rule="evenodd" d="M32 2 L62 32 L32 62 L2 32 Z M32 15 L49 32 L32 49 L15 32 Z"/><circle cx="32" cy="32" r="6"/></g>` +
       `</g></svg>`,
   );
-const ICONS = {
-  plane: { x: 0, y: 0, width: 64, height: 64, mask: true, anchorX: 32, anchorY: 32 },
-  dart: { x: 64, y: 0, width: 64, height: 64, mask: true, anchorX: 32, anchorY: 32 },
+const glyph = (i: number) => ({ x: i * 64, y: 0, width: 64, height: 64, mask: true, anchorX: 32, anchorY: 32 });
+const ICONS = { plane: glyph(0), dart: glyph(1), drone: glyph(2), balloon: glyph(3), unknown: glyph(4) };
+const iconOf = (p: { is_intruder: boolean; threat?: string | null }): keyof typeof ICONS =>
+  !p.is_intruder || p.threat === "emergency" ? "plane"
+    : p.threat === "drone" ? "drone" : p.threat === "balloon" ? "balloon" : p.threat === "unknown" ? "unknown" : "dart";
+const tintOf = (p: { is_intruder: boolean; threat?: string | null }): RGBA =>
+  p.threat === "emergency" ? C.mayday : C.intruder;
+
+const ZONE_LOOK: Record<string, { fill: RGBA; line: RGBA; top: number }> = {
+  storm: { fill: [168, 85, 247, 46], line: [190, 130, 255, 150], top: 45000 },
+  closed: { fill: [255, 77, 94, 40], line: [255, 77, 94, 160], top: 45000 },
+  rocket: { fill: [255, 176, 46, 38], line: [255, 190, 90, 170], top: 60000 },
+  intruder_buffer: { fill: [255, 77, 94, 22], line: [255, 77, 94, 150], top: 1500 },
 };
+const zoneLook = (kind: string) => ZONE_LOOK[kind] ?? ZONE_LOOK.storm;
+const fl = (ft: number) => `FL${String(Math.round(ft / 100)).padStart(3, "0")}`;
+const levelsOf = (z: { floor_ft?: number; ceiling_ft?: number }) =>
+  (z.ceiling_ft ?? ALL_LEVELS_FT) >= ALL_LEVELS_FT ? "all levels" : `${fl(z.floor_ft ?? 0)} to ${fl(z.ceiling_ft ?? 0)}`;
+const minutesLeft = (expires: number | null | undefined, t: number) =>
+  expires == null ? "" : ` · ${Math.max(0, Math.ceil((expires - t) / 60))} min`;
 
 const ALWAYS_ON_TOP = { depthCompare: "always", depthWriteEnabled: false } as const;
 
@@ -130,6 +166,7 @@ export default function MapView() {
   const [now, setNow] = useState(() => performance.now());
   const [exaggeration, setExaggeration] = useState(6);
   const [dropMode, setDropMode] = useState<DropMode>("off");
+  const [menuOpen, setMenuOpen] = useState(false);
   const [globe, setGlobe] = useState(false);
   const [fontReady, setFontReady] = useState(false);
   const trails = useRef(new Map<string, { at: number; pts: [number, number, number][] }>());
@@ -240,9 +277,16 @@ export default function MapView() {
     return [{ path: c.map(([x, y]) => { const [lat, lon] = nmToLatLon(frame, x, y); return [lon, lat, 0] as [number, number, number]; }) }];
   }, [frame, half, circular]);
 
+  // A zone is drawn between its own floor and ceiling, so a closed block of levels floats.
   const zoneData = useMemo(
-    () => (sim?.zones ?? []).map((z: Zone) => ({ ...z, polygon: ring(frame, z.x_nm, z.y_nm, z.radius_nm) })),
-    [sim?.zones, frame],
+    () => (sim?.zones ?? []).map((z: Zone) => {
+      const floor = zOf(z.floor_ft ?? 0);
+      const top = zOf(Math.min(z.ceiling_ft ?? ALL_LEVELS_FT, zoneLook(z.kind).top));
+      const [lat, lon] = nmToLatLon(frame, z.x_nm, z.y_nm);
+      return { ...z, floor, top, centre: [lon, lat, top] as [number, number, number],
+        polygon: ring(frame, z.x_nm, z.y_nm, z.radius_nm).map(([lo, la]) => [lo, la, floor] as [number, number, number]) };
+    }),
+    [sim?.zones, frame, zOf],
   );
 
   // Busy sky: one line per aircraft, full data block only for the ones that matter right now.
@@ -269,13 +313,30 @@ export default function MapView() {
     new PolygonLayer({
       id: "zones",
       data: zoneData,
-      getPolygon: (d: { polygon: [number, number][] }) => d.polygon,
+      getPolygon: (d: { polygon: [number, number, number][] }) => d.polygon,
       extruded: true,
       wireframe: true,
-      getElevation: (d: Zone) => (d.kind === "intruder_buffer" ? zOf(1500) : zOf(45000)),
-      getFillColor: (d: Zone) => (d.kind === "storm" ? [168, 85, 247, 46] : d.kind === "closed" ? [255, 77, 94, 40] : [255, 77, 94, 22]),
-      getLineColor: (d: Zone) => (d.kind === "storm" ? [190, 130, 255, 150] : [255, 77, 94, 150]),
-      updateTriggers: { getElevation: exaggeration },
+      getElevation: (d: { floor: number; top: number }) => d.top - d.floor,
+      getFillColor: (d: Zone) => zoneLook(d.kind).fill,
+      getLineColor: (d: Zone) => zoneLook(d.kind).line,
+      pickable: true,
+    }),
+    new TextLayer({
+      id: "zone-names",
+      data: zoneData.filter((z) => z.kind !== "intruder_buffer"),
+      getPosition: (d: { centre: [number, number, number] }) => d.centre,
+      getText: (z: Zone) => `${z.id}\n${levelsOf(z)}${minutesLeft(z.expires_t, sim?.t ?? 0)}`,
+      getSize: 10.5,
+      getColor: (z: Zone) => { const c = zoneLook(z.kind).line; return [c[0], c[1], c[2], 255] as RGBA; },
+      getTextAnchor: "middle",
+      getAlignmentBaseline: "center",
+      lineHeight: 1.2,
+      fontFamily: fontReady ? '"B612 Mono", ui-monospace, monospace' : "ui-monospace, monospace",
+      fontSettings: { sdf: true },
+      outlineWidth: 4,
+      outlineColor: C.ink,
+      parameters: ALWAYS_ON_TOP,
+      updateTriggers: { getText: Math.floor((sim?.t ?? 0) / 30) },
     }),
 
     new PathLayer({
@@ -306,8 +367,8 @@ export default function MapView() {
     new PathLayer({
       id: "intruder-paths",
       data: Object.values(disruptions).filter((d) => (d.predicted_lonlat?.length ?? 0) > 1),
-      getPath: (d: { predicted_lonlat?: [number, number, number][] }) => (d.predicted_lonlat ?? []).map(([lon, lat]) => [lon, lat, zOf(30000)] as [number, number, number]),
-      getColor: [255, 77, 94, 170],
+      getPath: (d: Disruption) => (d.predicted_lonlat ?? []).map(([lon, lat]) => [lon, lat, zOf(d.alt_ft ?? 30000)] as [number, number, number]),
+      getColor: (d: Disruption) => (d.kind === "emergency" ? [255, 176, 46, 170] : [255, 77, 94, 170]),
       getWidth: 1.6,
       widthUnits: "pixels",
       extensions: [new PathStyleExtension({ dash: true })],
@@ -354,7 +415,7 @@ export default function MapView() {
       data: planes,
       getSourcePosition: (p: Shown) => [p.lon, p.lat, 0],
       getTargetPosition: (p: Shown) => [p.lon, p.lat, zOf(p.alt_ft)],
-      getColor: (p: Shown) => (p.is_intruder ? [255, 77, 94, 90] : C.stem),
+      getColor: (p: Shown) => (p.is_intruder ? (p.threat === "emergency" ? [255, 176, 46, 110] : [255, 77, 94, 90]) : C.stem),
       getWidth: 1,
       widthUnits: "pixels",
       updateTriggers: { getTargetPosition: exaggeration },
@@ -395,13 +456,13 @@ export default function MapView() {
       data: planes,
       iconAtlas: ATLAS,
       iconMapping: ICONS,
-      getIcon: (p: Shown) => (p.is_intruder ? "dart" : "plane"),
+      getIcon: (p: Shown) => iconOf(p),
       getPosition: (p: Shown) => [p.lon, p.lat, zOf(p.alt_ft)],
-      getAngle: (p: Shown) => -p.hdg_deg,
-      getSize: (p: Shown) => (p.callsign === selected ? 34 : dense ? 21 : 27),
+      getAngle: (p: Shown) => (p.threat === "balloon" || p.threat === "unknown" ? 0 : -p.hdg_deg),
+      getSize: (p: Shown) => (p.callsign === selected ? 34 : p.is_intruder ? 28 : dense ? 21 : 27),
       sizeUnits: "pixels",
       billboard: false,
-      getColor: (p: Shown) => (p.is_intruder ? C.intruder : highlights[p.callsign] === "alert" ? C.alert : C.aircraft),
+      getColor: (p: Shown) => (p.is_intruder ? tintOf(p) : highlights[p.callsign] === "alert" ? C.alert : C.aircraft),
       pickable: true,
       parameters: ALWAYS_ON_TOP,
       updateTriggers: { getPosition: exaggeration, getSize: [selected, dense], getColor: [highlights] },
@@ -411,11 +472,15 @@ export default function MapView() {
       data: planes,
       getPosition: (p: Shown) => [p.lon, p.lat, zOf(p.alt_ft)],
       getText: (p: Shown) =>
-        dense && !important(p)
-          ? `${p.callsign} ${String(Math.round(p.alt_ft / 100)).padStart(3, "0")}`
-          : `${p.callsign}\nFL${String(Math.round(p.alt_ft / 100)).padStart(3, "0")} ${Math.round(p.gs_kt)}`,
+        p.threat === "unknown"
+          ? `${p.callsign}\nno height ${Math.round(p.gs_kt)}`
+          : p.threat === "emergency"
+            ? `${p.callsign} MAYDAY\nFL${String(Math.round(p.alt_ft / 100)).padStart(3, "0")} ↓ ${Math.round(p.gs_kt)}`
+            : dense && !important(p)
+              ? `${p.callsign} ${String(Math.round(p.alt_ft / 100)).padStart(3, "0")}`
+              : `${p.callsign}\nFL${String(Math.round(p.alt_ft / 100)).padStart(3, "0")} ${Math.round(p.gs_kt)}`,
       getSize: (p: Shown) => (dense && !important(p) ? 9.5 : 11),
-      getColor: (p: Shown) => (p.is_intruder ? C.intruder : dense && !important(p) ? ([200, 210, 222, 190] as RGBA) : ([224, 232, 242, 245] as RGBA)),
+      getColor: (p: Shown) => (p.is_intruder ? tintOf(p) : dense && !important(p) ? ([200, 210, 222, 190] as RGBA) : ([224, 232, 242, 245] as RGBA)),
       getPixelOffset: [20, -4],
       getTextAnchor: "start",
       getAlignmentBaseline: "center",
@@ -441,6 +506,7 @@ export default function MapView() {
         const [x, y] = latLonToNm(frame, lat, lon);
         send({ type: "add_disruption", kind: dropMode, x_nm: Math.round(x * 10) / 10, y_nm: Math.round(y * 10) / 10 });
         setDropMode("off");
+        setMenuOpen(false);
         return true;
       }
       if (selected) dispatch({ type: "select", callsign: null });
@@ -452,13 +518,19 @@ export default function MapView() {
   const tooltip = useCallback((info: PickingInfo) => {
     if (!info.object) return null;
     const o = info.object as Partial<Shown> & { name?: string };
+    const z = info.object as Zone;
     const text = info.layer?.id === "aircraft"
       ? `${o.callsign}  ${o.actype ?? ""}\nFL${Math.round((o.alt_ft ?? 0) / 100)}  ${Math.round(o.gs_kt ?? 0)} kt  hdg ${Math.round(o.hdg_deg ?? 0)}`
-      : (o.name ?? "");
+      : info.layer?.id === "zones"
+        ? `${z.label || z.kind}  ${z.id}\n${Math.round(z.radius_nm)} NM radius, ${levelsOf(z)}`
+        : (o.name ?? "");
     return text
       ? { text, style: { background: "rgba(8,11,17,0.92)", color: "#dbe3ec", border: "1px solid rgba(70,200,255,0.25)", borderRadius: "6px", fontFamily: "var(--font-mono)", fontSize: "11px", padding: "6px 8px", whiteSpace: "pre" } }
       : null;
   }, []);
+
+  const kinds = sim?.disruption_kinds?.length ? sim.disruption_kinds : KINDS;
+  const active = Object.values(disruptions).filter((d) => d.active !== false);
 
   const chip = (active: boolean, tone: "accent" | "bad" | "violet" = "accent") => {
     const on = { accent: "bg-accent/20 text-accent border-accent/50", bad: "bg-bad/20 text-bad border-bad/50", violet: "bg-purple-500/20 text-purple-300 border-purple-400/50" }[tone];
@@ -486,12 +558,64 @@ export default function MapView() {
         <DeckOverlay layers={layers} onClick={onDeckClick} getTooltip={tooltip} getCursor={({ isHovering }) => (dropMode !== "off" ? "crosshair" : isHovering ? "pointer" : "grab")} />
       </MapGL>
 
-      {/* drop a disruption */}
-      <div className="glass absolute left-2 top-[68px] flex items-center gap-2 px-2.5 py-2">
-        <span className="eyebrow">Disrupt</span>
-        <button className={chip(dropMode === "intruder", "bad")} onClick={() => setDropMode(dropMode === "intruder" ? "off" : "intruder")}>Intruder</button>
-        <button className={chip(dropMode === "storm", "violet")} onClick={() => setDropMode(dropMode === "storm" ? "off" : "storm")}>Storm</button>
-        <span className="text-[11px] text-muted pl-1">{dropMode === "off" ? `${planes.length} aircraft` : "click the map to place it"}</span>
+      {/* Disrupt: one control. Random puts something where it will matter; Choose lets you place a kind. */}
+      <div className="pointer-events-none absolute left-2 top-[68px] bottom-[330px] w-[336px] flex flex-col gap-2 overflow-y-auto scroll-thin">
+      <div className="glass pointer-events-auto px-2.5 py-2">
+        <div className="flex items-center gap-2">
+          <span className="eyebrow">Disrupt</span>
+          <button
+            className="px-3 py-1 rounded-md border text-xs font-semibold transition-colors bg-warn/15 text-warn border-warn/50 hover:bg-warn/25 disabled:opacity-40"
+            disabled={!sim?.scenario}
+            title="A random kind, dropped on the path of a flight a few minutes ahead. Seeded: the same presses give the same result."
+            onClick={() => { setDropMode("off"); setMenuOpen(false); send({ type: "add_disruption", kind: "random" }); }}
+          >
+            Random
+          </button>
+          <button className={chip(menuOpen || dropMode !== "off")} onClick={() => { setMenuOpen((o) => !o); setDropMode("off"); }}>
+            Choose
+          </button>
+          <span className="ml-auto text-[11px] text-muted">{planes.filter((p) => !p.is_intruder).length} aircraft</span>
+        </div>
+
+        {menuOpen && (
+          <div className="mt-2 grid grid-cols-2 gap-1.5">
+            {kinds.map((k) => (
+              <button
+                key={k.kind}
+                title={k.blurb}
+                className={`${chip(dropMode === k.kind, k.shape === "circle" ? "violet" : "bad")} text-left`}
+                onClick={() => setDropMode(dropMode === k.kind ? "off" : k.kind)}
+              >
+                {k.label}
+              </button>
+            ))}
+          </div>
+        )}
+        {dropMode !== "off" && (
+          <p className="mt-2 text-[11px] text-warn">
+            {dropMode === "emergency" ? "Click near the flight that declares the emergency." : "Click the map to place it."}
+            <span className="text-muted"> {kinds.find((k) => k.kind === dropMode)?.blurb}</span>
+          </p>
+        )}
+
+        {active.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5 border-t border-line pt-2">
+            {active.map((d) => (
+              <span key={d.id} className="inline-flex items-center gap-1.5 rounded-md border border-line bg-panel-2/70 px-2 py-0.5 text-[11px] font-mono">
+                <button className={d.kind === "emergency" ? "text-warn" : d.shape === "circle" ? "text-purple-300" : "text-bad"} title={d.label} onClick={() => d.shape === "point" && dispatch({ type: "select", callsign: d.id })}>
+                  {d.id}
+                </button>
+                <span className="text-muted">{minutesLeft(d.expires_t, sim?.t ?? 0).replace(" · ", "") || d.label}</span>
+                {d.kind !== "emergency" && (
+                  <button className="text-muted hover:text-fg" title="Remove it" onClick={() => send({ type: "remove_disruption", id: d.id })}>✕</button>
+                )}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+      {/* Everything Tower knows about the selected aircraft sits under the control, never over it. */}
+      <FlightStrip />
       </div>
 
       {/* view */}

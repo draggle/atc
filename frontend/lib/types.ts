@@ -6,7 +6,8 @@
 // Tower core (03-architecture.md)
 // ---------------------------------------------------------------------------
 
-export type Speaker = "controller" | "pilot" | "unknown";
+/** "datalink": an instruction Tower sent as text in Auto mode. Nothing was spoken. */
+export type Speaker = "controller" | "pilot" | "unknown" | "datalink";
 export type ItemType =
   | "altitude"
   | "heading"
@@ -118,6 +119,8 @@ export interface AircraftState {
   route: string[];
   actype: string;
   is_intruder: boolean;
+  /** What kind of disruption an intruder is: fighter, drone, balloon, emergency, unknown. */
+  threat?: PointKind | null;
   t: number;
   /** Real-world position, degrees. Present from backends with a GeoFrame (phase 2 onward). */
   lat?: number;
@@ -151,14 +154,20 @@ export interface GeoFrame {
 /** [lon, lat, alt_ft, t]: GeoJSON order, simplified for drawing. */
 export type LonLatAlt = [number, number, number, number];
 
-export type ZoneKind = "storm" | "closed" | "intruder_buffer";
+export type ZoneKind = "storm" | "closed" | "rocket" | "intruder_buffer";
 
+/** Blocked airspace. It may drift and swell (the radar frame carries fresh zones when it does) and end. */
 export interface Zone {
   id: string;
   x_nm: number;
   y_nm: number;
   radius_nm: number;
   kind: ZoneKind;
+  label?: string;
+  /** Blocked between these levels. 99999 means every level. */
+  floor_ft?: number;
+  ceiling_ft?: number;
+  expires_t?: number | null;
   lat?: number;
   lon?: number;
 }
@@ -194,7 +203,8 @@ export interface PlanUpdate extends Plan {
   changed?: string[];
 }
 
-export type CardStatus = "pending" | "spoken" | "validated" | "verified" | "error";
+/** "superseded": a newer plan replaced a card nobody had spoken. The store drops it. */
+export type CardStatus = "pending" | "spoken" | "validated" | "verified" | "error" | "superseded";
 
 export interface InstructionCard {
   id: string;
@@ -205,13 +215,33 @@ export interface InstructionCard {
   urgency_s: number;
   status: CardStatus;
   clearance_id: string | null;
+  /** Who issued it: the human, Tower's voice (Auto), or Tower by data link (Auto). */
+  via?: "human" | "voice" | "datalink" | null;
 }
 
-export type DisruptionKind = "intruder" | "storm" | "closed";
+export type PointKind = "fighter" | "drone" | "balloon" | "emergency" | "unknown";
+export type CircleKind = "storm" | "closed" | "rocket";
+export type DisruptionKind = PointKind | CircleKind;
+
+/** One entry of the Disrupt menu, sent by the backend in `state.disruption_kinds`. */
+export interface DisruptionKindInfo {
+  kind: DisruptionKind;
+  label: string;
+  blurb: string;
+  shape: "point" | "circle";
+}
 
 export interface Disruption {
   id: string;
   kind: DisruptionKind;
+  shape?: "point" | "circle";
+  label?: string;
+  alt_ft?: number | null;
+  floor_ft?: number;
+  ceiling_ft?: number;
+  expires_t?: number | null;
+  /** false when it has expired, left the sector or been removed: the screen drops it. */
+  active?: boolean;
   x_nm: number;
   y_nm: number;
   radius_nm: number;
@@ -299,6 +329,9 @@ export interface SimState {
   sector_nm: number;
   /** Callsigns radar verification is watching after a matched readback. */
   watching?: string[];
+  /** Disruptions still active, so a reconnect restores them. */
+  disruptions?: Disruption[];
+  disruption_kinds?: DisruptionKindInfo[];
 }
 
 // ---------------------------------------------------------------------------
@@ -312,7 +345,8 @@ export type EventMap = {
   alert: AlertPayload;
   resolver_step: ResolverStep;
   stats: Stats;
-  radar: AircraftState[] | { aircraft: AircraftState[]; t?: number; watching?: string[] };
+  /** `zones` is present while any zone is drifting or swelling: it replaces `state.zones`. */
+  radar: AircraftState[] | { aircraft: AircraftState[]; t?: number; watching?: string[]; zones?: Zone[] };
   plan: Plan;
   plan_update: PlanUpdate;
   instruction_card: InstructionCard;
@@ -347,7 +381,10 @@ export type ClientMessage =
   | { type: "reset" }
   | { type: "set_speed"; speed: number }
   | { type: "set_tower"; enabled: boolean }
+  /** Auto: Tower issues the instructions itself. Manual: Tower proposes, the human says it. */
   | { type: "set_auto_speak"; enabled: boolean }
-  | { type: "add_disruption"; kind: "intruder" | "storm"; x_nm: number; y_nm: number }
+  /** No position, or kind "random": Tower puts it where it will matter. Seeded, so it repeats. */
+  | { type: "add_disruption"; kind: DisruptionKind | "random"; x_nm?: number; y_nm?: number }
+  | { type: "remove_disruption"; id: string }
   | { type: "speak_card"; id: string }
   | { type: "set_sliders"; buffer_nm: number; error_rate: number; noise: number };

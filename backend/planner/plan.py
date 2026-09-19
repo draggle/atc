@@ -28,7 +28,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from planner.conflicts import Grid, SEP_FT, SEP_NM, crosses_zone, pairwise_conflicts
+import disruptions as DZ
+from planner.conflicts import Grid, SEP_FT, SEP_NM, ZONE_VERT_MARGIN_FT, crosses_zone, pairwise_conflicts, zone_at, zone_mask
 from planner.trajectory import DT, polyline_length, route_points, sample_path, sample_straight, samples_array, to_planned_path
 from schemas import AircraftState, Disruption, FlightSpec, Plan, PlannedPath, Scenario, Waypoint, Zone
 from sim.geo import bearing_deg
@@ -36,10 +37,14 @@ from sim.geo import bearing_deg
 HARD_SEP_NM = SEP_NM
 HARD_SEP_FT = SEP_FT
 SAMPLING_MARGIN_NM = 1.0
-INTRUDER_BASE_NM = 10.0  # uncooperative traffic: 10 NM growing 1 NM per minute of look-ahead
+INTRUDER_BASE_NM = 10.0  # the fighter's numbers. Every kind has its own: disruptions.py
 INTRUDER_GROWTH_NM_PER_MIN = 1.0
 INTRUDER_SEP_FT = 2000.0
 INTRUDER_HORIZON_S = 1200.0
+ZONE_MARGIN_NM = 3.0  # new paths keep this far outside a zone: a plane on a heading wanders a mile or two
+ESCAPE_S_PER_S = 6.0  # cost of each second spent inside a zone that appeared on top of the flight
+ESCAPE_CLEAR_NM = 6.0  # an escape leg ends this far outside the zone
+ZONE_LEVEL_REACH_FT = 6000.0  # how far a flight will climb or descend to go over or under a zone
 EMERGENCY_LOOKAHEAD_S = 120.0
 EMERGENCY_LEG_S = 90.0
 DEVIATION_NM = 1.5  # off the previous path by more than this => replan from the real position
@@ -65,6 +70,7 @@ class _Flight:
     airborne: bool
     is_intruder: bool = False
     hdg: float | None = None
+    threat: str | None = None
     prefix: np.ndarray = field(default_factory=lambda: np.zeros((0, 4)))
     prev: np.ndarray | None = None
     prev_changes: list[str] = field(default_factory=list)
@@ -102,9 +108,11 @@ def predict_intruder(x: float, y: float, hdg: float, gs: float, alt: float, now_
     return sample_straight(x, y, hdg, gs, now_t, alt, horizon_s)
 
 
-def intruder_radius(samples: np.ndarray, now_t: float) -> np.ndarray:
+def intruder_radius(samples: np.ndarray, now_t: float, threat: str | None = None) -> np.ndarray:
     """Required horizontal separation from an intruder, growing with look-ahead time."""
-    return INTRUDER_BASE_NM + INTRUDER_GROWTH_NM_PER_MIN * np.maximum(samples[:, 0] - now_t, 0) / 60.0
+    prof = DZ.profile(threat)
+    return np.minimum(prof.base_nm + prof.growth_nm_per_min * np.maximum(samples[:, 0] - now_t, 0) / 60.0,
+                      prof.max_nm)
 
 
 def _build_flights(specs: list[FlightSpec], wps: dict[str, Waypoint], states: list[AircraftState] | None,
@@ -117,15 +125,17 @@ def _build_flights(specs: list[FlightSpec], wps: dict[str, Waypoint], states: li
         s = st.get(f.callsign)
         if s is None and states is not None and f.entry_time_s <= now_t:
             continue  # already left the sector
-        if f.is_intruder:
+        if f.is_intruder or (s is not None and s.is_intruder):
+            # Also a scenario flight that has declared an emergency: it no longer takes instructions.
             if s is None and f.entry_time_s > now_t:
                 continue
             x, y = (s.x_nm, s.y_nm) if s else (f.x_nm or 0.0, f.y_nm or 0.0)
-            hdg = s.hdg_deg if s else (f.hdg_deg or 0.0)
+            hdg = (s.target_hdg_deg if s.target_hdg_deg is not None else s.hdg_deg) if s else (f.hdg_deg or 0.0)
             gs = s.gs_kt if s else f.gs_kt
             alt = s.alt_ft if s else f.alt_ft
-            out.append(_Flight(f.callsign, (x, y), max(now_t, f.entry_time_s), alt, alt, gs, (x, y), "",
-                               True, True, hdg))
+            out.append(_Flight(f.callsign, (x, y), max(now_t, f.entry_time_s), alt,
+                               s.target_alt_ft if s else alt, gs, (x, y), "", True, True, hdg,
+                               threat=(s.threat if s else None) or f.threat))
             continue
         if not pts and not (f.x_nm is not None and f.y_nm is not None):
             continue
@@ -220,7 +230,8 @@ def _candidates(fl: _Flight, grid: Grid, zones: list[Zone], with_direct: bool,
         saved = fixed - direct_len if not fl.airborne else _remaining_fixed(fl) - direct_len
         if saved > 0.5:
             base_changes.append(f"direct {fl.exit_name} saves {saved:.1f} NM")
-    who = blocker or "traffic"
+    crossed = [z for z in zones if crosses_zone(ideal, [z], ZONE_MARGIN_NM)]
+    who = blocker or (crossed[0].id if crossed else "traffic")
     at = f" from t={t0:.0f}s" if fl.prefix.shape[0] else ""
     if at and base_changes:
         base_changes[0] += at
@@ -244,34 +255,95 @@ def _candidates(fl: _Flight, grid: Grid, zones: list[Zone], with_direct: bool,
         cost = abs(dalt) / 1000.0 * ALT_PENALTY_S_PER_1000FT + _prev_deviation(fl, s)
         cands.append(_Cand(s, cost, base_changes + [f"altitude {alt:.0f} ft ({dalt:+d}){at} to clear {who}"], "altitude"))
 
+    # Over or under a zone that only blocks some levels.
+    for z in crossed:
+        over = math.ceil((z.ceiling_ft + ZONE_VERT_MARGIN_FT) / 1000.0) * 1000.0
+        under = math.floor((z.floor_ft - ZONE_VERT_MARGIN_FT) / 1000.0) * 1000.0
+        for alt in (over, under):
+            dalt = alt - fl.pref_alt
+            if not (MIN_ALT_FT <= alt <= MAX_ALT_FT) or abs(dalt) > ZONE_LEVEL_REACH_FT or abs(dalt) <= 2000:
+                continue  # within 2,000 ft is already tried above
+            s = _candidate_samples(fl, ideal_pts, fl.gs, alt, t0)
+            cost = abs(dalt) / 1000.0 * ALT_PENALTY_S_PER_1000FT + _prev_deviation(fl, s)
+            cands.append(_Cand(s, cost, base_changes + [f"altitude {alt:.0f} ft ({dalt:+.0f}){at} to clear {z.id}"], "altitude"))
+
     # Doglegs around the first conflict point (traffic) and around crossed zones.
-    pivots: list[tuple[float, float, float]] = []  # (x, y, extra offset)
+    pivots: list[tuple[float, float, float, str]] = []  # (x, y, extra offset, who)
+    wide = False  # the blocker is a threat with a wide buffer: ordinary doglegs will not get round it
     fc = grid.first_conflict(ideal)
     if fc is not None:
         j = fc[1]
-        pivots.append((float(ideal[j, 1]), float(ideal[j, 2]), 0.0))
-    for z in zones:
-        if crosses_zone(ideal, [z]):
-            px, py = _project(start, fl.exit, (z.x_nm, z.y_nm))
-            pivots.append((px, py, z.radius_nm))
+        pivots.append((float(ideal[j, 1]), float(ideal[j, 2]), 0.0, who))
+        wide = float(np.nanmax(grid.rad[grid.names.index(fc[0])])) > HARD_SEP_NM + 4.5
     ux, uy = fl.exit[0] - start[0], fl.exit[1] - start[1]
     L = math.hypot(ux, uy) or 1.0
     ux, uy = ux / L, uy / L
     nx, ny = uy, -ux  # right-hand normal
-    for px, py, extra in pivots:
-        for off in (5, -5, 10, -10):
-            o = off + math.copysign(extra + 3.0, off) if extra else off
-            dog = (px + nx * o, py + ny * o)
-            pts = [start, dog, fl.exit]
-            s = _candidate_samples(fl, pts, fl.gs, fl.pref_alt, t0)
-            added_d = polyline_length(pts) - direct_len
-            cost = DOGLEG_FIXED_S + added_d * 3600.0 / fl.gs * 2 + _prev_deviation(fl, s)
-            hdg = bearing_deg(start[0], start[1], dog[0], dog[1])
-            side = "right" if o > 0 else "left"
-            txt = f"heading {hdg:03.0f} from t={t0:.0f}s ({abs(o):.0f} NM {side} dogleg, then direct {fl.exit_name}) to clear {who}"
-            cands.append(_Cand(s, cost, base_changes + [txt], "dogleg"))
+    dogs: list[tuple[tuple[float, float], str]] = []
+    for z in crossed:
+        # Where the zone will be when the flight gets there, not where it is now.
+        zx, zy, zr = zone_at(z, t0)
+        eta = t0 + math.hypot(zx - start[0], zy - start[1]) / fl.gs * 3600.0
+        zx, zy, zr = zone_at(z, eta)
+        px, py = _project(start, fl.exit, (zx, zy))
+        pivots.append((px, py, zr, z.id))
+        zx, zy, zr = zone_at(z, t0)
+        dist = math.hypot(start[0] - zx, start[1] - zy)
+        clear = zr + ESCAPE_CLEAR_NM
+        if dist < zr + ZONE_MARGIN_NM:
+            # The zone appeared on top of this flight. Offer the short ways out.
+            out = math.atan2(start[0] - zx, start[1] - zy) if dist > 1e-6 else math.atan2(ux, uy)
+            for turn in (0.0, 0.7, -0.7):
+                a = out + turn
+                dogs.append(((zx + math.sin(a) * clear, zy + math.cos(a) * clear), z.id))
+        elif dist < 4 * clear:
+            # Close ahead: an abeam dogleg would still cut the corner. Skim past on a tangent.
+            to_centre = math.atan2(zx - start[0], zy - start[1])
+            half_angle = math.asin(min(1.0, clear / dist))
+            reach = math.sqrt(max(dist * dist - clear * clear, 0.0))
+            for sign in (1.0, -1.0):
+                a = to_centre + sign * (half_angle + 0.06)
+                for run in (reach, reach + clear):
+                    dogs.append(((start[0] + math.sin(a) * run, start[1] + math.cos(a) * run), z.id))
+    for px, py, extra, pw in pivots:
+        for off in (5, -5, 10, -10) + ((18, -18, 28, -28, 40, -40) if wide and not extra else ()):
+            o = off + math.copysign(extra + ZONE_MARGIN_NM + 1.0, off) if extra else off
+            dogs.append(((px + nx * o, py + ny * o), pw))
+    for dog, pw in dogs:
+        pts = [start, dog, fl.exit]
+        s = _candidate_samples(fl, pts, fl.gs, fl.pref_alt, t0)
+        added_d = polyline_length(pts) - direct_len
+        cost = DOGLEG_FIXED_S + added_d * 3600.0 / fl.gs * 2 + _prev_deviation(fl, s)
+        hdg = bearing_deg(start[0], start[1], dog[0], dog[1])
+        o = (dog[0] - start[0]) * nx + (dog[1] - start[1]) * ny  # signed offset from the direct track
+        side = "right" if o > 0 else "left"
+        txt = f"heading {hdg:03.0f} from t={t0:.0f}s ({abs(o):.0f} NM {side} dogleg, then direct {fl.exit_name}) to clear {pw}"
+        cands.append(_Cand(s, cost, base_changes + [txt], "dogleg"))
     cands.sort(key=lambda c: c.cost)
     return cands
+
+
+def _zone_verdict(fl: _Flight, samples: np.ndarray, zones: list[Zone]) -> tuple[bool, float]:
+    """(acceptable, seconds spent escaping) for a candidate against the blocked zones.
+
+    The frozen prefix cannot be changed, so it is not held against the candidate. If the
+    flight is inside a zone when its free path begins, because the zone appeared on top of
+    it, the candidate may spend that first stretch getting out, at a cost, but it may never
+    go back in. A flight that is not yet flying gets no such allowance.
+    """
+    m = zone_mask(samples, zones, ZONE_MARGIN_NM)
+    if not m.any():
+        return True, 0.0
+    free = m[fl.prefix.shape[0]:]
+    if not free.any():
+        return True, 0.0
+    if not fl.airborne or not free[0]:
+        return False, 0.0
+    outside = np.where(~free)[0]
+    if outside.size == 0:
+        return False, 0.0
+    j = int(outside[0])
+    return (not free[j:].any()), j * DT
 
 
 def _second_tier(fl: _Flight, first: list[_Cand]) -> list[_Cand]:
@@ -338,10 +410,20 @@ def _plan_one(fl: _Flight, grid: Grid, zones: list[Zone], buffer_nm: float, with
         cands = _candidates(fl, grid, zones, with_direct, blocker=fc[0])
     tiers = [cands]
     least: tuple[int, _Cand, list[str]] | None = None
+    through: tuple[int, _Cand] | None = None  # nothing avoids the zone: the least time inside it
     for tier_i in range(2):
+        ranked = []
         for c in tiers[tier_i]:
-            if crosses_zone(c.samples, zones, margin_nm=SAMPLING_MARGIN_NM):
-                continue
+            ok, escape_s = _zone_verdict(fl, c.samples, zones)
+            if ok:
+                c.cost += escape_s * ESCAPE_S_PER_S
+                ranked.append(c)
+            elif not grid.conflicts(c.samples).any():
+                inside = int(zone_mask(c.samples, zones, ZONE_MARGIN_NM)[fl.prefix.shape[0]:].sum())
+                if through is None or inside < through[0]:
+                    through = (inside, c)
+        ranked.sort(key=lambda c: c.cost)
+        for c in ranked:
             m = grid.conflicts(c.samples)
             if not m.any():
                 return _Result(c.samples, c.cost, c.changes, [])
@@ -350,8 +432,8 @@ def _plan_one(fl: _Flight, grid: Grid, zones: list[Zone], buffer_nm: float, with
                 least = (n, c, [grid.names[i] for i in np.where(m.any(axis=1))[0]])
         if tier_i == 0:
             tiers.append(_second_tier(fl, cands))
-    if least is None:  # everything crosses a zone: fly the ideal and say so
-        c = cands[0]
+    if least is None:  # nothing stays out of the zone: take the shortest way through, and say so
+        c = through[1] if through is not None else cands[0]
         return _Result(c.samples, c.cost, c.changes + ["unresolved: crosses blocked zone"], [])
     n, c, who = least
     return _Result(c.samples, c.cost + 1e6, c.changes + [f"unresolved conflict with {', '.join(who)}"], who)
@@ -359,7 +441,7 @@ def _plan_one(fl: _Flight, grid: Grid, zones: list[Zone], buffer_nm: float, with
 
 def _add_to_grid(grid: Grid, fl: _Flight, samples: np.ndarray, buffer_nm: float, now_t: float) -> None:
     if fl.is_intruder:
-        grid.add(fl.callsign, samples, intruder_radius(samples, now_t), INTRUDER_SEP_FT)
+        grid.add(fl.callsign, samples, intruder_radius(samples, now_t, fl.threat), DZ.profile(fl.threat).vert_ft)
     else:
         grid.add(fl.callsign, samples, HARD_SEP_NM + max(0.0, buffer_nm) + SAMPLING_MARGIN_NM, HARD_SEP_FT)
 
@@ -379,6 +461,9 @@ def _intruder_grid(flights: list[_Flight], now_t: float) -> Grid:
     for fl in flights:
         if fl.is_intruder:
             s = predict_intruder(fl.start[0], fl.start[1], fl.hdg or 0.0, fl.gs, fl.alt0, fl.start_t)
+            if s.shape[0] and fl.pref_alt != fl.alt0:  # an emergency descent
+                moved = DZ.profile(fl.threat).climb_fpm / 60.0 * (s[:, 0] - fl.start_t)
+                s[:, 3] = fl.alt0 + np.sign(fl.pref_alt - fl.alt0) * np.minimum(moved, abs(fl.pref_alt - fl.alt0))
             _add_to_grid(grid, fl, s, 0.0, now_t)
     return grid
 
@@ -489,7 +574,8 @@ def _specs_from_plan(previous: Plan, states: list[AircraftState], wps: dict[str,
     for s in states:
         if s.is_intruder:
             specs.append(FlightSpec(callsign=s.callsign, route=[], entry_time_s=s.t, alt_ft=s.alt_ft, gs_kt=s.gs_kt,
-                                    is_intruder=True, x_nm=s.x_nm, y_nm=s.y_nm, hdg_deg=s.hdg_deg, actype=s.actype))
+                                    is_intruder=True, threat=s.threat, x_nm=s.x_nm, y_nm=s.y_nm,
+                                    hdg_deg=s.hdg_deg, actype=s.actype))
     return specs
 
 
@@ -523,8 +609,11 @@ def _emergency(fl: _Flight, threats: Grid, now_t: float) -> _Result | None:
 def replan(previous_plan: Plan, states: list[AircraftState], waypoints, zones: list[Zone], buffer: float,
            disruption: Disruption | None = None, frozen_s: float = 60.0, *,
            flights: list[FlightSpec] | None = None, now_t: float | None = None,
-           time_budget_s: float = 1.0) -> Plan:
+           time_budget_s: float = 1.0, release: set[str] | None = None) -> Plan:
     """Repair the previous plan: only conflicting flights move, widened to neighbours if needed.
+
+    `release` names disruptions that have ended. Flights that were moved to clear them are
+    planned again, so they go back to the better route instead of flying around nothing.
 
     Intruders (from `states` or `disruption`) are predicted straight-line with a buffer that
     starts at 10 NM and grows 1 NM per minute. Storm/closed disruptions become zones.
@@ -541,14 +630,27 @@ def replan(previous_plan: Plan, states: list[AircraftState], waypoints, zones: l
     # Trigger label: disruption kind, else "deviation" if someone is off plan, else "replan".
     if disruption is not None:
         trigger = disruption.kind
-        if disruption.kind == "intruder":
+        if DZ.profile(disruption.kind).shape == "point":
             if not any(s.callsign == disruption.id for s in specs):
                 specs.append(FlightSpec(callsign=disruption.id, route=[], entry_time_s=now, is_intruder=True,
+                                        threat=DZ.profile(disruption.kind).kind,
                                         x_nm=disruption.x_nm, y_nm=disruption.y_nm, hdg_deg=disruption.hdg_deg or 0.0,
                                         gs_kt=disruption.gs_kt or 450.0, alt_ft=_intruder_alt(disruption, states)))
-        else:
+        elif not any(z.id == disruption.id for z in zones):
             zones.append(Zone(id=disruption.id, x_nm=disruption.x_nm, y_nm=disruption.y_nm,
-                              radius_nm=disruption.radius_nm, kind=disruption.kind))
+                              radius_nm=disruption.radius_nm, kind=DZ.profile(disruption.kind).kind,  # type: ignore[arg-type]
+                              floor_ft=disruption.floor_ft, ceiling_ft=disruption.ceiling_ft,
+                              hdg_deg=disruption.hdg_deg or 0.0, gs_kt=disruption.gs_kt or 0.0,
+                              swell_nm_per_min=disruption.swell_nm_per_min, max_radius_nm=disruption.max_radius_nm,
+                              t0=now, expires_t=disruption.expires_t))
+    # Every intruder on radar is a threat on every replan, not only the one that triggered this
+    # call. Without this, a periodic repair forgets the fighter and sends traffic back at it.
+    known = {f.callsign for f in specs}
+    for st in states:
+        if st.is_intruder and st.callsign not in known:
+            specs.append(FlightSpec(callsign=st.callsign, route=[], entry_time_s=now, is_intruder=True,
+                                    threat=st.threat, x_nm=st.x_nm, y_nm=st.y_nm, hdg_deg=st.hdg_deg,
+                                    gs_kt=st.gs_kt, alt_ft=st.alt_ft, actype=st.actype))
     all_fl = _build_flights(specs, wps, states, now, previous_plan, frozen_s)
     regular = [f for f in all_fl if not f.is_intruder]
     if disruption is None and any(f.deviated for f in regular):
@@ -580,9 +682,11 @@ def replan(previous_plan: Plan, states: list[AircraftState], waypoints, zones: l
         grid.A = np.vstack([grid.A, threats.A[i]]); grid.rad = np.vstack([grid.rad, threats.rad[i]])
         grid.vert = np.vstack([grid.vert, threats.vert[i:i + 1]])
     moving: list[_Flight] = []
+    ended = tuple(f" to clear {name}" for name in (release or ()))
     for fl in held:
         s = prev_from_now(fl)
-        if fl.deviated or s.shape[0] == 0 or grid.conflicting_names(s) or crosses_zone(s, zones):
+        freed = bool(ended) and any(c.endswith(ended) for c in fl.prev_changes)
+        if freed or fl.deviated or s.shape[0] == 0 or grid.conflicting_names(s) or crosses_zone(s, zones, SAMPLING_MARGIN_NM):
             moving.append(fl)
         else:
             _add_to_grid(grid, fl, s, buffer, now)
@@ -628,4 +732,4 @@ def _intruder_alt(d: Disruption, states: list[AircraftState]) -> float:
     for s in states:
         if s.callsign == d.id:
             return s.alt_ft
-    return 30000.0
+    return d.alt_ft if d.alt_ft is not None else 30000.0

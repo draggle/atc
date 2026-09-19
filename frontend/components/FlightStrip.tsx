@@ -1,6 +1,15 @@
 "use client";
 
 import { useTowerDispatch, useTowerState } from "@/lib/store";
+import { useClient } from "./TowerApp";
+
+const THREAT: Record<string, string> = {
+  fighter: "Fighter jet, not talking to us",
+  drone: "Drone",
+  balloon: "Balloon, drifting",
+  unknown: "Unknown target, no height",
+  emergency: "Emergency, mayday declared",
+};
 
 const STATUS_CLS: Record<string, string> = {
   pending: "text-muted",
@@ -23,6 +32,7 @@ function Field({ label, value, tone }: { label: string; value: string; tone?: st
 export default function FlightStrip() {
   const { selected, follow, aircraft, plan, cards, clearances, watching } = useTowerState();
   const dispatch = useTowerDispatch();
+  const { send } = useClient();
   if (!selected) return null;
   const a = aircraft[selected];
   const path = plan?.paths.find((p) => p.callsign === selected);
@@ -32,13 +42,21 @@ export default function FlightStrip() {
   const trend = Math.abs(climbing) < 150 ? "level" : climbing > 0 ? "climbing" : "descending";
 
   return (
-    <div className="glass absolute left-2 top-[116px] w-[320px] p-3 flex flex-col gap-3">
+    <div className="glass pointer-events-auto p-3 flex flex-col gap-3">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="eyebrow">{a?.is_intruder ? "Uncooperative traffic" : "Flight"}</div>
-          <div className={`font-mono text-xl font-bold tracking-wide ${a?.is_intruder ? "text-bad" : "text-fg"}`}>{selected}</div>
+          <div className="eyebrow">{a?.is_intruder ? (THREAT[a.threat ?? ""] ?? "Uncooperative traffic") : "Flight"}</div>
+          <div className={`font-mono text-xl font-bold tracking-wide ${a?.threat === "emergency" ? "text-warn" : a?.is_intruder ? "text-bad" : "text-fg"}`}>{selected}</div>
         </div>
         <div className="flex items-center gap-1.5">
+          {a?.is_intruder && a.threat !== "emergency" && (
+            <button
+              onClick={() => send({ type: "remove_disruption", id: selected })}
+              className="px-2 py-1 rounded-md border border-bad/40 bg-bad/10 text-[11px] font-medium text-bad hover:bg-bad/20"
+            >
+              Remove
+            </button>
+          )}
           <button
             onClick={() => dispatch({ type: "set_follow", on: !follow })}
             className={`px-2 py-1 rounded-md border text-[11px] font-medium ${follow ? "bg-accent/20 text-accent border-accent/50" : "bg-panel-2/70 text-muted border-line hover:text-fg"}`}

@@ -43,7 +43,9 @@ export default function TopBar() {
   const dispatch = useTowerDispatch();
   const { send } = useClient();
 
-  const milesSaved = plan ? Math.max(0, plan.baseline_distance_nm - plan.total_distance_nm) : (scoreboard?.miles_saved ?? 0);
+  // The backend's figure is frozen at the first plan. After a replan the plan only holds what is
+  // left to fly, so comparing it with the full baseline would invent thousands of miles.
+  const milesSaved = scoreboard?.miles_saved ?? (plan ? Math.max(0, plan.baseline_distance_nm - plan.total_distance_nm) : 0);
   const conflicts = plan?.conflicts ?? 0;
 
   const connBadge: Record<typeof connection, { text: string; cls: string }> = {
@@ -80,15 +82,27 @@ export default function TopBar() {
           send({ type: "set_tower", enabled: v });
         }}
       />
-      <Toggle
-        on={sim?.auto_speak ?? false}
-        label="Auto-speak"
-        activeClass="bg-accent/15 text-accent border-accent/40"
-        onChange={(v) => {
-          dispatch({ type: "local_toggle", key: "auto_speak", value: v });
-          send({ type: "set_auto_speak", enabled: v });
-        }}
-      />
+      {/* Who issues the instructions. The switch is the controller's, at any moment. */}
+      <div
+        className="flex rounded-md border border-line overflow-hidden text-xs"
+        title="Manual: Tower proposes each instruction and you say it. Auto: Tower says them itself, one at a time, and sends the rest by data link. Hold the mic in Auto and Tower waits for you."
+      >
+        {([["Manual", false], ["Auto", true]] as const).map(([label, auto]) => {
+          const on = (sim?.auto_speak ?? false) === auto;
+          return (
+            <button
+              key={label}
+              onClick={() => {
+                dispatch({ type: "local_toggle", key: "auto_speak", value: auto });
+                send({ type: "set_auto_speak", enabled: auto });
+              }}
+              className={`px-3 py-1 font-medium transition-colors ${on ? (auto ? "bg-warn/20 text-warn" : "bg-accent/20 text-accent") : "bg-panel-2 text-muted hover:text-fg"}`}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
 
       <div className="h-6 w-px bg-line" />
 

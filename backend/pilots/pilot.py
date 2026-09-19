@@ -205,6 +205,18 @@ class AIPilot:
         )
         return self._finish(resp, clearance)
 
+    def announce(self, text: str, noise_level: float = 0.2) -> PilotResponse:
+        """An unprompted call, such as a mayday. Nothing is read back and nothing moves."""
+        self._n += 1
+        resp = PilotResponse(id=f"call-{self.callsign}-{self._n}", clearance_id="", callsign=self.callsign,
+                             acting_callsign=self.callsign, kind="readback", text=text,
+                             spoken_callsign=self.callsign, noise_level=noise_level)
+        resp.t = time.time()
+        resp.voice = self.voice
+        if self.synthesize and self.tts is not None:
+            self._speak(resp)
+        return resp
+
     # -- internals ---------------------------------------------------------
 
     def _next_id(self, clearance: OpenClearance) -> str:

@@ -9,6 +9,7 @@ import type {
   AlertPayload,
   ClientMessage,
   Disruption,
+  DisruptionKind,
   InstructionCard,
   Item,
   Lifecycle,
@@ -24,6 +25,7 @@ import type {
   TowerEvent,
   Transmission,
   Waypoint,
+  PointKind,
   Zone,
 } from "./types";
 
@@ -66,6 +68,7 @@ interface Flight {
   hdg: number;
   gs: number;
   isIntruder: boolean;
+  threat?: PointKind;
 }
 
 const FLIGHTS: Omit<Flight, "idx" | "x" | "y" | "hdg">[] = [
@@ -104,6 +107,7 @@ export function startMock(emit: Emit, scenarioName?: string): MockHandle {
     return { ...f, idx: 1, x: a.x_nm, y: a.y_nm, hdg: hdgTo(a.x_nm, a.y_nm, b.x_nm, b.y_nm) % 360 };
   });
   let intruderCount = 0;
+  let lastDisruptionId = "";
   let score: Scoreboard = {
     miles_saved: 0,
     time_saved_s: 0,
@@ -261,6 +265,7 @@ export function startMock(emit: Emit, scenarioName?: string): MockHandle {
       route: f.route.slice(f.idx),
       actype: f.actype,
       is_intruder: f.isIntruder,
+      threat: f.threat ?? null,
       t: simT,
       ...ll(f.x, f.y),
     }));
@@ -487,7 +492,7 @@ export function startMock(emit: Emit, scenarioName?: string): MockHandle {
     });
 
     // Disruption: intruder through the middle, replan, new cards.
-    after(33000, () => addDisruption("intruder", 100, 195, 180));
+    after(33000, () => addDisruption("fighter", 100, 195, 180));
     after(40000, () => {
       score = { ...score, miles_saved: score.miles_saved + 8.4, time_saved_s: score.time_saved_s + 71 };
       scoreboard();
@@ -495,29 +500,50 @@ export function startMock(emit: Emit, scenarioName?: string): MockHandle {
     after(48000, runScript);
   };
 
-  const addDisruption = (kind: "intruder" | "storm", x: number, y: number, hdg = 200) => {
+  // The mock knows two behaviours: a point that flies a straight line, and a fixed circle. Every
+  // kind the real backend offers maps onto one of them, so the Disrupt menu works without a backend.
+  const POINTS: Record<string, { prefix: string; gs: number; actype: string }> = {
+    fighter: { prefix: "VIPER", gs: 520, actype: "F18" }, drone: { prefix: "DRONE", gs: 130, actype: "UAV" },
+    balloon: { prefix: "BALLOON", gs: 30, actype: "BALL" }, unknown: { prefix: "UNKNOWN", gs: 280, actype: "ZZZZ" },
+    emergency: { prefix: "MAYDAY", gs: 420, actype: "A320" },
+  };
+  const CIRCLES: Record<string, { prefix: string; r: number; floor: number; ceiling: number }> = {
+    storm: { prefix: "STORM", r: 14, floor: 0, ceiling: 99999 }, closed: { prefix: "AREA", r: 18, floor: 31000, ceiling: 34000 },
+    rocket: { prefix: "LAUNCH", r: 20, floor: 0, ceiling: 99999 },
+  };
+  const addDisruption = (asked: DisruptionKind | "random", px?: number, py?: number, hdg = 200) => {
     intruderCount += 1;
-    const id = `${kind}-${intruderCount}`;
-    if (kind === "intruder") {
-      const gs = 520;
-      flights.push({ callsign: `HAWK${intruderCount}`, actype: "F18", route: [], idx: 0, x, y, alt: 28000, targetAlt: 28000, hdg, gs, isIntruder: true });
+    const all = [...Object.keys(POINTS), ...Object.keys(CIRCLES)] as DisruptionKind[];
+    const kind: DisruptionKind = asked === "random" ? all[intruderCount % all.length] : asked;
+    const x = px ?? ((intruderCount * 37) % 120) - 60;
+    const y = py ?? ((intruderCount * 53) % 120) - 60;
+    if (kind in POINTS) {
+      const { prefix, gs, actype } = POINTS[kind];
+      const id = `${prefix}${intruderCount}`;
+      flights.push({ callsign: id, actype, route: [], idx: 0, x, y, alt: 33000, targetAlt: 33000, hdg, gs, isIntruder: true, threat: kind as PointKind });
       const predicted: [number, number, number][] = [];
       for (let s = 0; s <= 600; s += 60) {
         const d = (gs / 3600) * s;
         predicted.push([simT + s, x + Math.sin((hdg * Math.PI) / 180) * d, y + Math.cos((hdg * Math.PI) / 180) * d]);
       }
       const d: Disruption = {
-        id, kind, x_nm: x, y_nm: y, radius_nm: 8, hdg_deg: hdg, gs_kt: gs, predicted_path: predicted, ...ll(x, y),
+        id, kind, shape: "point", label: kind, alt_ft: 33000, active: true,
+        x_nm: x, y_nm: y, radius_nm: 8, hdg_deg: hdg, gs_kt: gs, predicted_path: predicted, ...ll(x, y),
         predicted_lonlat: predicted.map(([pt, px, py]) => { const p = ll(px, py); return [p.lon, p.lat, pt] as [number, number, number]; }),
       };
       send({ type: "disruption", payload: d, t: simT });
+      lastDisruptionId = id;
     } else {
-      const z: Zone = { id, x_nm: x, y_nm: y, radius_nm: 12, kind: "storm" };
+      const { prefix, r, floor, ceiling } = CIRCLES[kind];
+      const id = `${prefix}${intruderCount}`;
+      const z: Zone = { id, x_nm: x, y_nm: y, radius_nm: r, kind: kind as Zone["kind"], label: kind, floor_ft: floor, ceiling_ft: ceiling, ...ll(x, y) };
       zones.push(z);
       send({ type: "state", payload: stateEvent(), t: simT });
-      const d: Disruption = { id, kind, x_nm: x, y_nm: y, radius_nm: 12, hdg_deg: null, gs_kt: null, predicted_path: [], ...ll(x, y) };
+      const d: Disruption = { id, kind, shape: "circle", label: kind, floor_ft: floor, ceiling_ft: ceiling, active: true, x_nm: x, y_nm: y, radius_nm: r, hdg_deg: null, gs_kt: null, predicted_path: [], ...ll(x, y) };
       send({ type: "disruption", payload: d, t: simT });
+      lastDisruptionId = id;
     }
+    const id = lastDisruptionId;
     after(600, () => {
       // Replan the two nearest flights: toggle them to a direct/offset path so the line visibly changes.
       const near = flights
@@ -575,6 +601,15 @@ export function startMock(emit: Emit, scenarioName?: string): MockHandle {
       case "add_disruption":
         addDisruption(msg.kind, msg.x_nm, msg.y_nm);
         return;
+      case "remove_disruption": {
+        const zi = zones.findIndex((z) => z.id === msg.id);
+        if (zi >= 0) zones.splice(zi, 1);
+        const fi = flights.findIndex((f) => f.callsign === msg.id && f.isIntruder);
+        if (fi >= 0) flights.splice(fi, 1);
+        send({ type: "state", payload: stateEvent(), t: simT });
+        send({ type: "disruption", payload: { id: msg.id, kind: "storm", active: false, x_nm: 0, y_nm: 0, radius_nm: 0, hdg_deg: null, gs_kt: null, predicted_path: [] }, t: simT });
+        return;
+      }
       case "speak_card":
         if (cards.get(msg.id)?.status === "pending") happyPath(msg.id, 200);
         return;

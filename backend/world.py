@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import re
 import time
@@ -22,6 +23,7 @@ from typing import Any, Awaitable, Callable
 
 import numpy as np
 
+import disruptions as DZ
 from pilots.pilot import PilotFleet, PilotResponse
 from pilots.radio import apply_to_file
 from pilots.tts import TTS
@@ -60,6 +62,11 @@ DATA_DIR = Path(os.environ.get("TOWER_DATA_DIR", Path(__file__).resolve().parent
 AUDIO_DIR = DATA_DIR / "audio"
 PILOT_DELAY_S = 1.5  # seconds between a clearance and the pilot keying up
 REPLAN_EVERY_S = 60.0
+# Auto mode. One voice exchange at a time; whatever the voice cannot get to in time goes by data link.
+AUTO_VOICE_MAX_SPEED = 1.5  # faster than this and speech, which takes real seconds, cannot keep up
+AUTO_VOICE_QUEUE_MAX = 3  # cards allowed to wait for the voice channel
+AUTO_EXCHANGE_S = 12.0  # a spoken instruction and its readback, roughly
+AUTO_EXCHANGE_TIMEOUT_S = 30.0  # stop waiting for a readback that never came
 CARD_VERIFY_S = 30.0  # a matched clearance with no radar alert for this long is "verified"
 
 Emit = Callable[[dict[str, Any]], None]
@@ -121,6 +128,13 @@ class World:
         self.errors_injected = 0
         self.errors_caught = 0
         self.speed = 1.0
+        self.card_t: dict[str, float] = {}  # card id -> sim time it was issued, for "due at"
+        self._voice_card: str | None = None  # the card Tower is saying right now, in Auto
+        self._voice_since = 0.0
+        self.human_on_mic = False  # the controller is holding the mic: Tower keeps quiet
+        self.datalink_sent = 0
+        self.disruptions: dict[str, Disruption] = {}  # the ones still active
+        self.disruption_count = 0  # seeds Random, so a rehearsed demo repeats
         # Lifecycle: nothing moves until start(). idle -> ready -> running <-> paused -> ended.
         self.lifecycle: str = "idle"
         self.world_id = 0  # bumps on every load so the screen can drop the previous world's state
@@ -154,6 +168,10 @@ class World:
         self.clearance_meta.clear()
         self.matched_at.clear()
         self.pending.clear()
+        self.card_t.clear()
+        self._voice_card, self.human_on_mic, self.datalink_sent = None, False, 0
+        self.disruptions.clear()
+        self.disruption_count = 0
         self.buffer_nm = sc.separation_buffer_nm
         self.noise = sc.noise_level
         self.baseline = PL.baseline(sc)
@@ -188,8 +206,11 @@ class World:
 
     def radar_payload(self, states: list[AircraftState] | None = None) -> dict[str, Any]:
         states = self.sim.aircraft() if states is None else states
-        return {"aircraft": self._with_latlon([a.model_dump() for a in states]), "t": self.sim.t,
-                "watching": self.watching()}
+        out = {"aircraft": self._with_latlon([a.model_dump() for a in states]), "t": self.sim.t,
+               "watching": self.watching()}
+        if any(z.gs_kt or z.swell_nm_per_min for z in self.sim.zones):
+            out["zones"] = self._with_latlon([z.model_dump() for z in self.sim.zones])  # they move
+        return out
 
     def spoken_waypoints(self) -> list[str]:
         """Fix names a human could say or hear. Hidden track vertices are never spoken."""
@@ -216,6 +237,7 @@ class World:
             "scenario": sc.name if sc else None,
             "tower_enabled": self.tower_enabled,
             "auto_speak": self.auto_speak,
+            "mode": "auto" if self.auto_speak else "manual",
             "t": self.sim.t,
             "waypoints": self._with_latlon([w.model_dump() for w in (sc.waypoints if sc else [])
                                             if w.kind != "hidden"]),
@@ -230,6 +252,8 @@ class World:
             "world_id": self.world_id,
             "scenarios": scenario_catalog(),
             "watching": self.watching(),
+            "disruptions": [self._disruption_payload(d) for d in self.disruptions.values()],
+            "disruption_kinds": DZ.catalog(),
         }, t=self.sim.t))
 
     def watching(self) -> list[str]:
@@ -311,7 +335,16 @@ class World:
 
     def _add_card(self, card: InstructionCard) -> None:
         self.cards[card.id] = card
+        self.card_t[card.id] = self.sim.t
         self.emit(event("instruction_card", card, t=self.sim.t))
+
+    def _drop_pending_cards(self, callsign: str) -> None:
+        """A newer plan, or an emergency, makes a flight's unspoken cards wrong. Tell the screen."""
+        for old in list(self.cards.values()):
+            if old.callsign == callsign and old.status == "pending":
+                old.status = "superseded"
+                self.emit(event("instruction_card", old, t=self.sim.t))
+                del self.cards[old.id]
 
     def _set_card_status(self, clearance_id: str | None, status: str) -> None:
         if not clearance_id:
@@ -374,8 +407,22 @@ class World:
         self.emit_state()
 
     def set_auto_speak(self, enabled: bool) -> None:
+        """Manual or Auto. The switch belongs to the controller and works at any moment.
+
+        Manual: Tower proposes, the human says it. Auto: Tower issues every instruction itself,
+        by voice one at a time, by data link when the voice cannot keep up, and says its own
+        corrections. The human can still key the mic in Auto; Tower waits.
+        """
         self.auto_speak = enabled
+        if not enabled:
+            self._voice_card = None
         self.emit_state()
+        if self.scenario is not None:
+            self.notice("Auto: Tower issues the instructions. Hold the mic to take over at any time." if enabled
+                        else "Manual: Tower proposes, you say it.", "info")
+
+    def set_ptt(self, down: bool) -> None:
+        self.human_on_mic = bool(down)
 
     def set_sliders(self, buffer_nm: float | None = None, error_rate: float | None = None,
                     noise: float | None = None) -> None:
@@ -406,6 +453,9 @@ class World:
                 remaining -= step
                 self.sim.step(step)
                 now = self.sim.t
+                ended = self.sim.pop_ended()
+                if ended:
+                    self._disruptions_ended(ended)
                 self.monitor.observe(list(self.sim.active.values()), now)
                 states = self.sim.aircraft()
                 self._emit_core_events(self.core.tick(now, states))
@@ -434,47 +484,346 @@ class World:
         else:
             for f in due:
                 await f()
+        if self.auto_speak and self.tower_enabled and self.lifecycle == "running":
+            await self._auto_dispatch()
+
+    # ------------------------------------------------------------------ Auto mode
+
+    def _due(self, card: InstructionCard) -> float:
+        return self.card_t.get(card.id, self.sim.t) + card.urgency_s
+
+    async def _auto_dispatch(self) -> None:
+        """Issue pending cards without a human: most urgent first, one voice exchange at a time.
+
+        Only flights already on frequency are addressed. A card goes by data link, which is
+        text and cannot be misheard, when the clock runs too fast for speech, when more than a
+        few cards are waiting, or when it is due before the voice channel could get to it.
+        """
+        now = self.sim.t
+        if self._voice_card is not None:
+            vc = self.cards.get(self._voice_card)
+            done = vc is None or vc.status in ("validated", "verified", "superseded")
+            if done or now - self._voice_since > AUTO_EXCHANGE_TIMEOUT_S:
+                self._voice_card = None
+        ready = sorted((c for c in self.cards.values()
+                        if c.status == "pending" and c.id != self._voice_card and c.callsign in self.sim.active
+                        and not self.sim.active[c.callsign].is_intruder), key=self._due)
+        if not ready:
+            return
+        if self.speed > AUTO_VOICE_MAX_SPEED:
+            by_link = ready
+        else:
+            if self._voice_card is None and not self.human_on_mic:
+                first = ready.pop(0)
+                self._voice_card, self._voice_since = first.id, now
+                first.via = "voice"
+                if self.realtime:
+                    asyncio.create_task(self.speak_card(first.id))  # TTS and ASR must not stall the clock
+                else:
+                    await self.speak_card(first.id)
+            by_link = [c for i, c in enumerate(ready)
+                       if i >= AUTO_VOICE_QUEUE_MAX or self._due(c) - now < (i + 1) * AUTO_EXCHANGE_S]
+        for card in by_link:
+            self._send_by_datalink(card)
+
+    def _send_by_datalink(self, card: InstructionCard) -> None:
+        """Controller-pilot data link: the instruction arrives as text and the crew accepts it.
+
+        Nothing is spoken, so nothing can be misheard, and the aircraft does exactly what the
+        card says. Radar verification still watches it like any other clearance.
+        """
+        from pilots.pilot import items_to_sim_commands
+
+        a = self.sim.active.get(card.callsign)
+        if a is None or a.is_intruder:
+            return
+        now = self.sim.t
+        c = OpenClearance(id=self.core.store.next_id(), callsign=card.callsign, items=card.items,
+                          issued_at=now, card_id=card.id)
+        self.core.store.open(c)
+        self.core.store.resolve(c.id, "matched")
+        self.core.conformance.watch(c, c.items, now=now)
+        for cmd in items_to_sim_commands(card.items):
+            self.sim.apply(card.callsign, cmd)
+        card.via = "datalink"
+        self._link_card(card, c.id)
+        self._set_card_status(c.id, "validated")
+        self.matched_at[c.id] = now
+        self.clearance_meta[c.id] = {"issued_real": time.monotonic(), "issued_sim": now, "via": "datalink"}
+        self.datalink_sent += 1
+        self.emit(event("clearance_opened", c, t=now))
+        tx = Transmission(id=f"tx-{uuid.uuid4().hex[:8]}", t_start=now, t_end=now, audio_ref="",
+                          text_raw=f"{card.phrase}  ·  WILCO", text_norm=card.phrase, asr_confidence=1.0,
+                          speaker="datalink")
+        p = tx.model_dump()
+        p["callsign"] = card.callsign
+        self.emit(event("transcript", p, t=now))
 
     # ------------------------------------------------------------------ planning
 
-    def _replan(self, trigger: str, disruption: Disruption | None = None) -> None:
+    def _replan(self, trigger: str, disruption: Disruption | None = None,
+                release: set[str] | None = None, why: str = "") -> list[str]:
+        """Repair the plan and issue the cards. Returns the callsigns that got a new instruction."""
         if self.plan is None or self.scenario is None:
-            return
+            return []
         states = self.sim.aircraft()
         prev = self.plan
         self.plan = PL.replan(prev, states, self.scenario.waypoints, self.sim.zones, self.buffer_nm,
                               disruption=disruption, flights=self.scenario.flights, now_t=self.sim.t,
-                              time_budget_s=0.5)
+                              time_budget_s=0.5, release=release)
         self.plan.trigger = trigger
         self.last_replan_t = self.sim.t
         new_cards = C.cards_from_plan(self.plan, prev, now_t=self.sim.t, states=states)
         new_cards += C.followup_cards(self.plan, states, self.sim.t)
+        if release:
+            ended = tuple(f" to clear {name}" for name in release)
+            freed = {p.callsign for p in prev.paths if any(c.endswith(ended) for c in p.changes)}
+            have = {c.callsign for c in new_cards}
+            new_cards += [c for c in C.release_cards(self.plan, states, freed, self.sim.t, why)
+                          if c.callsign not in have]
         changed = sorted({c.callsign for c in new_cards})
         self.emit_plan(self.plan, trigger=trigger, changed=changed)
         for card in new_cards:
-            # drop a pending card for the same callsign superseded by this one
-            for old in list(self.cards.values()):
-                if old.callsign == card.callsign and old.status == "pending":
-                    del self.cards[old.id]
+            self._drop_pending_cards(card.callsign)  # superseded by this one
             self._add_card(card)
+        return changed
 
-    def add_disruption(self, kind: str, x_nm: float, y_nm: float) -> Disruption:
-        if kind == "intruder":
-            # aim it through the sector centre
-            cx = cy = 0.0  # sector is centred on the origin
-            hdg = float(np.degrees(np.arctan2(cx - x_nm, cy - y_nm)) % 360)
-            d = Disruption(id=f"VIPER{len(self.sim.active) + 10}", kind="intruder", x_nm=x_nm, y_nm=y_nm,
-                           hdg_deg=hdg, gs_kt=550)
-            pred = PL.predict_intruder(x_nm, y_nm, hdg, 550, 30000, self.sim.t)
-            d.predicted_path = [(float(r[0]), float(r[1]), float(r[2])) for r in pred[::6]]
-        else:
-            d = Disruption(id=f"STORM{len(self.sim.zones) + 1}", kind="storm", x_nm=x_nm, y_nm=y_nm,
-                           radius_nm=15.0)
+    # ------------------------------------------------------------------ disruptions
+
+    def add_disruption(self, kind: str, x_nm: float | None = None, y_nm: float | None = None) -> Disruption | None:
+        """Drop a disruption into the world and replan around it.
+
+        `kind` is any key of disruptions.PROFILES, or "random". With no position, or for
+        "random", it is put where it will matter: on the path of a flight a few minutes ahead.
+        Seeded by the scenario and the count so far, so the same presses give the same result.
+        """
+        if self.scenario is None:
+            self.notice("Load a scenario first.", "warn")
+            return None
+        try:
+            kind = DZ.resolve(kind)
+        except ValueError as exc:
+            self.notice(str(exc), "warn")
+            return None
+        if x_nm is not None and y_nm is not None and kind != "random" and not DZ.inside_sector(
+                x_nm, y_nm, self.scenario.sector_nm / 2.0, self.frame.shape == "circle", margin_nm=5.0):
+            self.notice("That is outside the sector. Click inside the boundary to place it.", "warn")
+            return None
+        rng = np.random.default_rng([self.scenario.seed, self.disruption_count, 5])
+        self.disruption_count += 1
+        regular = [a for a in self.sim.aircraft() if not a.is_intruder]
+        if kind == "random":
+            kind, x_nm, y_nm = DZ.pick_kind(rng, allow_emergency=bool(regular)), None, None
+        if kind == "emergency" and not regular:
+            self.notice("An emergency needs a flight that is already in the sector. Press Start first.", "warn")
+            return None
+        d = self._make_disruption(kind, x_nm, y_nm, rng)
+        self.disruptions[d.id] = d
+        if kind == "emergency":
+            self._drop_pending_cards(d.id)
         self.sim.add_disruption(d)
         self.emit(event("disruption", self._disruption_payload(d), t=self.sim.t))
         self.emit_state()
-        self._replan(f"{kind} added", disruption=d)
+        before = self._unresolved()
+        changed = self._replan(f"{d.label} {d.id}", disruption=d)
+        self._disruption_notice(d, changed, before)
+        if kind == "emergency" and self.lifecycle == "running":
+            self._mayday(d)
         return d
+
+    def remove_disruption(self, disruption_id: str) -> None:
+        if self.sim.remove_disruption(disruption_id):
+            self._disruptions_ended([disruption_id], by_hand=True)
+
+    def _busy_spot(self, rng: np.random.Generator, clear_nm: float = 0.0) -> tuple[float, float, float, float]:
+        """(x, y, level, seconds ahead): where some flight will be in four to seven minutes.
+
+        With `clear_nm`, a spot that has nobody within that distance right now is preferred, so
+        a random zone lands ahead of the traffic, not on top of it.
+        """
+        now = self.sim.t
+        half = (self.scenario.sector_nm if self.scenario else 200.0) / 2.0
+        circle = self.frame.shape == "circle"
+        airborne = {a.callsign for a in self.sim.aircraft() if not a.is_intruder}
+        paths = [p for p in (self.plan.paths if self.plan else []) if p.samples]
+        pool = [p for p in paths if p.callsign in airborne] or \
+               [p for p in paths if now <= p.samples[0][0] <= now + 600] or paths
+        now_at = [(a.x_nm, a.y_nm) for a in self.sim.aircraft() if not a.is_intruder]
+        best: tuple[float, tuple[float, float, float, float]] | None = None
+        for _ in range(16):
+            if not pool:
+                break
+            p = pool[int(rng.integers(len(pool)))]
+            lead = float(rng.uniform(240, 420))
+            arr = np.asarray(p.samples, dtype=float)
+            t = max(now, float(arr[0, 0])) + lead
+            k = int(np.argmin(np.abs(arr[:, 0] - t)))
+            x, y = float(arr[k, 1]), float(arr[k, 2])
+            if not DZ.inside_sector(x, y, half * 0.8, circle):
+                continue
+            room = min((math.hypot(x - ax, y - ay) for ax, ay in now_at), default=999.0)
+            spot = (x, y, float(arr[k, 3]), max(60.0, float(arr[k, 0]) - now))
+            if room >= clear_nm:
+                return spot
+            if best is None or room > best[0]:
+                best = (room, spot)
+        if best is not None:
+            return best[1]
+        return float(rng.uniform(-0.3, 0.3) * half), float(rng.uniform(-0.3, 0.3) * half), 33000.0, 300.0
+
+    def _level_near(self, x: float, y: float, default: float = 33000.0) -> float:
+        regular = [a for a in self.sim.aircraft() if not a.is_intruder]
+        if not regular:
+            return default
+        return min(regular, key=lambda a: (a.x_nm - x) ** 2 + (a.y_nm - y) ** 2).target_alt_ft
+
+    def _make_disruption(self, kind: str, x_nm: float | None, y_nm: float | None,
+                         rng: np.random.Generator) -> Disruption:
+        prof = DZ.PROFILES[kind]
+        now = self.sim.t
+        half = (self.scenario.sector_nm if self.scenario else 200.0) / 2.0
+        circle = self.frame.shape == "circle"
+        placed = x_nm is not None and y_nm is not None
+        # A random zone is dropped ahead of the traffic with room to react, never on top of a plane.
+        tx, ty, level, lead = self._busy_spot(rng, clear_nm=prof.radius_nm[1] + 12.0 if prof.shape == "circle" else 0.0)
+        expires = now + DZ.uniform(rng, prof.duration_s) if prof.duration_s else None
+        n = self.disruption_count
+
+        if kind == "emergency":
+            regular = [a for a in self.sim.aircraft() if not a.is_intruder]
+            def company(a: AircraftState) -> int:
+                return sum(1 for b in regular if b is not a and math.hypot(a.x_nm - b.x_nm, a.y_nm - b.y_nm) < 50)
+            inside = [a for a in regular if DZ.inside_sector(a.x_nm, a.y_nm, half * 0.75, circle)] or regular
+            busiest = sorted(inside, key=company, reverse=True)[:3]  # one of the three with most traffic around
+            a = (min(regular, key=lambda a: (a.x_nm - x_nm) ** 2 + (a.y_nm - y_nm) ** 2) if placed
+                 else busiest[int(rng.integers(len(busiest)))])
+            # Divert toward the nearest edge it can reach without turning right round.
+            options = [(a.hdg_deg + off) % 360 for off in range(-100, 101, 25)]
+            hdg = min(options, key=lambda h: DZ.edge_distance(a.x_nm, a.y_nm, h, half, circle))
+            d = Disruption(id=a.callsign, kind="emergency", shape="point", label=prof.label, x_nm=a.x_nm, y_nm=a.y_nm,
+                           hdg_deg=hdg, gs_kt=a.gs_kt, alt_ft=a.alt_ft, target_alt_ft=10000.0, t_start=now)
+        elif prof.shape == "point":
+            gs = DZ.uniform(rng, prof.gs_kt)
+            alt = DZ.round_level(level if not placed else self._level_near(x_nm, y_nm, level))
+            if kind == "balloon":
+                hdg = float(rng.uniform(60, 120))  # with the westerlies
+                x, y = (x_nm, y_nm) if placed else (tx - math.sin(math.radians(hdg)) * gs * lead / 3600,
+                                                    ty - math.cos(math.radians(hdg)) * gs * lead / 3600)
+            elif placed:
+                x, y = float(x_nm), float(y_nm)
+                hdg = self._aim(x, y, gs)
+            else:
+                # Arrive where the chosen flight will be, when it will be there. Do not appear on
+                # top of anyone: of a few approach directions, take the one with the most room.
+                run = gs * lead / 3600.0
+                now_at = [(a.x_nm, a.y_nm) for a in self.sim.aircraft() if not a.is_intruder]
+                best = None
+                for _ in range(10):
+                    h = float(rng.uniform(0, 360))
+                    r = math.radians(h)
+                    cx, cy = tx - math.sin(r) * run, ty - math.cos(r) * run
+                    if not DZ.inside_sector(cx, cy, half, circle, margin_nm=10.0):
+                        continue
+                    room = min((math.hypot(cx - ax, cy - ay) for ax, ay in now_at), default=999.0)
+                    if best is None or room > best[0]:
+                        best = (room, cx, cy, h)
+                    if room > prof.base_nm + 12.0:
+                        break
+                if best is None:
+                    h = float(rng.uniform(0, 360))
+                    best = (0.0, tx - math.sin(math.radians(h)) * run, ty - math.cos(math.radians(h)) * run, h)
+                _, x, y, hdg = best
+            d = Disruption(id=f"{prof.prefix}{n}", kind=kind, shape="point", label=prof.label, x_nm=x, y_nm=y,
+                           hdg_deg=hdg, gs_kt=gs, alt_ft=alt, t_start=now, expires_t=expires)
+        else:
+            x, y = (float(x_nm), float(y_nm)) if placed else (tx, ty)
+            r = DZ.uniform(rng, prof.radius_nm)
+            floor, ceiling = 0.0, DZ.ALL_LEVELS_FT
+            if prof.band_ft is not None:
+                lvl = DZ.round_level(self._level_near(x, y, level))
+                floor, ceiling = lvl - prof.band_ft[0], lvl + prof.band_ft[1]
+            drift = DZ.uniform(rng, prof.drift_kt)
+            d = Disruption(id=f"{prof.prefix}{n}", kind=kind, shape="circle", label=prof.label, x_nm=x, y_nm=y,
+                           radius_nm=r, hdg_deg=float(rng.uniform(40, 130)) if drift else None, gs_kt=drift or None,
+                           floor_ft=floor, ceiling_ft=ceiling, swell_nm_per_min=prof.swell_nm_per_min,
+                           max_radius_nm=r + 8.0 if prof.swell_nm_per_min else None, t_start=now, expires_t=expires)
+        if d.shape == "point" and d.hdg_deg is not None:
+            pred = PL.predict_intruder(d.x_nm, d.y_nm, d.hdg_deg, d.gs_kt or 0.0, d.alt_ft or 30000.0, now)
+            if expires is not None:
+                pred = pred[pred[:, 0] <= expires]
+            d.predicted_path = [(float(r[0]), float(r[1]), float(r[2])) for r in pred[::6]]
+        return d
+
+    def _aim(self, x: float, y: float, gs_kt: float) -> float:
+        """Heading from (x, y) that meets the nearest flight, or the sector centre if there is none."""
+        regular = [a for a in self.sim.aircraft() if not a.is_intruder]
+        if not regular or gs_kt <= 0:
+            return float(np.degrees(np.arctan2(-x, -y)) % 360)
+        a = min(regular, key=lambda a: (a.x_nm - x) ** 2 + (a.y_nm - y) ** 2)
+        lead_s = math.hypot(a.x_nm - x, a.y_nm - y) / gs_kt * 3600.0
+        r = math.radians(a.hdg_deg)
+        px = a.x_nm + math.sin(r) * a.gs_kt * lead_s / 3600.0
+        py = a.y_nm + math.cos(r) * a.gs_kt * lead_s / 3600.0
+        return float(np.degrees(np.arctan2(px - x, py - y)) % 360)
+
+    def _unresolved(self) -> set[str]:
+        return {p.callsign for p in (self.plan.paths if self.plan else [])
+                if any(c.startswith("unresolved") for c in p.changes)}
+
+    def _disruption_notice(self, d: Disruption, changed: list[str], before: set[str]) -> None:
+        if d.shape == "circle":
+            levels = ("every level" if d.ceiling_ft >= DZ.ALL_LEVELS_FT
+                      else f"FL{d.floor_ft / 100:03.0f} to FL{d.ceiling_ft / 100:03.0f}")
+            what = f"{d.label} {d.id}, {d.radius_nm:.0f} NM across {levels}"
+        elif d.kind == "emergency":
+            what = f"{d.id} has declared an emergency and is descending"
+        elif d.kind == "unknown":
+            what = f"{d.label} {d.id}, no height, {d.gs_kt or 0:.0f} kt"
+        else:
+            what = f"{d.label} {d.id} at FL{(d.alt_ft or 0) / 100:03.0f}, {d.gs_kt or 0:.0f} kt"
+        n = len(changed)
+        moved = "No flight needs to move." if n == 0 else f"{n} flight{'s' if n != 1 else ''} rerouted."
+        paths = self.plan.paths if self.plan else []
+        paths = [p for p in paths if p.callsign not in before]  # only what this disruption caused
+        clipped = [p.callsign for p in paths if any(c.startswith("unresolved: crosses") for c in p.changes)]
+        stuck = [p.callsign for p in paths if any(c.startswith("unresolved conflict") for c in p.changes)]
+        text = f"{what}. {moved}"
+        if clipped:
+            text += f" Too close to avoid it: {_some(clipped)} will take the shortest way through."
+        if stuck:
+            text += f" No conflict-free route yet for {_some(stuck)}: the emergency layer turns it if it gets close."
+        self.notice(text, "warn" if (n or clipped or stuck) else "info")
+
+    def _disruptions_ended(self, ids: list[str], by_hand: bool = False) -> None:
+        """Expired, flown out of the sector, or removed. Flights that went around them go back."""
+        gone = [self.disruptions.pop(i) for i in ids if i in self.disruptions]
+        if not gone:
+            return
+        for d in gone:
+            d.active = False
+            self.emit(event("disruption", self._disruption_payload(d), t=self.sim.t))
+        self.emit_state()
+        names = ", ".join(f"{d.label} {d.id}" if d.kind != "emergency" else d.id for d in gone)
+        why = f"{names} is no longer a factor: resume direct routing."
+        changed = self._replan(f"{gone[0].id} cleared", release={d.id for d in gone}, why=why)
+        verb = "removed" if by_hand else ("has left the sector" if gone[0].shape == "point" and gone[0].expires_t is None
+                                          else "has cleared")
+        back = f" {len(changed)} flight{'s' if len(changed) != 1 else ''} planned again without it." if changed else ""
+        self.notice(f"{names} {verb}.{back}", "info")
+
+    def _mayday(self, d: Disruption) -> None:
+        """The emergency aircraft says so on frequency, in its own voice, and Tower hears it."""
+        from pilots.readback import say_callsign, say_feet
+
+        text = (f"mayday mayday mayday {say_callsign(d.id)} engine failure "
+                f"descending {say_feet(d.target_alt_ft or 10000)} heading {' '.join(f'{int(d.hdg_deg or 0):03d}')}")
+
+        async def go() -> None:
+            resp = await asyncio.to_thread(self.fleet.get(d.id).announce, text, self.noise)
+            tx = await self._hear_pilot(resp)
+            self.transmissions += 1
+            self.emit(event("transcript", self._tx_payload(tx), t=self.sim.t))
+        self.pending.append((self.sim.t + 1.0, go))
 
     # ------------------------------------------------------------------ radio: controller side
 
@@ -545,6 +894,7 @@ class World:
             if card is None:
                 card = self._match_card(c)
             if card is not None:
+                card.via = card.via or "human"
                 self._link_card(card, c.id)
             self._schedule_pilot(c, heard_ok=(conf >= 0.5))
 
@@ -565,6 +915,9 @@ class World:
         """Tower speaks the card itself (auto-speak) through TTS and its own ears."""
         card = self.cards.get(card_id)
         if card is None or not self._radio_open():
+            return
+        if card.callsign not in self.sim.active:
+            self.notice(f"{card.callsign} is not in the sector yet. Its instruction waits until it checks in.", "info")
             return
         if self.tts is None or self.asr is None and not self.synthesize:
             await self._controller(card.phrase, card=card)
@@ -699,10 +1052,10 @@ class World:
         return f"spawned {cs} from the {side} at {int(alt_ft)} ft on {' '.join(route)}"
 
     def tool_add_disruption(self, kind: str, x_nm: float | None = None, y_nm: float | None = None) -> str:
-        n = self.scenario.sector_nm if self.scenario else 200.0
-        d = self.add_disruption(kind, x_nm if x_nm is not None else -n * 0.15,
-                                y_nm if y_nm is not None else -n * 0.35)
-        return f"added {kind} {d.id} at ({d.x_nm:.0f}, {d.y_nm:.0f})"
+        d = self.add_disruption(kind, x_nm, y_nm)
+        if d is None:
+            return f"could not add {kind}"
+        return f"added {d.label} {d.id} at ({d.x_nm:.0f}, {d.y_nm:.0f})"
 
     def tool_set(self, tower: bool | None = None, auto_speak: bool | None = None,
                  error_rate: float | None = None, noise: float | None = None,
@@ -761,6 +1114,10 @@ def snap_waypoints(text_norm: str, waypoints: list[str], preferred: list[str] | 
         return m.group(0)
 
     return _DIRECT_RE.sub(fix, text_norm)
+
+
+def _some(names: list[str], limit: int = 4) -> str:
+    return ", ".join(names[:limit]) + (f" and {len(names) - limit} more" if len(names) > limit else "")
 
 
 def _route_of(world: "World", text_norm: str) -> list[str]:

@@ -170,7 +170,11 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
       const base = prevWorld !== undefined && nextWorld !== undefined && prevWorld !== nextWorld ? clearWorld(state) : state;
       // A freshly loaded world closes the setup panel; an idle backend opens it.
       const setupOpen = ev.payload.lifecycle === "idle" ? true : nextWorld !== prevWorld ? false : base.setupOpen;
-      return { ...base, sim: ev.payload, watching: ev.payload.watching ?? base.watching, setupOpen };
+      // The backend lists the disruptions still active, so a reconnect or a reload restores them.
+      const disruptions = ev.payload.disruptions
+        ? Object.fromEntries(ev.payload.disruptions.map((d) => [d.id, d]))
+        : base.disruptions;
+      return { ...base, sim: ev.payload, watching: ev.payload.watching ?? base.watching, setupOpen, disruptions };
     }
 
     case "notice": {
@@ -192,7 +196,8 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
           : { cur: a, curAt: now, prev: null, prevAt: now };
       }
       const t = Array.isArray(ev.payload) ? (list[0]?.t ?? state.sim?.t ?? 0) : (ev.payload.t ?? state.sim?.t ?? 0);
-      const sim = state.sim ? { ...state.sim, t } : state.sim;
+      const zones = Array.isArray(ev.payload) ? undefined : ev.payload.zones; // drifting storms
+      const sim = state.sim ? { ...state.sim, t, ...(zones ? { zones } : {}) } : state.sim;
       const watching = Array.isArray(ev.payload) ? state.watching : (ev.payload.watching ?? state.watching);
       return { ...state, aircraft, tracks, sim, watching };
     }
@@ -219,6 +224,9 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
     }
 
     case "instruction_card": {
+      if (ev.payload.status === "superseded") {
+        return { ...state, cards: state.cards.filter((c) => c.id !== ev.payload.id) };
+      }
       const idx = state.cards.findIndex((c) => c.id === ev.payload.id);
       const cards = idx >= 0 ? state.cards.map((c, i) => (i === idx ? ev.payload : c)) : [...state.cards, ev.payload];
       const cardT = ev.payload.id in state.cardT ? state.cardT : { ...state.cardT, [ev.payload.id]: ev.t };
@@ -254,8 +262,13 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
       return { ...state, alerts, resolving };
     }
 
-    case "disruption":
+    case "disruption": {
+      if (ev.payload.active === false) {
+        const { [ev.payload.id]: _gone, ...rest } = state.disruptions;
+        return { ...state, disruptions: rest, selected: state.selected === ev.payload.id && ev.payload.kind !== "emergency" ? null : state.selected };
+      }
       return { ...state, disruptions: { ...state.disruptions, [ev.payload.id]: ev.payload } };
+    }
 
     case "scoreboard":
       return { ...state, scoreboard: ev.payload };

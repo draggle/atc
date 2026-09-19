@@ -11,7 +11,14 @@
 
 A rehearsal, not the result: say "five minutes of training" if this number is quoted. Stock errors are dominated by insertions (looping "zero two zero two", invented sentences such as "im going to turn the camera off"). Baseten lists the saved checkpoints with type `whisper`.
 
-**Full run launched 13:53 the same day, job `q9jj663`:** whisper-small, up to 10 epochs with early stopping, validation on all 593 clips every 500 steps, held-out comparison on 1,000 clips. Expected about one hour. Fill in the result here.
+**Whisper fine-tune, Baseten H100, the full run (Sat Sept 19, job `q9jj663`, team 13, project `k7-t13`). This is the number we quote.** `openai/whisper-small`, 11,268 real ATC clips from jacktol/atc-dataset, 10 epochs = 3,530 steps, lr 1e-5, warmup 500, batch 16 x grad accum 2, fp16, decaying noise / pitch / stretch / clipping augmentation, one H100. Training took 3,641 s (61 min); the whole job 65 min, 13:52 to 14:57. Validation WER on all 593 validation clips every 500 steps: 0.207, 0.166, 0.149, 0.167, 0.146, **0.145** (step 3000, kept as best), 0.150. Early stopping (patience 3) never fired.
+
+| Model | WER on 1,000 held-out real clips | Sub / Del / Ins | s per clip (H100) |
+|---|---|---|---|
+| stock whisper-small | 0.708 | 3933 / 1009 / 2138 | 0.043 |
+| **tuned whisper-small, 61 min on Baseten** | **0.159** | 709 / 372 / 511 | 0.035 |
+
+Same 1,000 clips for both, from the test split no run has trained on, greedy decoding, `text_norm` on both sides. Errors fall by 78 percent. Stock errors are mostly insertions (looping digits, invented sentences); the tuned model's insertions fall by three quarters. The job also wrote a CTranslate2 float16 export to `ct2-float16` beside the checkpoint, which is what faster-whisper loads. Say "whisper-small, one hour on one H100, 1,000 held-out clips" when quoting it. Validation loss rose after step 2000 while WER kept falling slowly, so more epochs on this data will not help: the next gain is more data (simulator audio for our own callsigns and fix names) or a bigger base model.
 
 **Whisper fine-tune, laptop.** `openai/whisper-tiny` on the full jacktol/atc-dataset train split (11,268 clips), val 593 (120 used at each eval point), MacBook Air M4 16 GB, MPS. lr 5e-5, warmup 100, batch 8 x grad accum 2, 1,200 steps = 1.7 epochs, 62 minutes, decaying noise/pitch/stretch/clip augmentation. Train loss 12.3 to about 1.0. Val WER at steps 200 to 1200: 0.337, 0.375, 0.227, 0.221, 0.214 (best at 1200). Checkpoint `data/checkpoints/whisper-tiny-atc/best`, CTranslate2 int8 export at `data/checkpoints/whisper-tiny-atc-ct2` (loads in faster-whisper, transcribes a held-out clip correctly).
 

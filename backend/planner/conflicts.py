@@ -179,16 +179,53 @@ def losses_of_separation(paths: list[PlannedPath], buffer: float = 0.0) -> int:
     return n
 
 
+ZONE_VERT_MARGIN_FT = 1000.0  # a flight must be this far above the ceiling or below the floor
+ZONE_EXPIRY_MARGIN_S = 120.0  # a flight running early must not meet a zone the plan thought would be gone
+
+
+def zone_mask(samples: np.ndarray, zones: list[Zone], margin_nm: float = 0.0) -> np.ndarray:
+    """Per-sample: is the flight inside any zone, at that moment and at that level.
+
+    A zone is true at its own `t0`; from there it drifts, swells, and stops existing at
+    `expires_t`. It blocks `floor_ft` to `ceiling_ft` plus ZONE_VERT_MARGIN_FT either side.
+    """
+    n = samples.shape[0]
+    if n == 0 or not zones:
+        return np.zeros(n, dtype=bool)
+    t = samples[:, 0][:, None]
+    alt = samples[:, 3][:, None]
+    t0 = np.array([z.t0 for z in zones])[None, :]
+    dt = np.maximum(t - t0, 0.0)
+    rad = np.radians([z.hdg_deg for z in zones])
+    v = np.array([z.gs_kt for z in zones]) / 3600.0
+    zx = np.array([z.x_nm for z in zones])[None, :] + (np.sin(rad) * v)[None, :] * dt
+    zy = np.array([z.y_nm for z in zones])[None, :] + (np.cos(rad) * v)[None, :] * dt
+    r = np.array([z.radius_nm for z in zones])[None, :] + np.array([z.swell_nm_per_min for z in zones])[None, :] * dt / 60.0
+    r = np.minimum(r, np.array([z.max_radius_nm if z.max_radius_nm is not None else np.inf for z in zones])[None, :])
+    r = r + margin_nm
+    alive = t < np.array([z.expires_t + ZONE_EXPIRY_MARGIN_S if z.expires_t is not None else np.inf
+                          for z in zones])[None, :]
+    lo = np.array([z.floor_ft for z in zones])[None, :] - ZONE_VERT_MARGIN_FT
+    hi = np.array([z.ceiling_ft for z in zones])[None, :] + ZONE_VERT_MARGIN_FT
+    dx = samples[:, 1][:, None] - zx
+    dy = samples[:, 2][:, None] - zy
+    hit = (dx * dx + dy * dy < r * r) & alive & (alt > lo) & (alt < hi)
+    return hit.any(axis=1)
+
+
 def crosses_zone(samples: np.ndarray, zones: list[Zone], margin_nm: float = 0.0) -> bool:
-    """True if any sample lies inside any zone circle (zones are full-height columns)."""
-    if samples.shape[0] == 0 or not zones:
-        return False
-    zx = np.array([z.x_nm for z in zones])
-    zy = np.array([z.y_nm for z in zones])
-    zr = np.array([z.radius_nm + margin_nm for z in zones])
-    dx = samples[:, 1][:, None] - zx[None, :]
-    dy = samples[:, 2][:, None] - zy[None, :]
-    return bool((dx * dx + dy * dy < zr * zr).any())
+    """True if any sample lies inside any zone: see zone_mask."""
+    return bool(zone_mask(samples, zones, margin_nm).any())
+
+
+def zone_at(z: Zone, t: float) -> tuple[float, float, float]:
+    """(x, y, radius) of a zone at time t."""
+    dt = max(0.0, t - z.t0)
+    a = np.radians(z.hdg_deg)
+    r = z.radius_nm + z.swell_nm_per_min * dt / 60.0
+    if z.max_radius_nm is not None:
+        r = min(r, z.max_radius_nm)
+    return (z.x_nm + float(np.sin(a)) * z.gs_kt / 3600.0 * dt, z.y_nm + float(np.cos(a)) * z.gs_kt / 3600.0 * dt, r)
 
 
 def zone_crossings(paths: list[PlannedPath], zones: list[Zone]) -> list[str]:

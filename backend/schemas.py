@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 # Tower core (03-architecture.md)
 # ---------------------------------------------------------------------------
 
-Speaker = Literal["controller", "pilot", "unknown"]
+Speaker = Literal["controller", "pilot", "unknown", "datalink"]  # datalink: sent as text, no voice
 ItemType = Literal[
     "altitude", "heading", "speed", "frequency", "squawk",
     "altimeter", "runway", "route", "hold_short", "other",
@@ -110,6 +110,7 @@ class AircraftState(BaseModel):
     route: list[str] = Field(default_factory=list)  # remaining waypoint names
     actype: str = "A320"
     is_intruder: bool = False
+    threat: str | None = None  # disruption kind when is_intruder: fighter, drone, balloon, emergency, unknown
     t: float = 0.0  # sim seconds
 
 
@@ -145,18 +146,33 @@ class FlightSpec(BaseModel):
     alt_ft: float = 30000
     gs_kt: float = 420
     is_intruder: bool = False
+    threat: str | None = None  # disruption kind for an intruder, see disruptions.py
     x_nm: float | None = None  # overrides route[0] position if set
     y_nm: float | None = None
     hdg_deg: float | None = None
 
 
 class Zone(BaseModel):
-    """Blocked airspace: storm or closed zone. Circle in the flat plane."""
+    """Blocked airspace: a circle in the flat plane, between two levels, that may drift, swell and end.
+
+    `x_nm`, `y_nm` and `radius_nm` are true at time `t0`. The simulator moves the zone and keeps
+    `t0` current; the planner extrapolates from it. The defaults are a fixed, full-height,
+    permanent column, which is what a zone written into a scenario file is.
+    """
     id: str
     x_nm: float
     y_nm: float
     radius_nm: float
-    kind: Literal["storm", "closed", "intruder_buffer"] = "storm"
+    kind: Literal["storm", "closed", "rocket", "intruder_buffer"] = "storm"
+    label: str = ""
+    floor_ft: float = 0.0
+    ceiling_ft: float = 99999.0
+    hdg_deg: float = 0.0  # drift
+    gs_kt: float = 0.0
+    swell_nm_per_min: float = 0.0
+    max_radius_nm: float | None = None
+    t0: float = 0.0
+    expires_t: float | None = None
 
 
 class Scenario(BaseModel):
@@ -209,18 +225,43 @@ class InstructionCard(BaseModel):
     phrase: str  # exactly what to say on the radio
     reason: str  # one line, plain English
     urgency_s: float  # seconds until it must take effect
-    status: Literal["pending", "spoken", "validated", "verified", "error"] = "pending"
+    status: Literal["pending", "spoken", "validated", "verified", "error", "superseded"] = "pending"
     clearance_id: str | None = None
+    # Who issued it: the human on the mic, Tower's own voice (Auto), or Tower by data link (Auto,
+    # when the voice channel cannot keep up). None while it is still pending.
+    via: Literal["human", "voice", "datalink"] | None = None
+
+
+DisruptionKind = Literal["fighter", "drone", "balloon", "emergency", "unknown", "storm", "closed", "rocket",
+                         "intruder"]  # "intruder" is the old name for "fighter" and still accepted
 
 
 class Disruption(BaseModel):
+    """Anything unplanned that Tower has to work around. Kinds and their numbers: disruptions.py.
+
+    shape "point": something flying (`hdg_deg`, `gs_kt`, `alt_ft`), planned around with a buffer
+    that grows with look-ahead. shape "circle": blocked airspace (`radius_nm`, `floor_ft` to
+    `ceiling_ft`), which may drift and swell. `expires_t` is when it ends by itself; None means
+    it lasts until it leaves the sector.
+    """
     id: str
-    kind: Literal["intruder", "storm", "closed"]
+    kind: DisruptionKind
+    shape: Literal["point", "circle"] = "point"
+    label: str = ""
     x_nm: float
     y_nm: float
     radius_nm: float = 0.0
     hdg_deg: float | None = None
     gs_kt: float | None = None
+    alt_ft: float | None = None
+    target_alt_ft: float | None = None
+    floor_ft: float = 0.0
+    ceiling_ft: float = 99999.0
+    swell_nm_per_min: float = 0.0
+    max_radius_nm: float | None = None
+    t_start: float = 0.0
+    expires_t: float | None = None
+    active: bool = True
     predicted_path: list[tuple[float, float, float]] = Field(default_factory=list)  # (t,x,y)
 
 

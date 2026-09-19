@@ -188,7 +188,10 @@ async def ws_endpoint(ws: WebSocket) -> None:
             if typ == "ptt_start":
                 ptt_channel = data.get("channel", "radio")
                 buf = []
+                if ptt_channel == "radio":
+                    world.set_ptt(True)  # in Auto, Tower keeps quiet while the human has the mic
             elif typ == "ptt_stop":
+                world.set_ptt(False)
                 channel, ptt_channel = ptt_channel, None
                 if channel and buf:
                     samples = pcm16_to_float(b"".join(buf))
@@ -229,9 +232,15 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 world.set_tower(bool(data.get("enabled", True)))
             elif typ == "set_auto_speak":
                 world.set_auto_speak(bool(data.get("enabled", False)))
+            elif typ == "set_mode":  # {"mode": "manual" | "auto"}: the same switch, by its real name
+                world.set_auto_speak(str(data.get("mode", "manual")) == "auto")
             elif typ == "add_disruption":
-                world.add_disruption(str(data.get("kind", "intruder")), float(data.get("x_nm", -30)),
-                                     float(data.get("y_nm", -70)))
+                # kind: any of disruptions.PROFILES, or "random". No position means Tower's choice.
+                x, y = data.get("x_nm"), data.get("y_nm")
+                world.add_disruption(str(data.get("kind", "random")),
+                                     float(x) if x is not None else None, float(y) if y is not None else None)
+            elif typ == "remove_disruption":
+                world.remove_disruption(str(data.get("id", "")))
             elif typ == "speak_card":
                 asyncio.create_task(world.speak_card(str(data.get("id", ""))))
             elif typ == "set_sliders":

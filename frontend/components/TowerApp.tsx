@@ -7,7 +7,6 @@ import { TowerStoreProvider, useTowerDispatch, useTowerState } from "@/lib/store
 import { connectTower, type TowerClient } from "@/lib/ws";
 import type { ClientMessage } from "@/lib/types";
 import TopBar from "./TopBar";
-import FlightStrip from "./FlightStrip";
 import InstructionCards from "./InstructionCards";
 import AlertCard from "./AlertCard";
 import Transcript from "./Transcript";
@@ -73,8 +72,6 @@ function Screen() {
       <div className="absolute top-2 left-2 right-2 z-20">
         <TopBar />
       </div>
-
-      <FlightStrip />
 
       <div className="absolute top-[68px] right-2 bottom-2 z-10 w-[400px] flex flex-col gap-2 overflow-y-auto scroll-thin pr-0.5">
         {(alerts.length > 0 || resolving.length > 0) && <AlertCard />}

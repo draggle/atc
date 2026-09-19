@@ -81,14 +81,12 @@ The checker job leaves `best/` with `labels.json`.
 
 ## 6. Deploy
 
-Whisper: a small custom Truss wrapping faster-whisper over `ct2-float16/`. Input
-`{"audio_b64": ..., "prompt": "...", "n_best": 5}`; output `{"text", "avg_logprob", "n_best": [...]}`.
-Deploy both stock and tuned so the frontend toggle works:
-
-```bash
-truss init whisper-atc-truss    # then copy ct2-float16 into data/ and write model/model.py
-truss push whisper-atc-truss --publish
-```
+Whisper: built, see **Serving the tuned Whisper** at the end of this file. It is `training/serve_asr/`,
+it takes `{"audio": <base64 wav>, "prompt", "beam_size", "n_best"}` and returns
+`{"text", "avg_logprob", "n_best": [{"text", "avg_logprob"}], "model", "seconds"}`. For the stock side
+of the toggle, either push the same package with the checkpoint reference removed (it then serves
+stock `openai/whisper-small`) and put that URL in `ASR_STOCK_MODEL_URL`, or set `ASR_STOCK_LOCAL=1`
+to run a local stock model beside the deployed tuned one.
 
 Checker: either the same pattern (`AutoModelForSequenceClassification` over `best/`, contract in
 `serve_checker.py`), or run `serve_checker.py` in-process on CPU. The in-process path measured
@@ -110,3 +108,25 @@ credits, 404 means a wrong slug.
 - Two fine-tunes trained on Baseten H100s (Whisper small or medium.en, RoBERTa-base cross-encoder), served on Baseten, agent calls on Baseten Model APIs.
 - Real measured numbers from `RUNS.md`: stock vs tuned WER on the same held-out real clips; checker accuracy and false alarm rate on held-out pairs; latency per pair.
 - The loop: confident resolver verdicts become checker training rows, so the agent generates its own next training set.
+
+## Serving the tuned Whisper
+
+`training/serve_asr/` is the deployment. It holds no weights: `config.yaml` names the training job and Baseten copies `best/` in from it. The server is `transformers` on a T4, the same stack the job's own evaluation used, with beam search, so every answer carries the top hypotheses and their scores. That is what makes the checker's n-best rule work live.
+
+```bash
+cd training/serve_asr && ../.venv/bin/truss push --team "13" --tail     # build and deploy, about 10 minutes the first time
+```
+
+When it is up, copy the model's predict URL from the Baseten page (it ends in `/predict`) into `.env` as `ASR_MODEL_URL`, then:
+
+```bash
+cd backend && .venv/bin/python tools/asr_smoke.py        # what it heard, alternatives, which model answered, how long
+```
+
+Things to know:
+- `truss train deploy_checkpoints` also works for Whisper, but it serves through vLLM's transcription API: no beam alternatives, no score, and a different request shape from the one `backend/tower/asr.py` sends. We do not use it.
+- If the checkpoint reference is wrong the server falls back to stock `openai/whisper-small` and says so in every response (`model: "FALLBACK ..."`) and in the smoke test. Never quote numbers from a fallback.
+- To serve another run, change `training_job_id` in `config.yaml` and push again.
+- The app does not depend on it. If a call fails, `WithFallback` in `backend/tower/asr.py` hears that transmission with the local model and skips Baseten for 45 s. Point `ASR_LOCAL_MODEL` at a CTranslate2 export of the tuned model (the job wrote one to `ct2-float16/`) and the fallback is as good as the deployment.
+- Shared workspace: the model is named `k7-asr` on purpose. Scale it to zero or deactivate it when we are not testing, and delete it after the event.
+

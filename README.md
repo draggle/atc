@@ -56,7 +56,7 @@ Three terminals. Python 3.11 or newer, Node 20 or newer, `uv`, `ffmpeg`.
 # 1. backend
 cd backend
 uv venv .venv && uv pip install -e ".[dev]"
-.venv/bin/pytest -q                      # 172 tests
+.venv/bin/pytest -q                      # 205 tests
 .venv/bin/uvicorn app:app --port 8000    # first start downloads whisper base.en, about 150 MB
 
 # 2. frontend
@@ -79,7 +79,7 @@ Environment variables, all optional, in `.env` (copy `.env.example`):
 |---|---|
 | `BASETEN_API_KEY`, `EXTRACTOR_MODEL`, `RESOLVER_MODEL` | Real LLM for the resolver, extractor fallback, and world builder. Without it, deterministic mocks |
 | `ASR_MODEL_URL`, `ASR_STOCK_MODEL_URL` | Baseten Whisper endpoints. Without them, local faster-whisper |
-| `ASR_LOCAL_MODEL` | faster-whisper size or a CTranslate2 directory, default `base.en`. The tuned model exports to `data/checkpoints/whisper-tiny-atc-ct2` |
+| `ASR_LOCAL_MODEL` | faster-whisper size or a CTranslate2 directory, default `base.en`. Also what the app falls back to, per transmission, when the Baseten model cannot be reached. Deployment: `training/BASETEN.md` |
 | `CHECKER_MODEL_URL` | Cross-encoder endpoint, see `training/serve_checker.py`. Without it, rules only |
 | `ELEVENLABS_API_KEY` | Pilot voices. Without it, macOS `say` |
 | `TOWER_SCENARIO`, `TOWER_AUTOSTART=1`, `TOWER_SIM_SPEED`, `TOWER_SYNTHESIZE=0` | Preload a scenario to ready, also start it (headless runs), initial clock speed, disable audio entirely |

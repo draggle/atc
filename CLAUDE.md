@@ -23,7 +23,7 @@ As of Sunday morning Sept 20: steps 0 to 4 work end to end on one laptop with no
 - [x] 2. Mic to stock Whisper to transcript on screen (local faster-whisper; Baseten client written)
 - [x] 3. Spoken clearance moves a plane: normalizer, parser, callsign snapping, state machine, rule checker
 - [x] 4. One AI pilot reads back by voice with injected errors, first alert fires (macOS `say`; ElevenLabs client written)
-- [ ] 5. Fine-tuned Whisper deployed on Baseten, stock comparison, measured word error rate. Scripts and Baseten config done; laptop whisper-tiny run only; see `training/RUNS.md`
+- [~] 5. Fine-tuned Whisper: trained on a Baseten H100, **WER 0.708 stock to 0.159 tuned on 1,000 held-out clips** (`training/RUNS.md`). Not deployed yet, so the app still runs local Whisper
 - [x] 6. Planner: conflict-free plan, fixed-route baseline, instruction cards
 - [x] 7. Radar verification and the watch tool (backend done; no radar visual yet)
 - [~] 8. Checker cross-encoder trained (laptop, 0.89 accuracy on synthetic pairs) and served; not wired live without `CHECKER_MODEL_URL`
@@ -104,7 +104,9 @@ These are proposals. If the team decides otherwise, change them here so every Cl
 - The Pydantic schemas are the contract between teammates. Change the doc and the code together, and tell the team.
 - ASR training text follows the dataset convention: lowercase, numbers spelled out, for example `lufthansa two five three descend flight level two four zero`. Digits and ICAO codes only appear after the normalizer.
 - Airline names on the radio come from one table, `backend/airlines.py`. Do not add a second one.
+- Disruptions (fighter, drone, balloon, emergency, unknown, storm, closed airspace, rocket) come from one table, `backend/disruptions.py`: speed, size, levels, lifetime, planner buffer, Random weight. A new kind is one entry there plus a glyph or colour in `frontend/components/MapView.tsx`.
 - Real traffic: `backend/scenarios/real/*.json`, built by `backend/tools/real_extract.py` then `real_build.py` from an adsb.lol archive. Hidden waypoints (`kind: "hidden"`) are vertices of a really-flown track: the sim flies them, nobody says or sees them.
+- Aircraft only move when an instruction is issued. Manual: the human says the card. Auto: `World._auto_dispatch` says it or sends it by data link. If planes ignore a replan, check the Manual / Auto switch before suspecting the planner.
 - Audio is 16 kHz mono everywhere.
 - Positions: the simulator and planner stay in flat NM (`x_nm`, `y_nm`). Real-world `lat` and `lon` are added at the edge by `backend/sim/geoframe.py`. Never do planner math in degrees, and never draw the map from `x_nm`. Arrays are `[lon, lat]`, named fields are `lat` and `lon`.
 - Small commits to `main` are fine during the hackathon. Pull before you push. Do not force-push.
@@ -113,7 +115,7 @@ These are proposals. If the team decides otherwise, change them here so every Cl
 
 ```bash
 cd backend && uv venv .venv && uv pip install -e ".[dev]"   # once
-cd backend && .venv/bin/pytest -q                              # 172 tests
+cd backend && .venv/bin/pytest -q                              # 205 tests
 cd backend && .venv/bin/uvicorn app:app --port 8000            # backend, starts idle: load and Start from the screen
 cd frontend && npm install && npm run dev                      # screen at http://localhost:3000, mock mode if no backend
 cd frontend && NEXT_DIST_DIR=.next-verify npm run build        # production build. NEVER plain `npm run build` while `npm run dev` is running: it overwrites .next and the dev page loses its CSS

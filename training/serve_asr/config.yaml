@@ -1,0 +1,33 @@
+# Baseten deployment of our fine-tuned Whisper. See ../BASETEN.md, "Serving the tuned Whisper".
+#
+#   cd training/serve_asr && ../.venv/bin/truss push --publish --team "13"
+#
+# The weights are not in this folder and never in git: Baseten copies them in from the training
+# job named below. To serve a different run, change training_job_id (and the path if you want a
+# checkpoint other than the best one).
+model_name: k7-asr
+python_version: py311
+# Same stack as the training job (pytorch 2.7.0 image, transformers unpinned): a checkpoint is only
+# guaranteed to load with the transformers that saved it. 4.57 could not read this tokenizer.
+requirements:
+  - torch==2.7.0
+  - transformers>=5.0
+  - soundfile==0.13.1
+  - numpy<2.3
+resources:
+  accelerator: T4
+  use_gpu: true
+  cpu: "4"
+  memory: 16Gi
+runtime:
+  predict_concurrency: 2
+training_checkpoints:
+  download_folder: /tmp/training_checkpoints
+  artifact_references:
+    - training_job_id: q9jj663
+      paths:
+        - rank-0/best/*
+environment_variables:
+  # Used only if no checkpoint was mounted, so a broken reference is loud in the logs and the
+  # endpoint still answers. It is the stock model: never quote numbers from a fallback.
+  ASR_FALLBACK_MODEL: openai/whisper-small

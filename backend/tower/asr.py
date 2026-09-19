@@ -32,6 +32,7 @@ import base64
 import math
 import os
 import re
+import logging
 import time
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -72,6 +73,8 @@ def full_prompt(prompt: str | None, raw: bool = False) -> str | None:
         return prompt
     return f"{ATC_PROMPT_PREFIX} Callsigns: {prompt.rstrip('.')}."
 
+
+log = logging.getLogger("tower.asr")
 
 class ASRResult(BaseModel):
     text: str
@@ -215,10 +218,12 @@ class BasetenWhisper:
         api_key: str | None = None,
         beam_size: int = 5,
         n_best: int = 5,
-        timeout_s: float = 30.0,
-        max_retries: int = 5,
+        timeout_s: float = 8.0,
+        max_retries: int = 2,
         name: str = "baseten",
     ):
+        # Short timeout, few retries: a transmission that waits half a minute for the network is
+        # worse than one heard by the local model. WithFallback takes over when this gives up.
         import httpx
 
         self.url = url
@@ -280,6 +285,7 @@ class BasetenWhisper:
             "audio": base64.b64encode(wav_bytes(samples, SR)).decode(),
             "prompt": full_prompt(prompt, raw_prompt) or "",
             "beam_size": self.beam_size,
+            "n_best": self.n_best,  # training/serve_asr returns real beam alternatives with scores
             "language": "en",
         }
         data = self._post(body)
@@ -294,6 +300,43 @@ class BasetenWhisper:
             latency_s=time.perf_counter() - t0,
             backend=self.name,
         )
+
+
+# ---------------------------------------------------------------------------
+# Remote first, local if the network lets us down
+# ---------------------------------------------------------------------------
+
+
+class WithFallback:
+    """Use the Baseten model; if a call fails, hear this transmission with the local model instead.
+
+    After a failure the remote is skipped for `cooldown_s`, so a dead network costs one slow
+    transmission, not every one. `backend` on the result says which model actually heard it.
+    """
+
+    def __init__(self, primary: ASR, make_fallback, cooldown_s: float = 45.0):
+        self.primary = primary
+        self._make_fallback = make_fallback
+        self._fallback: ASR | None = None
+        self.cooldown_s = cooldown_s
+        self._skip_until = 0.0
+        self.failures = 0
+
+    def _local(self) -> ASR:
+        if self._fallback is None:
+            self._fallback = self._make_fallback()
+        return self._fallback
+
+    def transcribe(self, samples_or_path, prompt: str | None = None, **kw) -> ASRResult:
+        samples = _load_samples(samples_or_path)
+        if time.monotonic() >= self._skip_until:
+            try:
+                return self.primary.transcribe(samples, prompt, **kw)
+            except Exception as exc:
+                self.failures += 1
+                self._skip_until = time.monotonic() + self.cooldown_s
+                log.warning("Baseten ASR failed (%s). Local model for the next %.0f s.", exc, self.cooldown_s)
+        return self._local().transcribe(samples, prompt)
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +378,10 @@ def get_asr(force_new: bool = False) -> ASR:
     stock_url = os.environ.get("ASR_STOCK_MODEL_URL")
     local_size = os.environ.get("ASR_LOCAL_MODEL", "base.en")
 
-    tuned: ASR = BasetenWhisper(tuned_url, name="baseten:tuned") if tuned_url else LocalWhisper(local_size)
+    # ASR_LOCAL_MODEL may be a size ("base.en") or a folder holding a CTranslate2 export of our
+    # tuned model, which makes the local fallback as good as the remote one.
+    tuned: ASR = (WithFallback(BasetenWhisper(tuned_url, name="baseten:tuned"), lambda: LocalWhisper(local_size))
+                  if tuned_url else LocalWhisper(local_size))
     stock: ASR | None = None
     if stock_url:
         stock = BasetenWhisper(stock_url, name="baseten:stock")

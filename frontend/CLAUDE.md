@@ -13,6 +13,7 @@ Calm and quiet. Tower says nothing unless it has something worth saying, and it 
 ## Views
 
 - **Map.** `components/MapView.tsx`: deck.gl layers over a MapLibre basemap, full screen, everything else floats over it. Draw from `lat`/`lon` and `lonlat`, never from `x_nm`. Altitude is real but exaggerated (slider). Aircraft on stems with trails and data blocks, standard routes dashed grey, Tower's plan cyan, replans flash amber, storms as 3D columns, intruders red with a predicted track, rings for alert / checking / watching. Click a plane for the flight strip, click the map to place a disruption (`latLonToNm` turns the click into sector NM).
+- **Disrupt.** One control, top left of the map. Random asks the backend to put something where it will matter; Choose lists the kinds from `state.disruption_kinds` and the next map click places one. Active disruptions are chips with minutes left and a remove button. A disruption event with `active: false` removes it. Zones are extruded between `floor_ft` and `ceiling_ft`, and the radar frame carries fresh `zones` while one is moving.
 - **Flight strip.** `components/FlightStrip.tsx`: everything Tower knows about the selected aircraft, with follow-camera.
 - **Plan toggle.** Fixed routes versus Tower's plan, with a savings counter.
 - **Instruction cards.** One per instruction Tower wants issued: the phrase to say, a one-line reason, and urgency. States are pending, spoken, validated, verified, and error. Push-to-talk to speak a card.

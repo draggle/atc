@@ -250,6 +250,29 @@ def followup_cards(plan: Plan, states: list[AircraftState], now_t: float) -> lis
     return out
 
 
+def release_cards(plan: Plan, states: list[AircraftState], released: set[str], now_t: float,
+                  why: str) -> list[InstructionCard]:
+    """'Direct <exit>' for flights still on a heading for something that is no longer there.
+
+    `released` is the flights the planner just freed. One whose new path holds no heading
+    change, but which is still flying an assigned heading, has to be told to go direct: its
+    "direct" change is not new, so cards_from_plan alone would stay silent.
+    """
+    st = {s.callsign: s for s in states}
+    out = []
+    for path in plan.paths:
+        s = st.get(path.callsign)
+        if path.callsign not in released or s is None or s.target_hdg_deg is None or not s.route:
+            continue
+        if any(c.kind == "heading" or (c.extra or {}).get("emergency") for c in _changes(path)):
+            continue
+        item = Item(type="route", value=s.route[-1], unit=None, action="direct")
+        out.append(InstructionCard(
+            id=f"card-{path.callsign}-{int(now_t)}-release", callsign=path.callsign, items=[item],
+            phrase=phrase_for(path.callsign, [item]), reason=why, urgency_s=0.0))
+    return out
+
+
 def _dogleg_index(arr: np.ndarray) -> int:
     a, b = arr[0, 1:3], arr[-1, 1:3]
     u = b - a

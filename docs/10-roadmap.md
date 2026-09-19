@@ -119,18 +119,36 @@ How a real flight is modelled: its route is the track it actually flew, simplifi
 
 ### Phase 5. Disruptions. About 2 hours
 The unified `Disruption` schema, planner input, simulator motion, and one Disrupt control: choose a kind and click, or press Random.
-- [ ] Every kind produces a conflict-free replan, or an explicit "no solution, emergency layer used" message
-- [ ] New routes flash on the map within 2 seconds of the disruption appearing
-- [ ] Random is seeded and repeatable
-- [ ] Old intruder and storm buttons removed
+- [x] Every kind produces a conflict-free replan, or an explicit message naming the flights that could not be resolved
+- [x] New routes flash on the map within 2 seconds of the disruption appearing (the replan takes 10 to 60 ms at 30 aircraft, under 0.5 s with 60 airborne)
+- [x] Random is seeded and repeatable
+- [x] Old intruder and storm buttons removed
+
+Done Saturday evening. Eight kinds in one table, `backend/disruptions.py`: fighter jet, drone, balloon, emergency aircraft, unknown target, storm cell, closed airspace, rocket launch. One Disrupt control on the map: **Random**, or **Choose** a kind and click. Active disruptions show as chips with minutes left and a remove button. Zones are drawn between their own floor and ceiling, so closed airspace floats; storms drift and swell; everything timed expires by itself and the flights it moved are sent back. The emergency is one of our own flights, and it calls mayday in its own voice.
+
+Measured with every card spoken and obeyed, six Random presses four minutes apart: demo, dense, Toronto 21:00Z (all 92 flights), Europe 16:00Z (80 flights) and Europe 16:00Z (all 159, 50 to 60 airborne) all finished with **no new loss of separation and no aircraft inside a zone**, apart from one flight that Tower had announced was too close to avoid a storm, which clipped it by 0.4 NM. Worst replan 0.4 s.
+
+**What this phase found.**
+- **A periodic replan forgot every intruder.** `replan()` only knew about an intruder on the call that introduced it. A minute later the repair pass planned as if it were not there and sent traffic back across its track: 0.57 NM from a fighter in one run. Fixed, with a regression test. This was in the build since Friday night and the Monte Carlo numbers for the intruder scenario predate the fix: rerun them before quoting.
+- **Cards for flights not yet in the sector were being spoken into nothing.** The flight then entered at its old level. `speak_card` now refuses with a notice until the flight has checked in. Phase 6's Auto queue must do the same.
+- **Superseded cards never left the screen.** The backend dropped them silently. It now sends status `superseded` and the screen removes them.
+- **The top bar invented miles.** It subtracted the live plan (what is left to fly) from the full baseline, so "miles saved" climbed into the thousands after any replan. It now shows the backend's figure, frozen at the first plan.
+- **Card churn under a drifting storm.** One flight got nine heading changes in 25 minutes with six disruptions stacked. Each is individually right. A controller would hate it. Phase 7: keep the assigned heading when the new one is within a few degrees and still clear.
+- The planner run time is wall-clock bounded, so a loaded laptop plans worse. Do not run the evaluation in parallel with anything else.
 
 ### Phase 6. Instructions: Manual and Auto. About 3 hours
 Manual: arm a card, record, review what Tower heard against the card, send. Auto: the voice queue described above, the data link path, and human takeover. Fix the voice budget: ElevenLabs for voiced exchanges, macOS voices as the fallback, a visible counter of characters left.
 - [ ] Manual: a misspoken card is flagged before it goes out
-- [ ] Auto at 1x: cards are spoken one at a time, most urgent first, and each waits for its readback
-- [ ] Auto above 1x, or when the queue is long: instructions go by data link and the planes comply
-- [ ] Holding the mic in Auto pauses Tower's speech and the human's transmission goes first
+- [x] Auto at 1x: cards are spoken one at a time, most urgent first, and each waits for its readback
+- [x] Auto above 1x, or when the queue is long: instructions go by data link and the planes comply
+- [x] Holding the mic in Auto pauses Tower's speech and the human's transmission goes first (tested in the backend; not yet tried with a real mic)
 - [ ] A wrong readback in Auto triggers Tower's spoken correction and the corrected readback is checked
+
+Auto landed Saturday evening, because without it the product looks broken: **aircraft only turn when an instruction is said and read back, so in Manual with nobody talking the orange replanned lines appear and the planes fly straight through the storm.** That is correct behaviour and it is exactly what a judge will see if the switch is left on Manual and nobody speaks.
+
+How Auto works (`World._auto_dispatch`): pending cards for flights already on frequency, most urgent first. One voice exchange at a time, and the channel is busy until the readback is validated or 30 s pass. A card goes by **data link** instead (text, accepted with WILCO, cannot be misheard, still radar-verified) when the clock is faster than 1.5x, when more than three cards are waiting, or when it is due before the voice could reach it. Holding the mic makes Tower wait. Each card records `via`: human, voice or datalink. Measured with nobody at the controls and four Random disruptions: demo and Europe 16:00Z (80 flights) both finished with no new loss of separation and nobody inside a zone; the same run in Manual with nobody talking had planes 17 NM deep in a storm.
+
+Still open in this phase: the Manual review step (see what Tower heard against the card before it goes out), the ElevenLabs character counter, and a wrong readback in Auto with real voices has not been watched end to end.
 
 ### Phase 7. Scale and robustness. About 2 hours
 - [ ] Planner: initial plan for 150 flights in under 5 seconds, replans inside their budget. If not, cap the scenario and say so

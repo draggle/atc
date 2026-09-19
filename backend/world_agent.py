@@ -30,8 +30,10 @@ TOOLS: list[dict[str, Any]] = [
      "parameters": {"type": "object", "properties": {"airline": {"type": "string", "description": "ICAO prefix, e.g. ACA, WJA, POE, DAL, UAL, AAL, JZA"},
                                                      "from_side": {"type": "string", "enum": ["east", "west", "north", "south"]},
                                                      "alt_ft": {"type": "number"}}, "required": ["airline", "from_side"]}}},
-    {"type": "function", "function": {"name": "add_disruption", "description": "Drop an intruder aircraft or a storm.",
-     "parameters": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["intruder", "storm"]},
+    {"type": "function", "function": {"name": "add_disruption",
+     "description": "Drop a disruption. Leave x_nm and y_nm out to put it where it will matter. 'random' picks the kind too.",
+     "parameters": {"type": "object", "properties": {"kind": {"type": "string", "enum": [
+         "fighter", "drone", "balloon", "emergency", "unknown", "storm", "closed", "rocket", "random"]},
                                                      "x_nm": {"type": "number"}, "y_nm": {"type": "number"}}, "required": ["kind"]}}},
     {"type": "function", "function": {"name": "multiply_traffic", "description": "Scale the traffic by a factor, e.g. 2 doubles it.",
      "parameters": {"type": "object", "properties": {"factor": {"type": "number"}}, "required": ["factor"]}}},
@@ -107,10 +109,13 @@ def _keyword_agent(world: "World", text: str) -> tuple[str, list[str]]:
         do("multiply_traffic", factor=3.0)
     elif m := re.search(r"(?:times|x)\s*(\d+(?:\.\d+)?)", t):
         do("multiply_traffic", factor=float(m.group(1)))
-    if re.search(r"\b(fighter|jet|intruder|unknown|bogey|drone)\b", t):
-        do("add_disruption", kind="intruder")
-    if re.search(r"\b(storm|weather|thunder|cell)\b", t):
-        do("add_disruption", kind="storm")
+    for pattern, kind in ((r"\b(fighter|jet|intruder|bogey)\b", "fighter"), (r"\bdrone\b", "drone"),
+                          (r"\bballoon\b", "balloon"), (r"\b(mayday|emergency|engine failure)\b", "emergency"),
+                          (r"\b(unknown|unidentified|ufo)\b", "unknown"), (r"\b(storm|weather|thunder|cell)\b", "storm"),
+                          (r"\b(closed|restricted|military area|exercise)\b", "closed"), (r"\b(rocket|launch)\b", "rocket"),
+                          (r"\b(random|surprise|anything)\b", "random")):
+        if re.search(pattern, t):
+            do("add_disruption", kind=kind)
     airline = next((code for word, code in AIRLINES.items() if word in t), None)
     if airline or re.search(r"\b(add|bring|place|put|spawn)\b.*\b(flight|plane|aircraft|arrival)\b", t):
         side = next((s for s in ("east", "west", "north", "south") if s in t), "east")

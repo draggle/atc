@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+import disruptions as DZ
 from schemas import AircraftState, Disruption, FlightSpec, Scenario, SimCommand, Waypoint, Zone
 from sim.geo import NM_PER_KT_S, bearing_deg, dist_nm, unit_vector, wrap180
 
@@ -41,6 +42,9 @@ class Aircraft:
     target_hdg: float | None = None  # set => route following suspended
     actype: str = "A320"
     is_intruder: bool = False
+    threat: str | None = None  # disruption kind when is_intruder
+    climb_fpm: float = CLIMB_FPM
+    expires_t: float | None = None  # a disruption that ends by itself
     spawned_at: float = 0.0
     distance_nm: float = 0.0
     airborne_s: float = 0.0
@@ -51,7 +55,7 @@ class Aircraft:
             callsign=self.callsign, x_nm=self.x, y_nm=self.y, alt_ft=self.alt,
             target_alt_ft=self.target_alt, hdg_deg=self.hdg, target_hdg_deg=self.target_hdg,
             gs_kt=self.gs, target_gs_kt=self.target_gs, route=list(self.route),
-            actype=self.actype, is_intruder=self.is_intruder, t=t,
+            actype=self.actype, is_intruder=self.is_intruder, threat=self.threat, t=t,
         )
 
 
@@ -66,6 +70,7 @@ class Simulator:
         self.active: dict[str, Aircraft] = {}
         self.removed: dict[str, Aircraft] = {}
         self.pending: list[FlightSpec] = []
+        self.ended: list[str] = []  # ids of disruptions that expired or left; drained by pop_ended()
         self.rng = np.random.default_rng(0)
         if scenario is not None:
             self.spawn(scenario)
@@ -112,28 +117,68 @@ class Simulator:
         self._spawn_due()
         for a in list(self.active.values()):
             self._advance(a, dt)
-            if self._should_remove(a):
+            expired = a.expires_t is not None and self.t >= a.expires_t
+            if expired or self._should_remove(a):
                 self.removed[a.callsign] = self.active.pop(a.callsign)
+                if a.is_intruder:
+                    self.ended.append(a.callsign)
+        self._advance_zones(dt)
 
     # -- extras -------------------------------------------------------------
 
-    def add_disruption(self, d: Disruption, alt_ft: float = DEFAULT_INTRUDER_ALT_FT) -> None:
-        """Spawn an intruder (straight line at hdg/gs) or add a blocked zone."""
-        if d.kind == "intruder":
+    def add_disruption(self, d: Disruption, alt_ft: float | None = None) -> None:
+        """Put a disruption into the world. Kinds and their numbers live in disruptions.py.
+
+        A point spawns an aircraft that flies a straight line and answers nobody. "emergency"
+        instead takes over the flight already called `d.id`: it descends and diverts on its own.
+        A circle becomes a blocked zone that may drift, swell and expire.
+        """
+        prof = DZ.profile(d.kind)
+        kind = prof.kind
+        if prof.shape == "point":
+            hdg = (d.hdg_deg or 0.0) % 360.0
+            a = self.active.get(d.id) if kind == "emergency" else None
+            if a is not None:
+                a.is_intruder, a.threat = True, kind
+                a.target_hdg, a.route = hdg, []
+                a.target_alt = d.target_alt_ft if d.target_alt_ft is not None else a.target_alt
+                a.climb_fpm, a.expires_t = prof.climb_fpm, d.expires_t
+                return
+            alt = alt_ft if alt_ft is not None else (d.alt_ft if d.alt_ft is not None else DEFAULT_INTRUDER_ALT_FT)
             self.active[d.id] = Aircraft(
-                callsign=d.id, x=d.x_nm, y=d.y_nm, alt=alt_ft, target_alt=alt_ft,
-                hdg=(d.hdg_deg or 0.0) % 360.0, gs=d.gs_kt or 450.0, target_gs=d.gs_kt or 450.0,
-                target_hdg=(d.hdg_deg or 0.0) % 360.0, actype="F18", is_intruder=True,
-                spawned_at=self.t,
+                callsign=d.id, x=d.x_nm, y=d.y_nm, alt=alt,
+                target_alt=d.target_alt_ft if d.target_alt_ft is not None else alt,
+                hdg=hdg, gs=d.gs_kt or 450.0, target_gs=d.gs_kt or 450.0, target_hdg=hdg,
+                actype=prof.actype, is_intruder=True, threat=kind, climb_fpm=prof.climb_fpm,
+                expires_t=d.expires_t, spawned_at=self.t,
             )
         else:
-            self.zones.append(Zone(id=d.id, x_nm=d.x_nm, y_nm=d.y_nm, radius_nm=d.radius_nm, kind=d.kind))
+            self.zones.append(Zone(
+                id=d.id, x_nm=d.x_nm, y_nm=d.y_nm, radius_nm=d.radius_nm, kind=kind,  # type: ignore[arg-type]
+                label=d.label, floor_ft=d.floor_ft, ceiling_ft=d.ceiling_ft, hdg_deg=d.hdg_deg or 0.0,
+                gs_kt=d.gs_kt or 0.0, swell_nm_per_min=d.swell_nm_per_min, max_radius_nm=d.max_radius_nm,
+                t0=self.t, expires_t=d.expires_t))
+
+    def remove_disruption(self, disruption_id: str) -> bool:
+        """Take a disruption out by hand. An emergency aircraft stays: it is a real flight."""
+        a = self.active.get(disruption_id)
+        if a is not None and a.is_intruder and a.threat != "emergency":
+            self.removed[disruption_id] = self.active.pop(disruption_id)
+            return True
+        n = len(self.zones)
+        self.zones = [z for z in self.zones if z.id != disruption_id]
+        return len(self.zones) != n
+
+    def pop_ended(self) -> list[str]:
+        out, self.ended = self.ended, []
+        return out
 
     def get(self, callsign: str) -> Aircraft | None:
         return self.active.get(callsign)
 
     def done(self) -> bool:
-        return not self.active and not self.pending
+        """Every real flight has left. A balloon still drifting about does not keep the run alive."""
+        return not self.pending and all(a.is_intruder for a in self.active.values())
 
     def next_waypoint(self, a: Aircraft) -> Waypoint | None:
         while a.route and a.route[0] not in self.waypoints:
@@ -167,8 +212,27 @@ class Simulator:
             callsign=f.callsign, x=x, y=y, alt=f.alt_ft, target_alt=f.alt_ft, hdg=hdg,
             gs=f.gs_kt, target_gs=f.gs_kt, route=route, actype=f.actype,
             is_intruder=f.is_intruder, spawned_at=self.t,
+            threat=(f.threat or "fighter") if f.is_intruder else None,
             target_hdg=hdg if (f.is_intruder or not route) else None,
         )
+
+    def _advance_zones(self, dt: float) -> None:
+        keep = []
+        for z in self.zones:
+            if z.expires_t is not None and self.t >= z.expires_t:
+                self.ended.append(z.id)
+                continue
+            if z.gs_kt > 0:
+                ux, uy = unit_vector(z.hdg_deg)
+                d = z.gs_kt * NM_PER_KT_S * dt
+                z.x_nm += ux * d
+                z.y_nm += uy * d
+            if z.swell_nm_per_min:
+                z.radius_nm = min(z.radius_nm + z.swell_nm_per_min * dt / 60.0,
+                                  z.max_radius_nm if z.max_radius_nm is not None else float("inf"))
+            z.t0 = self.t
+            keep.append(z)
+        self.zones = keep
 
     def _advance(self, a: Aircraft, dt: float) -> None:
         # Desired heading: explicit target, else bearing to the next waypoint.
@@ -183,7 +247,7 @@ class Simulator:
             a.hdg = (a.hdg + max(-max_turn, min(max_turn, delta))) % 360.0
         # Altitude and speed.
         da = a.target_alt - a.alt
-        a.alt += max(-CLIMB_FPM / 60 * dt, min(CLIMB_FPM / 60 * dt, da))
+        a.alt += max(-a.climb_fpm / 60 * dt, min(a.climb_fpm / 60 * dt, da))
         dg = a.target_gs - a.gs
         a.gs += max(-ACCEL_KT_S * dt, min(ACCEL_KT_S * dt, dg))
         # Position.

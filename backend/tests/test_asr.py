@@ -74,3 +74,29 @@ def test_local_whisper_accepts_arrays_and_radio_audio(spoken_clip, local_whisper
     norm = dataset_normalize(res.text)
     print("\nASR(radio):", res.text)
     assert "canada" in norm or "two four zero" in norm
+
+
+# --------------------------------------------------------------------------- remote with a local net
+
+def test_fallback_hears_the_transmission_when_the_remote_fails():
+    import numpy as np
+
+    from tower.asr import ASRResult, WithFallback
+
+    class Dead:
+        calls = 0
+
+        def transcribe(self, samples, prompt=None, **kw):
+            Dead.calls += 1
+            raise RuntimeError("network down")
+
+    class Local:
+        def transcribe(self, samples, prompt=None):
+            return ASRResult(text="air canada one two three", confidence=0.9, n_best=["air canada one two three"],
+                             latency_s=0.0, backend="local")
+
+    asr = WithFallback(Dead(), Local, cooldown_s=60)
+    a = asr.transcribe(np.zeros(1600, dtype=np.float32))
+    b = asr.transcribe(np.zeros(1600, dtype=np.float32))
+    assert a.backend == b.backend == "local" and a.text.startswith("air canada")
+    assert Dead.calls == 1  # the second call did not wait on a dead network again

@@ -72,3 +72,11 @@ Full write-up under phase 4 in `10-roadmap.md`. The short version for anyone wri
 - **There were three airline-name tables** (cards, normalizer, pilots) that disagreed, so a real callsign could be spoken one way and parsed another. There is now one, `backend/airlines.py`.
 - **adsb.lol, not OpenSky.** OpenSky's licence is research-only and wants identifiers anonymised. adsb.lol is ODbL and CC0. Keep the attribution in the README and on the screen.
 
+## Found when disruptions went in, Saturday Sept 19 evening
+
+Full write-up under phase 5 in `10-roadmap.md`. The one to know about: **`replan()` forgot intruders after the call that introduced them**, so every periodic repair planned as if the fighter were not there. Fixed in `planner/plan.py` with a regression test in `tests/test_disruptions.py`. Any intruder-scenario number measured before Saturday 17:00 is suspect. Also: cards are no longer spoken to flights that have not entered the sector, superseded cards are withdrawn from the screen, and the top bar's "miles saved" no longer grows after a replan.
+
+## The fine-tuned Whisper, Saturday Sept 19
+
+`training/RUNS.md` has the full record. whisper-small, 61 minutes on one Baseten H100, 11,268 real ATC clips: **word error rate 0.708 stock to 0.159 tuned on 1,000 held-out clips.** Not deployed yet.
+

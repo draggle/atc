@@ -13,16 +13,16 @@ Every message is one JSON object `{"type": ..., "payload": {...}, "t": <sim seco
 | type | payload | when |
 |---|---|---|
 | `state` | `{scenario, lifecycle, speed, world_id, scenarios: ScenarioInfo[], tower_enabled, auto_speak, t, waypoints: Waypoint[], zones: Zone[], sector_nm, buffer_nm, error_rate, noise, watching}` | on connect, on every lifecycle change, and whenever a setting changes |
-| `radar` | `{aircraft: AircraftState[]}` | once per second |
+| `radar` | `{aircraft: AircraftState[], zones?: Zone[]}` | once per second. `zones` is present while any zone is drifting or swelling and replaces `state.zones`. An intruder's `AircraftState` carries `threat`: fighter, drone, balloon, emergency or unknown |
 | `plan` | `Plan` | after initial planning and every replan |
 | `plan_update` | `{changed: string[], reason, trigger}` | with every replan |
-| `instruction_card` | `InstructionCard` | when created or when its status changes |
+| `instruction_card` | `InstructionCard` | when created or when its status changes. Status `superseded` means a newer plan replaced a card nobody had spoken: drop it |
 | `transcript` | `Transmission` | after every utterance is transcribed |
 | `clearance_opened` | `OpenClearance` | controller transmission with mandatory items |
 | `clearance_updated` | `OpenClearance` | status change |
 | `alert` | `Verdict` plus `audio_ref` | mismatch, missing, or resolver alert or uncertain. Never for match |
 | `resolver_step` | `ResolverStep` | each tool call of the resolver |
-| `disruption` | `Disruption` | when an intruder or zone is added |
+| `disruption` | `Disruption` | when a disruption is added, and again with `active: false` when it expires, leaves the sector or is removed. See Disruptions below |
 | `scoreboard` | `Scoreboard` | every few seconds and after every verdict |
 | `stats` | `{tier1_latency_s, transmissions, matches, alerts}` | rolling |
 | `agent_reply` | `{text, actions: string[]}` | after the world-builder agent handles a request |
@@ -44,7 +44,8 @@ Every message is one JSON object `{"type": ..., "payload": {...}, "t": <sim seco
 | `{"type":"set_speed","speed"}` | sim seconds per real second, clamped to 0.25 to 120. The screen offers 1, 5, 20, 60 |
 | `{"type":"set_tower","enabled"}` | Tower on or off. Off means readbacks are not checked and the plane flies what the pilot said |
 | `{"type":"set_auto_speak","enabled"}` | the agent speaks instruction cards itself |
-| `{"type":"add_disruption","kind":"intruder"\|"storm","x_nm","y_nm"}` | drop an intruder or storm at a point |
+| `{"type":"add_disruption","kind","x_nm"?,"y_nm"?}` | drop a disruption. `kind` is fighter, drone, balloon, emergency, unknown, storm, closed, rocket, or `random`. With no position, or for `random`, Tower puts it on the path of a flight a few minutes ahead. `intruder` still works and means fighter. A position outside the sector is refused with a `notice` |
+| `{"type":"remove_disruption","id"}` | take one out by hand. An emergency aircraft cannot be removed: it is a real flight |
 | `{"type":"speak_card","id"}` | speak one card by TTS now |
 | `{"type":"set_sliders","buffer_nm","error_rate","noise"}` | separation buffer, pilot error rate, radio noise |
 
@@ -83,3 +84,27 @@ Raw PCM16 mono 16 kHz frames between `ptt_start` and `ptt_stop`.
 
 - **radio**: the utterance goes through the full Tower pipeline as a controller transmission. AI pilots hear the parsed clearance and reply by voice into the same pipeline.
 - **agent**: the utterance is transcribed with stock speech recognition and handed to the world-builder agent, which can only change the world, never issue a clearance.
+
+## Disruptions
+
+One type, many kinds. Every number that describes a kind (speed, size, levels, how long it lasts, how much room the planner gives it, how often Random picks it) lives in `backend/disruptions.py` and nowhere else. The screen builds its Disrupt menu from `state.disruption_kinds` (`kind`, `label`, `blurb`, `shape`), and `state.disruptions` lists the ones still active so a reconnect restores them.
+
+| shape | kinds | what it is in the world |
+|---|---|---|
+| `point` | fighter, drone, balloon, unknown | an aircraft with `is_intruder: true` and `threat: <kind>` that flies a straight line and answers nobody. `id` is its callsign (`VIPER3`, `DRONE1`). Payload has `hdg_deg`, `gs_kt`, `alt_ft`, `predicted_path` |
+| `point` | emergency | not a new aircraft: one of our flights (`id` is its callsign) stops taking instructions, descends at 3,500 fpm to 10,000 ft and diverts to the nearest edge. It says so on frequency, and that mayday goes through the radio effect and Whisper like any other pilot call |
+| `circle` | storm, closed, rocket | a `Zone` with the same `id`. `radius_nm`, `floor_ft` to `ceiling_ft` (99999 = every level), optional drift (`hdg_deg`, `gs_kt`) and swell. Storms drift and grow. Closed airspace blocks only a band of levels, so flights can go over or under |
+
+`expires_t` is the sim time it ends by itself; `null` means it lasts until it leaves the sector. When a disruption ends, flights that were moved to clear it are planned again without it, and any of them still flying an assigned heading gets a "direct" card.
+
+Random is seeded by the scenario's seed and the number of disruptions so far: the same scenario and the same presses give the same disruptions. A random zone is dropped ahead of the traffic, never on top of an aircraft. A zone placed by hand can land on one: the planner then takes the shortest way out and never goes back in.
+
+## Manual and Auto
+
+`state.auto_speak` (also `state.mode`: `manual` or `auto`) says who issues the instructions. The client flips it with `{"type":"set_auto_speak","enabled":bool}` or `{"type":"set_mode","mode":"manual"|"auto"}`. **Aircraft only move when an instruction is issued**, so in Manual with nobody talking the plan changes and the traffic does not.
+
+In Auto, Tower issues pending cards itself: one voice exchange at a time, the rest by data link when the clock is above 1.5x, more than three cards are waiting, or a card is due before the voice could reach it. Cards for flights that have not entered the sector wait. `ptt_start` on the radio channel makes Tower hold its voice until `ptt_stop`.
+
+- `InstructionCard.via`: `human`, `voice` or `datalink`, set when the card is issued.
+- A data link instruction appears as a `transcript` event with `speaker: "datalink"`, no audio, `asr_confidence: 1`, and a `clearance_opened` whose status is already `matched`. Radar verification watches it like any other.
+
