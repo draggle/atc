@@ -119,7 +119,7 @@ class Resolver:
             except Exception as e:  # noqa: BLE001
                 result = {"error": f"{type(e).__name__}: {e}"}
             steps.append(ResolverStep(clearance_id=clearance.id, step=n, tool=call.name,
-                                      args=call.arguments, result_summary=summarize(call.name, result)))
+                                      args=call.arguments, result_summary=summarize(call.name, result, self.tools.source)))
             messages.append(resp.as_message())
             messages.append({"role": "tool", "tool_call_id": call.id, "name": call.name,
                              "content": json.dumps(result, default=str)})
