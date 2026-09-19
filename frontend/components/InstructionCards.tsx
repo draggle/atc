@@ -2,6 +2,7 @@
 
 import { useTowerState } from "@/lib/store";
 import type { CardStatus, InstructionCard } from "@/lib/types";
+import { CallsignLink, SHOW_CLS, useShowOnMap } from "./AlertCard";
 import { useClient } from "./TowerApp";
 
 const VISIBLE_CAP = 4;
@@ -23,16 +24,20 @@ function Card({ card, arrivedT, simT, auto, onFrequency }: { card: InstructionCa
   const frac = card.urgency_s > 0 ? remaining / card.urgency_s : 0;
   const urgent = remaining < 20 && card.status === "pending";
   const done = card.status === "verified";
+  // The time to act has passed and nobody has said it. It stays, because the aircraft still needs it.
+  const overdue = remaining <= 0 && card.status === "pending";
+  // Same as an alert card: click (or Enter) to go to the aircraft. Only one that is on the radar.
+  const show = useShowOnMap(onFrequency ? card.callsign : "");
   return (
-    <div className={`rounded-lg border ${st.cls} bg-panel-2 p-2.5 transition-colors ${done ? "opacity-60" : ""}`}>
+    <div {...show} className={`rounded-lg border ${st.cls} bg-panel-2 p-2.5 transition-colors ${done ? "opacity-60" : ""} ${show ? `${SHOW_CLS} hover:bg-panel-2/70` : ""}`}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className={`inline-block w-2 h-2 rounded-full ${st.bar}`} />
-          <span className="font-mono text-sm">{card.callsign}</span>
+          <CallsignLink callsign={card.callsign} live={!!show} />
           <span className="text-[10px] text-muted truncate">{st.label}</span>
         </div>
         <span className={`font-mono text-xs tabular-nums ${urgent ? "text-bad" : "text-muted"}`}>
-          {card.status === "pending" || card.status === "spoken" ? `${Math.ceil(remaining)}s` : ""}
+          {overdue ? "overdue" : card.status === "pending" || card.status === "spoken" ? `${Math.ceil(remaining)}s` : ""}
         </span>
       </div>
       <p className="mt-1.5 text-[15px] leading-snug">&ldquo;{card.phrase}&rdquo;</p>

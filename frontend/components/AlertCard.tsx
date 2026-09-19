@@ -74,7 +74,7 @@ export function ItemList({ items, tone }: { items: Item[]; tone: "expected" | "h
  * "Take me to it": a click or Enter on the card selects the aircraft, follows it, and flies the camera there.
  * The card's own controls and a text selection are left alone. Enter only: Space is push-to-talk everywhere.
  */
-function useShowOnMap(callsign: string) {
+export function useShowOnMap(callsign: string) {
   const dispatch = useTowerDispatch();
   if (!callsign) return null;
   return {
@@ -94,10 +94,10 @@ function useShowOnMap(callsign: string) {
   };
 }
 
-const SHOW_CLS = "group cursor-pointer transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/60";
+export const SHOW_CLS = "group cursor-pointer transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/60";
 
 /** The callsign, reading as a link when the card will take you to it. */
-function CallsignLink({ callsign, live }: { callsign: string; live: boolean }) {
+export function CallsignLink({ callsign, live }: { callsign: string; live: boolean }) {
   if (!live) return <span className="font-mono text-sm">{callsign}</span>;
   return (
     <span className="font-mono text-sm">
