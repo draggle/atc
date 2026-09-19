@@ -27,6 +27,8 @@ Calm and quiet. Tower says nothing unless it has something worth saying, and it 
 
 Night operations room. Near-black ink, one cool signal colour for Tower's plan (`--accent`), one warm annunciator colour for anything that changed (`--warn`), red only for something wrong. Type is B612 and B612 Mono, the faces Airbus designed for cockpit displays. Floating panels use `.panel` or `.glass`; do not put `position` in those classes, it overrides Tailwind's `absolute`. The basemap is context, not content: keep it dimmer than the traffic.
 
+No globe projection: with the deck.gl overlay it drops every aircraft icon, label and ring and leaves only the lines. The toggle was removed after it blanked the traffic mid-test.
+
 Pinned: `maplibre-gl@5`. Version 6 fails to load its worker under Next.js dev.
 
 ## Rules
