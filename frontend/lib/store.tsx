@@ -81,6 +81,8 @@ export interface TowerState {
   selected: string | null;
   /** the camera follows the selected aircraft */
   follow: boolean;
+  /** bumps on every "focus": the map flies to the selected aircraft when it changes */
+  focusSeq: number;
   sliders: Sliders;
   planView: "today" | "tower";
   showStock: boolean;
@@ -109,6 +111,7 @@ export const initialState: TowerState = {
   setupOpen: false,
   selected: null,
   follow: false,
+  focusSeq: 0,
   sliders: { buffer_nm: 3, error_rate: 0.1, noise: 0.2 },
   planView: "tower",
   showStock: false,
@@ -126,6 +129,8 @@ export type Action =
   | { type: "dismiss_notice"; id: number }
   | { type: "set_setup_open"; open: boolean }
   | { type: "select"; callsign: string | null }
+  /** "take me to it": select, follow, and fly the camera there. An alert card does this. */
+  | { type: "focus"; callsign: string }
   | { type: "set_follow"; on: boolean }
   | { type: "reset" };
 
@@ -310,6 +315,8 @@ export function reducer(state: TowerState, action: Action): TowerState {
       return { ...state, setupOpen: action.open };
     case "select":
       return { ...state, selected: action.callsign, follow: action.callsign ? state.follow : false };
+    case "focus":
+      return { ...state, selected: action.callsign, follow: true, focusSeq: state.focusSeq + 1 };
     case "set_follow":
       return { ...state, follow: action.on };
     case "reset":
@@ -333,6 +340,12 @@ export function highlightMap(state: TowerState): Record<string, "alert" | "resol
     if (cs) out[cs] = "alert";
   }
   return out;
+}
+
+/** The newest alert standing against this aircraft, if any. `alerts` is newest first. */
+export function alertFor(state: TowerState, callsign: string | null): ActiveAlert | undefined {
+  if (!callsign) return undefined;
+  return state.alerts.find((a) => (a.callsign ?? callsignForClearance(state, a.clearance_id)) === callsign);
 }
 
 export function callsignForClearance(state: TowerState, clearanceId: string): string | null {

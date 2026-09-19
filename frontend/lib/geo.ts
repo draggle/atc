@@ -49,3 +49,13 @@ export function latLonToNm(frame: FrameLike, lat: number, lon: number): [number,
     EARTH_RADIUS_NM * k * (Math.cos(phi0) * Math.sin(phi) - Math.sin(phi0) * Math.cos(phi) * Math.cos(dlam)),
   ];
 }
+
+/** The point `nm` nautical miles from (lat, lon) along a compass bearing (0 north, 90 east), on the sphere. Returns [lat, lon]. */
+export function destinationPoint(lat: number, lon: number, bearingDeg: number, nm: number): [number, number] {
+  const phi1 = lat * RAD;
+  const theta = bearingDeg * RAD;
+  const d = nm / EARTH_RADIUS_NM;
+  const phi2 = Math.asin(Math.min(1, Math.max(-1, Math.sin(phi1) * Math.cos(d) + Math.cos(phi1) * Math.sin(d) * Math.cos(theta))));
+  const lam2 = lon * RAD + Math.atan2(Math.sin(theta) * Math.sin(d) * Math.cos(phi1), Math.cos(d) - Math.sin(phi1) * Math.sin(phi2));
+  return [phi2 / RAD, ((((lam2 / RAD + 180) % 360) + 360) % 360) - 180];
+}
