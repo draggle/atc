@@ -210,14 +210,31 @@ function Checking({ clearanceId }: { clearanceId: string }) {
   const state = useTowerState();
   const callsign = callsignForClearance(state, clearanceId) ?? "";
   const show = useShowOnMap(callsign);
+  // The resolver's `watch` tool waits on the radar before it decides, a minute by default. Say so,
+  // with a countdown on the simulator's clock, or a silent minute reads as a missed error.
+  const watch = [...(state.steps[clearanceId] ?? [])].reverse().find((s) => s.tool === "watch");
+  const watchFor = Number(watch?.args?.seconds) > 0 ? Number(watch?.args?.seconds) : 60;
+  const simT = state.sim?.t ?? 0;
+  const [watchT0, setWatchT0] = useState<number | null>(null);
+  useEffect(() => {
+    if (watch && watchT0 === null) setWatchT0(simT);
+  }, [watch, watchT0, simT]);
+  const left = watch ? Math.max(0, Math.ceil(watchFor - (simT - (watchT0 ?? simT)))) : null;
   return (
     <div {...show} className={`rounded-lg border-2 border-warn bg-warn/10 p-3 ${show ? `${SHOW_CLS} hover:bg-warn/15` : ""}`}>
       <div className="flex items-center gap-2">
         <span className="spinner" />
-        <span className="text-lg font-bold tracking-wide text-warn">CHECKING</span>
+        <span className="text-lg font-bold tracking-wide text-warn">{watch ? "WATCHING" : "CHECKING"}</span>
         <CallsignLink callsign={callsign} live={!!show} />
+        {left !== null && <span className="ml-auto font-mono text-sm tabular-nums text-warn" title="Simulator seconds until Tower decides">{left}s</span>}
       </div>
-      <p className="mt-1 text-xs text-fg/80">Readback unclear. The resolver is gathering evidence before deciding whether to interrupt you.</p>
+      {watch ? (
+        <p className="mt-1 text-xs text-fg/80">
+          The readback was unclear, so Tower is watching what {callsign || "the aircraft"} actually flies before it decides. {left === 0 ? "Deciding now." : `Verdict in about ${left} s.`}
+        </p>
+      ) : (
+        <p className="mt-1 text-xs text-fg/80">Readback unclear. The resolver is gathering evidence before deciding whether to interrupt you.</p>
+      )}
       <AgentTrace clearanceId={clearanceId} done={false} />
     </div>
   );
