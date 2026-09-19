@@ -8,8 +8,11 @@ Next.js 15 (App Router, TypeScript, Tailwind 4) live screen. One page: radar, in
 cd frontend
 npm install
 npm run dev          # http://localhost:3000
+npm run dev:3100     # same, on port 3100 (when 3000 is taken)
 npm run build        # must pass with zero type errors
 ```
+
+The port is just Next's `-p` flag: `npx next dev -p <port>` works for any other port.
 
 - `http://localhost:3000` connects to the backend WebSocket. If it cannot connect within 1.5 s, it falls back to the scripted mock (`lib/mock.ts`) and shows a MOCK badge.
 - `http://localhost:3000/?mock=1` forces mock mode.
@@ -50,14 +53,14 @@ JSON `{type, payload, t}` where `payload` is the matching model from `backend/sc
 
 | type | payload |
 |---|---|
-| `state` | `{scenario, tower_enabled, auto_speak, t, waypoints: Waypoint[], zones: Zone[], sector_nm}` |
-| `radar` | `AircraftState[]` (also accepts `{aircraft: AircraftState[], t}`) |
+| `state` | `{scenario, tower_enabled, auto_speak, t, waypoints: Waypoint[], zones: Zone[], sector_nm, watching: string[]}` |
+| `radar` | `{aircraft: AircraftState[], t, watching: string[]}` (a bare `AircraftState[]` is also accepted). Positions are interpolated between ticks on the client, extrapolating at most 1.5 s past the last one |
 | `plan` | `Plan`; optional `baseline_paths: PlannedPath[]` draws the "Today" view |
 | `plan_update` | `Plan` whose `paths` are the changed flights; optional `changed: string[]`; changed callsigns flash 4 s |
-| `instruction_card` | `InstructionCard`; same `id` again updates status |
-| `transcript` | `Transmission` |
+| `instruction_card` | `InstructionCard`; same `id` again updates status. The urgency countdown runs on the server clock: envelope `t` at first arrival vs the latest `t` from `state`/`radar` |
+| `transcript` | `Transmission`; `callsign` (parser's, or null) fills the callsign column, with a regex over the text as fallback |
 | `clearance_opened` / `clearance_updated` | `OpenClearance` |
-| `alert` | `Verdict` + `audio_ref` (+ optional `callsign`). `result: "match"` is never shown |
+| `alert` | `Verdict` + `audio_ref` (+ optional `callsign`). `result: "match"` is never shown. mismatch/partial/missing with an `audio_ref` auto-plays the clip once (mute toggle persisted in `localStorage`); ambiguous never auto-plays. A `reason` starting with `Radar:` renders as "Read back right, flying wrong" |
 | `resolver_step` | `ResolverStep`; shows a CHECKING card until the `alert` for that `clearance_id` arrives |
 | `disruption` | `Disruption` |
 | `scoreboard` | `Scoreboard` |

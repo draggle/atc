@@ -30,6 +30,14 @@ export interface ChatLine {
   at: number;
 }
 
+/** Last two radar states for one aircraft, with the wall-clock ms each arrived, for interpolation. */
+export interface Track {
+  cur: AircraftState;
+  curAt: number;
+  prev: AircraftState | null;
+  prevAt: number;
+}
+
 export interface Sliders {
   buffer_nm: number;
   error_rate: number;
@@ -40,10 +48,16 @@ export interface TowerState {
   connection: Connection;
   sim: SimState | null;
   aircraft: Record<string, AircraftState>;
+  /** callsign -> last two radar states, for smooth motion between ticks */
+  tracks: Record<string, Track>;
+  /** callsigns radar verification is watching after a matched readback */
+  watching: string[];
   plan: Plan | null;
   /** callsign -> wall-clock ms when the flash should end */
   flashUntil: Record<string, number>;
   cards: InstructionCard[]; // arrival order
+  /** card id -> server clock (Event envelope t) when the card first arrived */
+  cardT: Record<string, number>;
   clearances: Record<string, OpenClearance>;
   alerts: ActiveAlert[]; // newest first
   steps: Record<string, ResolverStep[]>;
@@ -63,9 +77,12 @@ export const initialState: TowerState = {
   connection: "connecting",
   sim: null,
   aircraft: {},
+  tracks: {},
+  watching: [],
   plan: null,
   flashUntil: {},
   cards: [],
+  cardT: {},
   clearances: {},
   alerts: [],
   steps: {},
@@ -101,15 +118,24 @@ function upsertClearance(state: TowerState, c: OpenClearance): TowerState {
 function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
   switch (ev.type) {
     case "state":
-      return { ...state, sim: ev.payload };
+      return { ...state, sim: ev.payload, watching: ev.payload.watching ?? state.watching };
 
     case "radar": {
       const list = Array.isArray(ev.payload) ? ev.payload : ev.payload.aircraft;
+      const now = performance.now();
       const aircraft: Record<string, AircraftState> = {};
-      for (const a of list) aircraft[a.callsign] = a;
+      const tracks: Record<string, Track> = {};
+      for (const a of list) {
+        aircraft[a.callsign] = a;
+        const old = state.tracks[a.callsign];
+        tracks[a.callsign] = old
+          ? { cur: a, curAt: now, prev: old.cur, prevAt: old.curAt }
+          : { cur: a, curAt: now, prev: null, prevAt: now };
+      }
       const t = Array.isArray(ev.payload) ? (list[0]?.t ?? state.sim?.t ?? 0) : (ev.payload.t ?? state.sim?.t ?? 0);
       const sim = state.sim ? { ...state.sim, t } : state.sim;
-      return { ...state, aircraft, sim };
+      const watching = Array.isArray(ev.payload) ? state.watching : (ev.payload.watching ?? state.watching);
+      return { ...state, aircraft, tracks, sim, watching };
     }
 
     case "plan":
@@ -136,7 +162,8 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
     case "instruction_card": {
       const idx = state.cards.findIndex((c) => c.id === ev.payload.id);
       const cards = idx >= 0 ? state.cards.map((c, i) => (i === idx ? ev.payload : c)) : [...state.cards, ev.payload];
-      return { ...state, cards };
+      const cardT = ev.payload.id in state.cardT ? state.cardT : { ...state.cardT, [ev.payload.id]: ev.t };
+      return { ...state, cards, cardT };
     }
 
     case "clearance_opened":

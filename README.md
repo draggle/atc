@@ -40,6 +40,7 @@ All measured by us on this laptop. Say which is which on stage.
 | Losses of separation, Tower plan, validation on or off | 0 per flight hour, closest 9.4 NM | Same runs |
 | Miles vs fixed routes | 7.8 to 8.3 percent fewer | Same runs. Winds and aircraft performance excluded |
 | Readback errors caught, Tower on | 4 of 4 injected | Same runs; simulated at the command level, no audio |
+| Density sweep, dense scenario 1x to 2.5x traffic | Fixed routes 0.63 to 1.60 LoS per flight hour; Tower with validation 0 to 0.011; 6 to 8 percent fewer miles at every density | `python -m eval.sweep`, chart in `docs/img/density-sweep.png`, 4 runs per point |
 | Dense scenario at 5 percent errors, 20 runs | fixed 154 LoS, Tower without validation 1 LoS, Tower with validation 0 | `python -m eval.run_eval --scenario dense --runs 20 --error-rate 0.05` |
 | Checker cross-encoder, synthetic held-out 5,000 pairs | accuracy 0.894, false alarm rate 0.085, detection 0.908, 7 ms per pair | distilroberta-base, 12k pairs, 10 min on the laptop GPU |
 | Stock Whisper word error rate on 100 real held-out ATC clips | tiny 1.04, base 0.92, small 0.67 | jacktol/atc-dataset test split, greedy, both sides normalized. Matches the published 63 percent for small |

@@ -34,3 +34,16 @@ Saturday night Sept 19 to Sunday Sept 20. Things the spec did not know that a te
 ## Monte Carlo
 
 Demo scenario, 20 runs, 2 percent readback errors, buffer 3 NM: fixed routes 0.34 losses of separation per flight hour with a closest approach of 0.04 NM at the CENTA funnel; Tower's plan 0 per flight hour with closest 9.4 NM, and 7.8 to 8.3 percent fewer miles. Dense scenario at 5 percent errors: fixed 154, Tower without validation 1 (an uncorrected wrong readback to 3.07 NM), Tower with validation 0. That last row is the "validation earns the tighter plan" story with real numbers.
+
+## Density sweep
+
+`python -m eval.sweep --scenario dense --densities 1,1.5,2,2.5 --buffers 1,3 --runs 4 --error-rate 0.02`, 220 s. Chart at `docs/img/density-sweep.png`, data at `docs/img/density-sweep.csv`.
+
+| Density | Fixed routes LoS/h | Tower, validation off | Tower, validation on | Miles vs fixed |
+|---|---|---|---|---|
+| 1.0x (22 flights) | 0.63 | 0 | 0 | -6.7 to -7.6% |
+| 1.5x (33) | 0.92 | 0 | 0 | -6.5 to -7.2% |
+| 2.0x (44) | 1.26 | 0.011 to 0.046 | 0 to 0.011 | -6.4 to -7.2% |
+| 2.5x (55) | 1.60 | 0 to 0.009 | 0 to 0.009 | -7.2 to -8.1% |
+
+Fixed routes degrade linearly with density. Tower holds at zero through 1.5x and leaks single events at 2x and above. Those leaks are not readback errors slipping through; they come from the 60 s replan cadence and frozen window when 44 or more aircraft need repair. The planner reported zero unresolved conflicts at every point, so the knee where it fails to find candidates is beyond 2.5x. Four runs per point is thin; rerun at 10 runs before quoting on a slide.

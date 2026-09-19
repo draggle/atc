@@ -43,6 +43,8 @@ export interface Transmission {
   speaker: Speaker;
   n_best: string[];
   text_stock: string | null;
+  /** Parser's callsign for this transmission, null when none was recognised. */
+  callsign: string | null;
 }
 
 export interface Item {
@@ -224,6 +226,8 @@ export interface SimState {
   waypoints: Waypoint[];
   zones: Zone[];
   sector_nm: number;
+  /** Callsigns radar verification is watching after a matched readback. */
+  watching?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -237,7 +241,7 @@ export type EventMap = {
   alert: AlertPayload;
   resolver_step: ResolverStep;
   stats: Stats;
-  radar: AircraftState[] | { aircraft: AircraftState[]; t?: number };
+  radar: AircraftState[] | { aircraft: AircraftState[]; t?: number; watching?: string[] };
   plan: Plan;
   plan_update: PlanUpdate;
   instruction_card: InstructionCard;

@@ -31,7 +31,7 @@ export interface MockHandle {
 type Emit = (ev: TowerEvent) => void;
 
 const SECTOR = 200;
-const TICK_MS = 500;
+const TICK_MS = 1000; // 1 Hz like the backend, so client-side interpolation is exercised
 const DT_S = 4; // sim seconds per tick, so motion is visible
 
 const WAYPOINTS: Waypoint[] = [
@@ -104,6 +104,8 @@ export function startMock(emit: Emit): MockHandle {
     tier1_latency_s: 1.3,
   };
   const cards = new Map<string, InstructionCard>();
+  /** Callsigns radar verification is watching after a matched readback. */
+  const watching = new Set<string>();
 
   const after = (ms: number, fn: () => void) => {
     const h = setTimeout(() => {
@@ -125,6 +127,7 @@ export function startMock(emit: Emit): MockHandle {
     waypoints: WAYPOINTS,
     zones,
     sector_nm: SECTOR,
+    watching: Array.from(watching),
   });
 
   // ------------------------------------------------------------------ plan
@@ -213,13 +216,13 @@ export function startMock(emit: Emit): MockHandle {
       is_intruder: f.isIntruder,
       t: simT,
     }));
-    send({ type: "radar", payload: list, t: simT });
+    send({ type: "radar", payload: { aircraft: list, t: simT, watching: Array.from(watching) }, t: simT });
   };
   const interval = setInterval(tick, TICK_MS);
 
   // ------------------------------------------------------------------ helpers
   let txCounter = 0;
-  const transmission = (speaker: Transmission["speaker"], text: string, conf: number, stock?: string): Transmission => {
+  const transmission = (speaker: Transmission["speaker"], text: string, conf: number, stock?: string, callsign: string | null = null): Transmission => {
     txCounter += 1;
     score = { ...score, transmissions: score.transmissions + 1 };
     return {
@@ -233,6 +236,7 @@ export function startMock(emit: Emit): MockHandle {
       speaker,
       n_best: [text],
       text_stock: stock ?? null,
+      callsign,
     };
   };
   const clearance = (id: string, callsign: string, items: Item[], status: OpenClearance["status"], cardId: string | null): OpenClearance => ({
@@ -267,14 +271,14 @@ export function startMock(emit: Emit): MockHandle {
       c = cards.get(cardId);
       if (!c) return;
       setCard(cardId, "spoken", clId);
-      send({ type: "transcript", payload: transmission("controller", c.phrase.toLowerCase(), 0.97), t: simT });
+      send({ type: "transcript", payload: transmission("controller", c.phrase.toLowerCase(), 0.97, undefined, c.callsign), t: simT });
       send({ type: "clearance_opened", payload: clearance(clId, c.callsign, c.items, "open", cardId), t: simT });
     });
     after(delay + 2200, () => {
       if (!c) return;
       const cur = c;
       const rb = `${c.phrase.toLowerCase().replace(/^\S+\s?\S*\s/, "")} ${c.callsign.toLowerCase()}`;
-      send({ type: "transcript", payload: transmission("pilot", rb, 0.91, rb.replace("two four zero", "two four")), t: simT });
+      send({ type: "transcript", payload: transmission("pilot", rb, 0.91, rb.replace("two four zero", "two four"), c.callsign), t: simT });
       send({ type: "clearance_updated", payload: clearance(clId, c.callsign, c.items, "matched", cardId), t: simT });
       // A match verdict is sent by the backend but must never render as an alert.
       const v: AlertPayload = {
@@ -292,11 +296,15 @@ export function startMock(emit: Emit): MockHandle {
       };
       send({ type: "alert", payload: v, t: simT });
       setCard(cardId, "validated", clId);
+      watching.add(cur.callsign);
       const f = flights.find((x) => x.callsign === cur.callsign);
       const alt = c.items.find((i) => i.type === "altitude");
       if (f && alt && typeof alt.value === "number") f.targetAlt = alt.unit === "FL" ? alt.value * 100 : alt.value;
     });
-    after(delay + 6500, () => setCard(cardId, "verified", clId));
+    after(delay + 6500, () => {
+      if (c) watching.delete(c.callsign);
+      setCard(cardId, "verified", clId);
+    });
   };
 
   const runScript = () => {
@@ -348,11 +356,11 @@ export function startMock(emit: Emit): MockHandle {
     );
     after(13500, () => {
       setCard(`c${g}-3`, "spoken", `cl-c${g}-3`);
-      send({ type: "transcript", payload: transmission("controller", "westjet four five six turn left heading two seven zero", 0.96), t: simT });
+      send({ type: "transcript", payload: transmission("controller", "westjet four five six turn left heading two seven zero", 0.96, undefined, "WJA456"), t: simT });
       send({ type: "clearance_opened", payload: clearance(`cl-c${g}-3`, "WJA456", hdg270, "open", `c${g}-3`), t: simT });
     });
     after(15800, () => {
-      send({ type: "transcript", payload: transmission("pilot", "left heading two five zero westjet four five six", 0.88, "left heading to five zero west jet for five six"), t: simT });
+      send({ type: "transcript", payload: transmission("pilot", "left heading two five zero westjet four five six", 0.88, "left heading to five zero west jet for five six", "WJA456"), t: simT });
       send({ type: "clearance_updated", payload: clearance(`cl-c${g}-3`, "WJA456", hdg270, "mismatched", `c${g}-3`), t: simT });
       score = { ...score, errors_injected: score.errors_injected + 1, errors_caught: score.errors_caught + 1, mean_alert_latency_s: 1.4 };
       const v: AlertPayload = {
@@ -389,11 +397,11 @@ export function startMock(emit: Emit): MockHandle {
     );
     after(22500, () => {
       setCard(`c${g}-4`, "spoken", `cl-c${g}-4`);
-      send({ type: "transcript", payload: transmission("controller", "jazz two two one descend flight level two four zero", 0.95), t: simT });
+      send({ type: "transcript", payload: transmission("controller", "jazz two two one descend flight level two four zero", 0.95, undefined, "JZA221"), t: simT });
       send({ type: "clearance_opened", payload: clearance(`cl-c${g}-4`, "JZA221", fl240b, "open", `c${g}-4`), t: simT });
     });
     after(24800, () => {
-      send({ type: "transcript", payload: transmission("pilot", "descend two [static] zero jazz two two one", 0.54, "descent to zero just to to one"), t: simT });
+      send({ type: "transcript", payload: transmission("pilot", "descend two [static] zero jazz two two one", 0.54, "descent to zero just to to one", null), t: simT });
       send({ type: "clearance_updated", payload: clearance(`cl-c${g}-4`, "JZA221", fl240b, "uncertain", `c${g}-4`), t: simT });
     });
     const steps: ResolverStep[] = [
@@ -422,9 +430,13 @@ export function startMock(emit: Emit): MockHandle {
       send({ type: "alert", payload: v, t: simT });
       const f = flights.find((x) => x.callsign === "JZA221");
       if (f) f.targetAlt = 24000;
+      watching.add("JZA221");
       setCard(`c${g}-4`, "validated", `cl-c${g}-4`);
     });
-    after(36000, () => setCard(`c${g}-4`, "verified", `cl-c${g}-4`));
+    after(36000, () => {
+      watching.delete("JZA221");
+      setCard(`c${g}-4`, "verified", `cl-c${g}-4`);
+    });
 
     // Disruption: intruder through the middle, replan, new cards.
     after(33000, () => addDisruption("intruder", 100, 195, 180));

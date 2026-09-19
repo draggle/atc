@@ -6,7 +6,9 @@ import type { Transmission } from "@/lib/types";
 
 const CALLSIGN_RE = /\b([A-Z]{2,3}\d{1,4}[A-Z]?)\b/;
 
-function guessCallsign(t: Transmission): string {
+/** Parser's callsign when the backend gave one; regex over the text only as a fallback. */
+function callsignOf(t: Transmission): string {
+  if (t.callsign) return t.callsign;
   const m = t.text_norm.toUpperCase().match(CALLSIGN_RE);
   return m ? m[1] : "";
 }
@@ -15,7 +17,7 @@ function Row({ t, showStock }: { t: Transmission; showStock: boolean }) {
   const conf = Math.max(0, Math.min(1, t.asr_confidence));
   const confCls = conf > 0.85 ? "bg-ok" : conf > 0.65 ? "bg-warn" : "bg-bad";
   const isCtl = t.speaker === "controller";
-  const callsign = guessCallsign(t);
+  const callsign = callsignOf(t);
   return (
     <div className="grid grid-cols-[4.5rem_5rem_1fr_4rem] gap-2 items-baseline py-1 border-b border-line/40 group" title={t.text_stock ? `stock: ${t.text_stock}` : undefined}>
       <span className={`text-[10px] uppercase tracking-wider font-semibold ${isCtl ? "text-accent" : t.speaker === "pilot" ? "text-ok" : "text-muted"}`}>{t.speaker}</span>

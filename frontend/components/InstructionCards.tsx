@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { useTowerState } from "@/lib/store";
 import type { CardStatus, InstructionCard } from "@/lib/types";
 import { useClient } from "./TowerApp";
@@ -15,19 +14,11 @@ const STATUS: Record<CardStatus, { label: string; cls: string; bar: string }> = 
   error: { label: "wrong readback", cls: "border-bad", bar: "bg-bad" },
 };
 
-function useNow(intervalMs: number) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const h = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(h);
-  }, [intervalMs]);
-  return now;
-}
-
-function Card({ card, receivedAt, now }: { card: InstructionCard; receivedAt: number; now: number }) {
+/** `arrivedT` and `simT` are both server clock (sim seconds), so the countdown is immune to client lag. */
+function Card({ card, arrivedT, simT }: { card: InstructionCard; arrivedT: number; simT: number }) {
   const { send } = useClient();
   const st = STATUS[card.status];
-  const remaining = Math.max(0, card.urgency_s - (now - receivedAt) / 1000);
+  const remaining = Math.max(0, card.urgency_s - Math.max(0, simT - arrivedT));
   const frac = card.urgency_s > 0 ? remaining / card.urgency_s : 0;
   const urgent = remaining < 20 && card.status === "pending";
   const done = card.status === "verified";
@@ -66,10 +57,8 @@ function Card({ card, receivedAt, now }: { card: InstructionCard; receivedAt: nu
 }
 
 export default function InstructionCards() {
-  const { cards } = useTowerState();
-  const now = useNow(1000);
-  const [seen] = useState(() => new Map<string, number>());
-  for (const c of cards) if (!seen.has(c.id)) seen.set(c.id, Date.now());
+  const { cards, cardT, sim } = useTowerState();
+  const simT = sim?.t ?? 0;
 
   // Active first (pending/spoken/error), then validated, verified last; within a group, most urgent first.
   const rank: Record<CardStatus, number> = { error: 0, pending: 1, spoken: 2, validated: 3, verified: 4 };
@@ -90,7 +79,7 @@ export default function InstructionCards() {
       ) : (
         <div className="flex flex-col gap-2">
           {visible.map((c) => (
-            <Card key={c.id} card={c} receivedAt={seen.get(c.id) ?? now} now={now} />
+            <Card key={c.id} card={c} arrivedT={cardT[c.id] ?? simT} simT={simT} />
           ))}
         </div>
       )}

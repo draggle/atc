@@ -11,11 +11,26 @@ function fmtClock(t: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 }
 
-function Toggle({ on, label, onChange, activeClass = "bg-ok/20 text-ok border-ok/40" }: { on: boolean; label: string; onChange: (v: boolean) => void; activeClass?: string }) {
+function Toggle({
+  on,
+  label,
+  onChange,
+  activeClass = "bg-ok/20 text-ok border-ok/40",
+  inactiveClass = "bg-panel-2 text-muted border-line hover:text-fg",
+  title,
+}: {
+  on: boolean;
+  label: string;
+  onChange: (v: boolean) => void;
+  activeClass?: string;
+  inactiveClass?: string;
+  title?: string;
+}) {
   return (
     <button
       onClick={() => onChange(!on)}
-      className={`px-3 py-1 rounded-md border text-xs font-medium transition-colors ${on ? activeClass : "bg-panel-2 text-muted border-line hover:text-fg"}`}
+      title={title}
+      className={`px-3 py-1 rounded-md border text-xs font-medium transition-colors ${on ? activeClass : inactiveClass}`}
     >
       {label} <span className="font-mono">{on ? "ON" : "OFF"}</span>
     </button>
@@ -51,6 +66,8 @@ export default function TopBar() {
       <Toggle
         on={sim?.tower_enabled ?? true}
         label="Tower"
+        inactiveClass="bg-zinc-600/60 text-zinc-200 border-zinc-400 hover:bg-zinc-500/60"
+        title={sim?.tower_enabled === false ? "Tower is off: readbacks are not being checked" : "Tower is checking every readback"}
         onChange={(v) => {
           dispatch({ type: "local_toggle", key: "tower_enabled", value: v });
           send({ type: "set_tower", enabled: v });

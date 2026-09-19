@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { highlightMap, useTowerState, type TowerState } from "@/lib/store";
+import { highlightMap, useTowerState, type TowerState, type Track } from "@/lib/store";
+import type { AircraftState } from "@/lib/types";
 import { makeProjection, nmToPx, toNm, toPx, type Projection } from "@/lib/geo";
 import { useClient } from "./TowerApp";
 
@@ -19,6 +20,7 @@ const COLORS = {
   intruder: "#ff4d5e",
   alert: "#ff4d5e",
   resolving: "#f5b942",
+  watching: "#22d3ee",
   stem: "rgba(215,221,230,0.18)",
   storm: "rgba(168,85,247,0.18)",
   stormEdge: "rgba(168,85,247,0.55)",
@@ -27,11 +29,55 @@ const COLORS = {
   buffer: "rgba(255,77,94,0.08)",
 };
 
+/** Longest we dead-reckon past the last radar tick before freezing the target (wall seconds). */
+const MAX_EXTRAP_S = 1.5;
+/** Sim seconds per wall second is estimated per track; clamp against a bad first sample. */
+const MAX_RATE = 16;
+
+function lerpAngle(a: number, b: number, f: number): number {
+  const d = ((b - a + 540) % 360) - 180;
+  return (a + d * f + 360) % 360;
+}
+
+/**
+ * Position to draw right now. Between the last two ticks we interpolate prev -> cur (one tick
+ * of display latency, no snap-back); once past cur we extrapolate along heading and ground speed
+ * for at most MAX_EXTRAP_S wall seconds.
+ */
+function displayed(tr: Track, now: number): AircraftState {
+  const { cur, prev } = tr;
+  const elapsed = (now - tr.curAt) / 1000;
+  if (!prev || cur.gs_kt <= 0) return cur;
+  const tickWall = (tr.curAt - tr.prevAt) / 1000;
+  const tickSim = cur.t - prev.t;
+  if (tickWall <= 0 || tickSim <= 0) return cur;
+  const rate = Math.min(MAX_RATE, tickSim / tickWall);
+  if (elapsed < tickWall) {
+    const f = elapsed / tickWall;
+    return {
+      ...cur,
+      x_nm: prev.x_nm + (cur.x_nm - prev.x_nm) * f,
+      y_nm: prev.y_nm + (cur.y_nm - prev.y_nm) * f,
+      alt_ft: prev.alt_ft + (cur.alt_ft - prev.alt_ft) * f,
+      hdg_deg: lerpAngle(prev.hdg_deg, cur.hdg_deg, f),
+    };
+  }
+  const extra = Math.min(MAX_EXTRAP_S, elapsed - tickWall) * rate;
+  const dist = (cur.gs_kt / 3600) * extra;
+  const rad = (cur.hdg_deg * Math.PI) / 180;
+  return { ...cur, x_nm: cur.x_nm + Math.sin(rad) * dist, y_nm: cur.y_nm + Math.cos(rad) * dist };
+}
+
 function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: TowerState, now: number) {
   ctx.clearRect(0, 0, w, h);
   const sector = s.sim?.sector_nm ?? 200;
   const p: Projection = makeProjection(w, h, sector);
   const hl = highlightMap(s);
+  const watching = new Set(s.watching);
+  const shown: AircraftState[] = Object.values(s.aircraft).map((a) => {
+    const tr = s.tracks[a.callsign];
+    return tr ? displayed(tr, now) : a;
+  });
 
   // Sector square and grid
   ctx.save();
@@ -85,7 +131,7 @@ function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: TowerState
   const wpMap = new Map((s.sim?.waypoints ?? []).map((wp) => [wp.name, wp]));
   ctx.strokeStyle = COLORS.route;
   ctx.lineWidth = 1;
-  for (const a of Object.values(s.aircraft)) {
+  for (const a of shown) {
     if (a.is_intruder || a.route.length === 0) continue;
     ctx.beginPath();
     const [ax, ay] = toPx(p, a.x_nm, a.y_nm);
@@ -153,7 +199,7 @@ function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: TowerState
 
   // Aircraft
   ctx.font = "11px ui-monospace, monospace";
-  for (const a of Object.values(s.aircraft)) {
+  for (const a of shown) {
     const [ax, ay] = toPx(p, a.x_nm, a.y_nm);
     const state = hl[a.callsign];
     const color = a.is_intruder ? COLORS.intruder : state === "alert" ? COLORS.alert : state === "resolving" ? COLORS.resolving : COLORS.aircraft;
@@ -170,7 +216,20 @@ function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: TowerState
     ctx.strokeStyle = "rgba(215,221,230,0.25)";
     ctx.stroke();
 
-    // Highlight ring
+    // Rings: red alert / amber resolving win; cyan dashed "radar watching" only when neither applies.
+    if (!state && !a.is_intruder && watching.has(a.callsign)) {
+      ctx.beginPath();
+      ctx.arc(ax, ay, 12, 0, Math.PI * 2);
+      ctx.strokeStyle = COLORS.watching;
+      ctx.setLineDash([3, 3]);
+      ctx.lineDashOffset = -(now / 60) % 6;
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = 0.8;
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.lineDashOffset = 0;
+      ctx.globalAlpha = 1;
+    }
     if (state || a.is_intruder) {
       const pulse = 0.5 + 0.5 * Math.sin(now / 250);
       ctx.beginPath();
@@ -276,6 +335,7 @@ export default function Radar() {
   };
 
   const n = Object.keys(state.aircraft).length;
+  const towerOff = state.sim !== null && !state.sim.tower_enabled;
 
   return (
     <div className="panel h-full w-full relative overflow-hidden" ref={wrapRef}>
@@ -286,7 +346,16 @@ export default function Radar() {
         onMouseMove={(e) => setHover(pointToNm(e))}
         onMouseLeave={() => setHover(null)}
       />
-      <div className="absolute top-2 left-2 flex items-center gap-2 text-xs">
+      {towerOff && (
+        <div
+          role="status"
+          className="absolute inset-x-0 top-0 z-10 flex items-center justify-center gap-3 bg-zinc-700/90 border-b-2 border-zinc-400 py-1.5 text-sm font-semibold tracking-wide text-zinc-100"
+        >
+          <span className="inline-block w-2.5 h-2.5 rounded-full bg-zinc-300" />
+          TOWER OFF: readbacks are not being checked
+        </div>
+      )}
+      <div className={`absolute left-2 flex items-center gap-2 text-xs ${towerOff ? "top-11" : "top-2"}`}>
         <span className="text-muted">Click to drop</span>
         <div className="flex rounded-md border border-line overflow-hidden">
           {(["intruder", "storm"] as const).map((m) => (
@@ -300,7 +369,7 @@ export default function Radar() {
           ))}
         </div>
       </div>
-      <div className="absolute top-2 right-2 text-[10px] font-mono text-muted flex gap-3">
+      <div className={`absolute right-2 text-[10px] font-mono text-muted flex gap-3 ${towerOff ? "top-11" : "top-2"}`}>
         <span>{n} aircraft</span>
         {hover && <span>{hover[0].toFixed(0)}, {hover[1].toFixed(0)} NM</span>}
       </div>
@@ -310,6 +379,7 @@ export default function Radar() {
         <span className="text-warn">flash = replanned</span>
         <span className="text-bad">red = alert</span>
         <span className="text-warn">amber = checking</span>
+        <span className="text-cyan-400">cyan = radar watching</span>
       </div>
     </div>
   );
