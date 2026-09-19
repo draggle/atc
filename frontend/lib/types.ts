@@ -219,6 +219,11 @@ export interface InstructionCard {
   via?: "human" | "voice" | "datalink" | null;
   /** What Tower heard you say instead, when it conflicts with this card. The pilot was not told. */
   heard_instead?: string | null;
+  /** Why the card exists: the first plan, a change, a dogleg's "go direct", or a disruption ending. */
+  origin?: "initial" | "replan" | "followup" | "release";
+  /** What it clears: a disruption id (STORM1) or another flight's callsign. */
+  cause?: string | null;
+  emergency?: boolean;
 }
 
 /** A clip is on the frequency right now. Sent before it has been transcribed. */

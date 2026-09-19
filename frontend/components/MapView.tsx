@@ -54,6 +54,7 @@ const C = {
   flownDim: [132, 146, 162, 70] as RGBA,
   tower: [70, 200, 255, 215] as RGBA,
   flash: [255, 176, 46, 255] as RGBA,
+  rerouted: [255, 176, 46, 150] as RGBA, // still going round something that is still there
   aircraft: [224, 232, 242, 255] as RGBA,
   intruder: [255, 77, 94, 255] as RGBA,
   mayday: [255, 176, 46, 255] as RGBA,
@@ -357,6 +358,12 @@ export default function MapView() {
     return { flown, tower };
   }, [plan, frame, zOf, lifecycle, airborneKey, planView, selected]);
 
+  // Flights whose path goes round a disruption that is still active stay amber, so which lines
+  // changed because of the storm is visible long after the flash has gone.
+  const activeIds = Object.values(disruptions).filter((d) => d.active !== false).map((d) => d.id);
+  const avoiding = new Set((plan?.paths ?? []).filter((p) => p.changes.some((c) => activeIds.some((id) => c.endsWith(` to clear ${id}`)))).map((p) => p.callsign));
+  const avoidKey = Array.from(avoiding).sort().join(",");
+
   // What each rerouted flight WAS going to fly, and a ghost aircraft still flying it.
   const wall = Date.now();
   const ghostList = Object.values(ghosts).filter((g) => g.until > wall);
@@ -544,12 +551,12 @@ export default function MapView() {
       id: "tower-plan",
       data: pathData.tower,
       getPath: (d: { path: [number, number, number][] }) => d.path,
-      getColor: (d: { callsign: string }) => ((flashUntil[d.callsign] ?? 0) > wallNow ? C.flash : d.callsign === selected ? [255, 255, 255, 235] : C.tower),
+      getColor: (d: { callsign: string }) => ((flashUntil[d.callsign] ?? 0) > wallNow ? C.flash : d.callsign === selected ? [255, 255, 255, 235] : avoiding.has(d.callsign) ? C.rerouted : C.tower),
       getWidth: (d: { callsign: string }) => ((flashUntil[d.callsign] ?? 0) > wallNow ? 4 : d.callsign === selected ? 3 : 1.8),
       widthUnits: "pixels",
       capRounded: true,
       jointRounded: true,
-      updateTriggers: { getColor: [flashSlot, selected], getWidth: [flashSlot, selected] },
+      updateTriggers: { getColor: [flashSlot, selected, avoidKey], getWidth: [flashSlot, selected] },
     }),
 
     // The shadow of a reroute: the path the flight was on, and a ghost still flying it, fading out.
@@ -951,7 +958,7 @@ export default function MapView() {
         <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-mono text-muted pt-0.5">
           <span><span style={{ color: "rgb(132,146,162)" }}>╌╌</span> {sim?.source === "real" ? (sim.meta?.live ? "projected" : "flown") : "standard"}</span>
           <span><span style={{ color: "rgb(70,200,255)" }}>──</span> Tower</span>
-          <span><span style={{ color: "rgb(255,176,46)" }}>──</span> replanned</span>
+          <span><span style={{ color: "rgb(255,176,46)" }}>──</span> rerouted round a disruption</span>
           <span><span style={{ color: "rgb(226,232,240)" }}>┄┄</span> was going to fly</span>
           <span><span style={{ color: "rgb(255,77,94)" }}>◯</span> alert</span>
           <span><span style={{ color: "rgb(255,176,46)" }}>◯</span> checking</span>

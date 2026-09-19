@@ -239,6 +239,12 @@ class InstructionCard(BaseModel):
     minor: bool = False
     # Set when the controller said something that conflicts with this card. The pilot was not told.
     heard_instead: str | None = None
+    # Why this card exists, so the screen can say so. origin: "initial" (the plan made when the
+    # world loaded), "replan" (something changed), "followup" (dogleg done, go direct), "release"
+    # (the disruption is gone). cause: what it clears: a disruption id or another callsign.
+    origin: Literal["initial", "replan", "followup", "release"] = "replan"
+    cause: str | None = None
+    emergency: bool = False
 
 
 DisruptionKind = Literal["fighter", "drone", "balloon", "emergency", "unknown", "storm", "closed", "rocket",
