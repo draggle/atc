@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useTowerState } from "@/lib/store";
 import type { CardStatus, InstructionCard } from "@/lib/types";
 import { CallsignLink, SHOW_CLS, useShowOnMap } from "./AlertCard";
@@ -28,6 +29,14 @@ function Card({ card, arrivedT, simT, auto, onFrequency }: { card: InstructionCa
   const overdue = remaining <= 0 && card.status === "pending";
   // Same as an alert card: click (or Enter) to go to the aircraft. Only one that is on the radar.
   const show = useShowOnMap(onFrequency ? card.callsign : "");
+  // Tower takes a few seconds to speak a card, and the card stays "pending" until it has. Show that
+  // the press landed, or it gets pressed again. (The backend ignores a second press too.)
+  const [saying, setSaying] = useState(false);
+  useEffect(() => {
+    if (!saying) return;
+    const t = setTimeout(() => setSaying(false), 8000);
+    return () => clearTimeout(t);
+  }, [saying]);
   return (
     <div {...show} className={`rounded-lg border ${st.cls} bg-panel-2 p-2.5 transition-colors ${done ? "opacity-60" : ""} ${show ? `${SHOW_CLS} hover:bg-panel-2/70` : ""}`}>
       <div className="flex items-center justify-between gap-2">
@@ -50,10 +59,14 @@ function Card({ card, arrivedT, simT, auto, onFrequency }: { card: InstructionCa
       {card.status === "pending" && !auto && (
         <div className="mt-2 flex items-center gap-2">
           <button
-            onClick={() => send({ type: "speak_card", id: card.id })}
-            className="px-2.5 py-1 rounded-md bg-accent/20 text-accent border border-accent/40 text-xs font-medium hover:bg-accent/30"
+            disabled={saying}
+            onClick={() => {
+              setSaying(true);
+              send({ type: "speak_card", id: card.id });
+            }}
+            className="px-2.5 py-1 rounded-md bg-accent/20 text-accent border border-accent/40 text-xs font-medium hover:bg-accent/30 disabled:opacity-60 disabled:cursor-default"
           >
-            Say it
+            {saying ? "Saying it…" : "Say it"}
           </button>
           <span className="text-[10px] text-muted">or hold Space and read it on the radio</span>
         </div>

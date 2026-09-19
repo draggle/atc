@@ -121,6 +121,8 @@ export type Action =
   | { type: "event"; event: TowerEvent }
   | { type: "connection"; connection: Connection }
   | { type: "dismiss_alert"; clearance_id: string }
+  /** a radar watch ran its course with nothing to report: take its card down */
+  | { type: "stop_resolving"; clearance_id: string }
   | { type: "user_chat"; text: string }
   | { type: "set_sliders"; sliders: Sliders }
   | { type: "set_plan_view"; view: "today" | "tower" }
@@ -239,8 +241,16 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
     }
 
     case "clearance_opened":
-    case "clearance_updated":
-      return upsertClearance(state, ev.payload);
+    case "clearance_updated": {
+      // The resolver is done with a clearance once it leaves "open". Without an alert (it dismissed
+      // the doubt, or the readback matched after all) nothing else ends the CHECKING card, and it
+      // span for ever. A radar watch is the exception: that card counts itself down.
+      const next = upsertClearance(state, ev.payload);
+      const id = ev.payload.id;
+      const watching = (state.steps[id] ?? []).at(-1)?.tool === "watch";
+      if (ev.payload.status === "open" || watching || !next.resolving.includes(id)) return next;
+      return { ...next, resolving: next.resolving.filter((r) => r !== id) };
+    }
 
     case "transcript": {
       const transcript = [...state.transcript, ev.payload].slice(-TRANSCRIPT_CAP);
@@ -297,6 +307,8 @@ export function reducer(state: TowerState, action: Action): TowerState {
       return applyEvent(state, action.event);
     case "connection":
       return { ...state, connection: action.connection };
+    case "stop_resolving":
+      return { ...state, resolving: state.resolving.filter((r) => r !== action.clearance_id) };
     case "dismiss_alert":
       return { ...state, alerts: state.alerts.filter((a) => a.clearance_id !== action.clearance_id) };
     case "user_chat":

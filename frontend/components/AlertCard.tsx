@@ -42,7 +42,7 @@ export function alertLook(a: ActiveAlert) {
         : "WRONG READBACK"
       : a.result === "partial"
         ? "PARTIAL READBACK"
-        : "CHECKING";
+        : "UNCLEAR READBACK"; // Tower could not tell, and says so. "CHECKING" is the card while it still is.
   const frame = radar ? "border-cyan-400 bg-cyan-400/10" : severe ? "border-bad bg-bad/10" : "border-warn bg-warn/10";
   const pulse = radar ? "alert-pulse-cyan" : severe ? "alert-pulse" : "";
   const hover = radar ? "hover:bg-cyan-400/15" : severe ? "hover:bg-bad/15" : "hover:bg-warn/15";
@@ -220,6 +220,13 @@ function Checking({ clearanceId }: { clearanceId: string }) {
     if (watch && watchT0 === null) setWatchT0(simT);
   }, [watch, watchT0, simT]);
   const left = watch ? Math.max(0, Math.ceil(watchFor - (simT - (watchT0 ?? simT)))) : null;
+  // The watch ran out and the radar raised nothing: the aircraft did as it was told. Take the card down.
+  const dispatch = useTowerDispatch();
+  useEffect(() => {
+    if (left !== 0) return;
+    const t = setTimeout(() => dispatch({ type: "stop_resolving", clearance_id: clearanceId }), 4000);
+    return () => clearTimeout(t);
+  }, [left, clearanceId, dispatch]);
   return (
     <div {...show} className={`rounded-lg border-2 border-warn bg-warn/10 p-3 ${show ? `${SHOW_CLS} hover:bg-warn/15` : ""}`}>
       <div className="flex items-center gap-2">
@@ -230,7 +237,7 @@ function Checking({ clearanceId }: { clearanceId: string }) {
       </div>
       {watch ? (
         <p className="mt-1 text-xs text-fg/80">
-          The readback was unclear, so Tower is watching what {callsign || "the aircraft"} actually flies before it decides. {left === 0 ? "Deciding now." : `Verdict in about ${left} s.`}
+          The readback was unclear, so Tower is watching what {callsign || "the aircraft"} actually flies before it decides. {left === 0 ? "Nothing wrong on the radar." : `Verdict in about ${left} s.`}
         </p>
       ) : (
         <p className="mt-1 text-xs text-fg/80">Readback unclear. The resolver is gathering evidence before deciding whether to interrupt you.</p>
