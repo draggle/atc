@@ -207,11 +207,12 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 # configure: {source: "sim", scenario, density}. Real traffic arrives in phase 4.
                 name = str(data.get("scenario") or data.get("name") or "demo")
                 density = float(data.get("density") or 1.0)
+                cap = data.get("max_flights")
                 try:
                     if name not in SC.list_scenarios():
                         raise ValueError(f"unknown scenario {name}")
-                    world.load(name)
-                    if abs(density - 1.0) > 1e-6:
+                    world.load(name, max_flights=int(cap) if cap else None)
+                    if abs(density - 1.0) > 1e-6 and not name.startswith("real/"):
                         world.tool_multiply_traffic(density)
                 except Exception as exc:  # noqa: BLE001 - tell the screen, keep the socket
                     log.exception("configure failed")

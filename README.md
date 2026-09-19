@@ -56,7 +56,7 @@ Three terminals. Python 3.11 or newer, Node 20 or newer, `uv`, `ffmpeg`.
 # 1. backend
 cd backend
 uv venv .venv && uv pip install -e ".[dev]"
-.venv/bin/pytest -q                      # 165 tests
+.venv/bin/pytest -q                      # 172 tests
 .venv/bin/uvicorn app:app --port 8000    # first start downloads whisper base.en, about 150 MB
 
 # 2. frontend
@@ -87,6 +87,9 @@ Environment variables, all optional, in `.env` (copy `.env.example`):
 Other commands:
 
 ```bash
+# real traffic: put an adsb.lol daily archive (three tar parts) in data/real/raw, then
+cd backend && .venv/bin/python tools/real_extract.py --date 2026-09-18   # one pass, about a minute
+cd backend && .venv/bin/python tools/real_build.py                        # writes backend/scenarios/real/*.json
 cd backend && .venv/bin/python -m eval.run_eval --scenario demo --runs 20   # Monte Carlo table
 cd backend && .venv/bin/python -m pilots.demo_voice wrong_value 0.3         # hear one wrong readback
 cd training && .venv/bin/python eval_wer.py --stock openai/whisper-small --limit 100
@@ -120,6 +123,8 @@ Start with [CLAUDE.md](CLAUDE.md), then [docs/01-project.md](docs/01-project.md)
 
 Hack the North requires attribution. Keep this current.
 
+- Flight data: [adsb.lol globe_history](https://github.com/adsblol/globe_history_2026), open under ODbL 1.0 and CC0. The built scenarios in `backend/scenarios/real/` are derived from the 2026-09-18 archive. Gate names in those scenarios are ours
+- Map: [MapLibre GL](https://maplibre.org), [deck.gl](https://deck.gl), basemap by [CARTO](https://carto.com/attributions) on OpenStreetMap data. Type: B612 and B612 Mono (Airbus, OFL)
 - Datasets: [jacktol/atc-dataset](https://huggingface.co/datasets/jacktol/atc-dataset) (ATCO2 one-hour subset plus UWB-ATCC, MIT per the card), [jlvdoorn/atco2-asr-atcosim](https://huggingface.co/datasets/jlvdoorn/atco2-asr-atcosim) (referenced, not yet used)
 - Base models: OpenAI Whisper (tiny, base, small), distilroberta-base and roberta-base
 - Speech tooling: faster-whisper and CTranslate2, silero-vad, Hugging Face transformers and datasets, jiwer

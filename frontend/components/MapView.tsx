@@ -220,21 +220,34 @@ export default function MapView() {
   const highlights = useMemo(() => highlightMap(state), [state]);
 
   // ---------------------------------------------------------------- static-ish layers
+  // Before Start every route draws, so the whole plan can be looked over. Once the clock runs and
+  // the sky is busy, only flights that are airborne draw theirs, or the map becomes a solid mesh.
+  const lifecycle = sim?.lifecycle ?? "running";
+  const airborneKey = Object.keys(tracks).sort().join(",");
   const pathData = useMemo(() => {
-    const flown = (plan?.baseline_paths ?? []).map((p) => ({ callsign: p.callsign, path: pathCoords(p, frame, zOf) }));
-    const tower = (plan?.paths ?? []).map((p) => ({ callsign: p.callsign, path: pathCoords(p, frame, zOf) }));
+    const busy = (plan?.paths.length ?? 0) > 40 && (lifecycle === "running" || lifecycle === "paused");
+    const airborne = new Set(airborneKey ? airborneKey.split(",") : []);
+    const show = (cs: string) => !busy || airborne.has(cs);
+    const flown = (plan?.baseline_paths ?? []).filter((p) => show(p.callsign)).map((p) => ({ callsign: p.callsign, path: pathCoords(p, frame, zOf) }));
+    const tower = (plan?.paths ?? []).filter((p) => show(p.callsign)).map((p) => ({ callsign: p.callsign, path: pathCoords(p, frame, zOf) }));
     return { flown, tower };
-  }, [plan, frame, zOf]);
+  }, [plan, frame, zOf, lifecycle, airborneKey]);
 
+  const circular = sim?.geo?.shape === "circle";
   const sectorRing = useMemo(() => {
+    if (circular) return [{ path: ring(frame, 0, 0, half, 96).map(([lon, lat]) => [lon, lat, 0] as [number, number, number]) }];
     const c: [number, number][] = [[-half, -half], [half, -half], [half, half], [-half, half], [-half, -half]];
     return [{ path: c.map(([x, y]) => { const [lat, lon] = nmToLatLon(frame, x, y); return [lon, lat, 0] as [number, number, number]; }) }];
-  }, [frame, half]);
+  }, [frame, half, circular]);
 
   const zoneData = useMemo(
     () => (sim?.zones ?? []).map((z: Zone) => ({ ...z, polygon: ring(frame, z.x_nm, z.y_nm, z.radius_nm) })),
     [sim?.zones, frame],
   );
+
+  // Busy sky: one line per aircraft, full data block only for the ones that matter right now.
+  const dense = planes.length > 22;
+  const important = (p: Shown) => p.callsign === selected || !!highlights[p.callsign] || watching.includes(p.callsign) || p.is_intruder;
 
   const flashSlot = Math.floor(now / 250);
   const wallNow = Date.now();
@@ -306,9 +319,9 @@ export default function MapView() {
       id: "waypoints",
       data: sim?.waypoints ?? [],
       getPosition: (w: { x_nm: number; y_nm: number; lat?: number; lon?: number }) => { const [lat, lon] = latLonOf(w, frame); return [lon, lat, 0]; },
-      getRadius: 2.4,
+      getRadius: (w: { kind?: string }) => (w.kind === "gate" ? 3.6 : 2.4),
       radiusUnits: "pixels",
-      getFillColor: C.waypoint,
+      getFillColor: (w: { kind?: string }) => (w.kind === "gate" ? ([70, 200, 255, 220] as RGBA) : C.waypoint),
       pickable: true,
     }),
     new TextLayer({
@@ -385,21 +398,24 @@ export default function MapView() {
       getIcon: (p: Shown) => (p.is_intruder ? "dart" : "plane"),
       getPosition: (p: Shown) => [p.lon, p.lat, zOf(p.alt_ft)],
       getAngle: (p: Shown) => -p.hdg_deg,
-      getSize: (p: Shown) => (p.callsign === selected ? 34 : 27),
+      getSize: (p: Shown) => (p.callsign === selected ? 34 : dense ? 21 : 27),
       sizeUnits: "pixels",
       billboard: false,
       getColor: (p: Shown) => (p.is_intruder ? C.intruder : highlights[p.callsign] === "alert" ? C.alert : C.aircraft),
       pickable: true,
       parameters: ALWAYS_ON_TOP,
-      updateTriggers: { getPosition: exaggeration, getSize: selected, getColor: [highlights] },
+      updateTriggers: { getPosition: exaggeration, getSize: [selected, dense], getColor: [highlights] },
     }),
     new TextLayer({
       id: "data-blocks",
       data: planes,
       getPosition: (p: Shown) => [p.lon, p.lat, zOf(p.alt_ft)],
-      getText: (p: Shown) => `${p.callsign}\nFL${String(Math.round(p.alt_ft / 100)).padStart(3, "0")} ${Math.round(p.gs_kt)}`,
-      getSize: 11,
-      getColor: (p: Shown) => (p.is_intruder ? C.intruder : [224, 232, 242, 245]),
+      getText: (p: Shown) =>
+        dense && !important(p)
+          ? `${p.callsign} ${String(Math.round(p.alt_ft / 100)).padStart(3, "0")}`
+          : `${p.callsign}\nFL${String(Math.round(p.alt_ft / 100)).padStart(3, "0")} ${Math.round(p.gs_kt)}`,
+      getSize: (p: Shown) => (dense && !important(p) ? 9.5 : 11),
+      getColor: (p: Shown) => (p.is_intruder ? C.intruder : dense && !important(p) ? ([200, 210, 222, 190] as RGBA) : ([224, 232, 242, 245] as RGBA)),
       getPixelOffset: [20, -4],
       getTextAnchor: "start",
       getAlignmentBaseline: "center",
@@ -409,7 +425,7 @@ export default function MapView() {
       outlineWidth: 4,
       outlineColor: C.ink,
       parameters: ALWAYS_ON_TOP,
-      updateTriggers: { getPosition: exaggeration },
+      updateTriggers: { getPosition: exaggeration, getText: [dense, selected, highlights, watching], getSize: [dense, selected, highlights], getColor: [dense, selected, highlights] },
     }),
   ];
 
@@ -492,7 +508,7 @@ export default function MapView() {
           <span className="font-mono w-7 text-right text-fg/80">{exaggeration}x</span>
         </label>
         <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-mono text-muted pt-0.5">
-          <span><span style={{ color: "rgb(132,146,162)" }}>╌╌</span> standard</span>
+          <span><span style={{ color: "rgb(132,146,162)" }}>╌╌</span> {sim?.source === "real" ? "flown" : "standard"}</span>
           <span><span style={{ color: "rgb(70,200,255)" }}>──</span> Tower</span>
           <span><span style={{ color: "rgb(255,176,46)" }}>──</span> replanned</span>
           <span><span style={{ color: "rgb(255,77,94)" }}>◯</span> alert</span>
@@ -500,6 +516,11 @@ export default function MapView() {
           <span><span style={{ color: "rgb(34,211,238)" }}>◯</span> watching</span>
         </div>
         <p className="text-[10px] text-muted/80">Drag to pan, scroll to zoom, right-drag to tilt and rotate.</p>
+        {sim?.source === "real" && (
+          <p className="text-[10px] text-muted/80 border-t border-line pt-1.5">
+            Real flights, {sim.meta?.date} {String(sim.meta?.hour_utc ?? 0).padStart(2, "0")}:00 UTC. Dashed lines are the tracks actually flown. Flight data: adsb.lol (ODbL, CC0). Gate names are ours.
+          </p>
+        )}
       </div>
     </div>
   );

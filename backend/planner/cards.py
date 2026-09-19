@@ -12,12 +12,10 @@ from dataclasses import dataclass
 import numpy as np
 
 from planner.trajectory import samples_array
+from airlines import ICAO_TO_TELEPHONY
 from schemas import AircraftState, InstructionCard, Item, Plan, PlannedPath, SimCommand
 
-TELEPHONY = {
-    "ACA": "Air Canada", "WJA": "WestJet", "POE": "Porter", "JZA": "Jazz",
-    "DAL": "Delta", "UAL": "United", "AAL": "American",
-}
+TELEPHONY = ICAO_TO_TELEPHONY  # one shared table, see backend/airlines.py
 DIGITS = {"0": "zero", "1": "one", "2": "two", "3": "three", "4": "four", "5": "five",
           "6": "six", "7": "seven", "8": "eight", "9": "nine"}
 NATO = {c: w for c, w in zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", [
@@ -25,6 +23,7 @@ NATO = {c: w for c, w in zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", [
     "kilo", "lima", "mike", "november", "oscar", "papa", "quebec", "romeo", "sierra", "tango",
     "uniform", "victor", "whiskey", "xray", "yankee", "zulu"])}
 TRANSITION_FT = 18000
+MIN_DIRECT_SAVING_NM = 3.0  # below this a direct routing is not worth the radio time
 DOGLEG_CAPTURE_NM = 2.0
 
 _AT = re.compile(r" from t=(\d+)s")
@@ -198,6 +197,13 @@ def cards_from_plan(plan: Plan, previous_plan: Plan | None = None, now_t: float 
     cards: list[InstructionCard] = []
     for path in plan.paths:
         changes = [c for c in _changes(path) if c.kind != "delay" and c.key not in prev.get(path.callsign, set())]
+        # A shortcut that saves next to nothing is not worth a transmission. Real cruise traffic
+        # already flies nearly straight, so without this the controller drowns in "saves 0 NM"
+        # cards. A direct is still issued when it comes with another change (it is then part of a
+        # conflict fix), and the planner's path is unaffected either way.
+        if changes and all(c.kind == "direct" and (c.extra or {}).get("saves", 0.0) < MIN_DIRECT_SAVING_NM
+                           for c in changes):
+            continue
         if not changes:
             continue
         alt_now = st[path.callsign].alt_ft if path.callsign in st else None

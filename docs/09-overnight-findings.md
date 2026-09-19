@@ -60,3 +60,15 @@ Fixed routes degrade linearly with density. Tower holds at zero through 1.5x and
 - **A garbled fix name produced a confident false alarm.** The pilot said "direct estir", Whisper heard "direct to 6", and the rules called it an omitted item at 0.90. If the pilot audibly read back a routing and only the fix name is missing, the verdict is now `ambiguous`. The resolver on GLM-5.3-Fast re-listens and then watches the aircraft on radar, in about 3 s. "Roger" with no routing is still an error, and a different recognisable fix is still a wrong value.
 - **Never run `npm run build` while `npm run dev` is running.** It overwrites `.next` and the dev page loses its CSS. Use `NEXT_DIST_DIR=.next-verify npm run build`.
 - **The resolver runs inline.** With a real model the radar can pause for 1 to 3 s while it thinks. Bounded by a 10 s client timeout. Moving it off the clock's critical path is phase 7.
+
+## Found when real traffic went in, Saturday Sept 19 afternoon
+
+Full write-up under phase 4 in `10-roadmap.md`. The short version for anyone writing the pitch or a slide:
+
+- **Real cruise traffic already flies nearly straight.** Tower's plan is about 0.5 percent shorter than what was really flown on Sept 18, in every region we built. The 7 to 8 percent above is a property of our simulated scenarios, which route everything through one central fix. Never put the two numbers on the same slide without saying which is which.
+- **The "flown" baseline in a real scenario is a replay model, not the real day.** Each flight is held at its median level and speed, so the small adjustments real controllers made are gone and the baseline shows conflicts that never happened. Say "in the replay model".
+- **The planner handles a real sector-hour.** 159 flights, zero conflicts left, about 2 s. 80 flights in 0.3 s.
+- **The plan message must stay small.** With per-second samples it was 1.28 MB and the page stuttered on every replan. Samples are now trimmed to the endpoints on the wire and the screen draws from `lonlat`. If you add a field per sample, check the message size.
+- **There were three airline-name tables** (cards, normalizer, pilots) that disagreed, so a real callsign could be spoken one way and parsed another. There is now one, `backend/airlines.py`.
+- **adsb.lol, not OpenSky.** OpenSky's licence is research-only and wants identifiers anonymised. adsb.lol is ODbL and CC0. Keep the attribution in the README and on the screen.
+

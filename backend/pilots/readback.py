@@ -14,30 +14,10 @@ import re
 
 from schemas import Item
 
-try:  # pragma: no cover - exercised only once tower.normalize exists
-    from tower.normalize import TELEPHONY as _TELEPHONY  # type: ignore
+from airlines import ICAO_TO_TELEPHONY as _SHARED
 
-    ICAO_TO_TELEPHONY: dict[str, str] = (
-        {v: k for k, v in _TELEPHONY.items()} if _TELEPHONY and list(_TELEPHONY.values())[0].isupper()
-        else dict(_TELEPHONY)
-    )
-except Exception:
-    ICAO_TO_TELEPHONY = {
-        "ACA": "air canada",
-        "WJA": "westjet",
-        "POE": "porter",
-        "JZA": "jazz",
-        "DAL": "delta",
-        "UAL": "united",
-        "AAL": "american",
-        "DLH": "lufthansa",
-        "BAW": "speedbird",
-        "AFR": "air france",
-        "KLM": "klm",
-        "RYR": "ryanair",
-        "EZY": "easy",
-        "CSA": "csa",
-    }
+# Pilots say the name in lower case. One shared table: backend/airlines.py.
+ICAO_TO_TELEPHONY: dict[str, str] = {code: name.lower() for code, name in _SHARED.items()}
 
 DIGIT_WORDS = {
     "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",

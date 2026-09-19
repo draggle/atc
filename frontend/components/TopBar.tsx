@@ -58,7 +58,11 @@ export default function TopBar() {
     <header className="panel min-h-12 shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1">
       <div className="flex items-baseline gap-2 min-w-0">
         <span className="text-lg font-semibold tracking-tight">Tower</span>
-        <span className="text-xs text-muted truncate">{sim?.scenario ?? "No scenario"}</span>
+        <span className="text-xs text-muted truncate max-w-[260px]" title={sim?.scenario ?? undefined}>
+          {sim?.source === "real" && sim.meta
+            ? `${(sim.meta.label ?? "Real traffic").split(" (")[0]} · ${sim.meta.date} ${String(sim.meta.hour_utc ?? 0).padStart(2, "0")}:00Z`
+            : (sim?.scenario ?? "No scenario")}
+        </span>
       </div>
       <span className="font-mono text-sm text-fg/90 tabular-nums">{fmtClock(sim?.t ?? 0)}</span>
 

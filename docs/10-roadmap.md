@@ -99,12 +99,23 @@ Two things found on the way: MapLibre 6 does not load its worker under Next.js d
 `tools/build_real_scenario.py`: streams one adsb.lol day, keeps aircraft that cross the region box inside the time window above a floor altitude, cleans each track (drop stale points, split legs, resample to 10 s), and writes a compact scenario: flights with entry and exit gate, entry time, level, speed, type, and the **actual track**. Output lives in `data/real/`, a few hundred KB each. Backend loads it like any scenario. In real mode the standard line is the actual track.
 Setup panel: Data source (Simulated or Real), then region, day, hour window, and maximum flights.
 Scoreboard in real mode: miles flown versus Tower, time, closest approach actual versus Tower, with the caveats on screen.
-- [ ] One region and one day builds end to end and loads in under 3 seconds
-- [ ] Actual tracks draw as grey lines, and Tower's lines draw over them when the plan view is on
-- [ ] Telephony table covers at least 95 percent of callsigns in the built scenarios, and the rest are spelled out
-- [ ] Two regions and two days available in the picker
-- [ ] Attribution for adsb.lol in `README.md` and in the app footer
+- [x] One region and one day builds end to end and loads in under 3 seconds (one pass over the 4.2 GB archive takes 57 s for all four regions; a built scenario loads and plans in well under a second at 80 flights, about 2 s at 159)
+- [x] Actual tracks draw as grey lines, and Tower's lines draw over them when the plan view is on
+- [ ] Telephony table covers at least 95 percent of callsigns in the built scenarios, and the rest are spelled out (**93 percent** of 631 real flights; the rest are business jets and state aircraft with obscure codes, spelled phonetically. One shared table now: `backend/airlines.py`)
+- [ ] Two regions and two days available in the picker (**four regions, one day, two hours each**. A second day means downloading another 4.2 GB archive and re-running the two tools)
+- [x] Attribution for adsb.lol in `README.md` and in the app (view panel and setup panel)
 - [ ] Stretch: ghost markers flying the actual tracks alongside Tower's aircraft
+
+Done Saturday afternoon. `backend/tools/real_extract.py` streams the archive (nothing is unpacked) and keeps airline flights that crossed a region at cruise, level, inside an hour. `backend/tools/real_build.py` turns them into scenarios in `backend/scenarios/real/`, 11 to 48 KB each and committed, so nobody else needs the archive. Sept 18, 2026: Western Europe core 135 and 159 flights, southern Ontario 80 and 92, UK 55 and 27, US Northeast 39 and 44.
+
+How a real flight is modelled: its route is the track it actually flew, simplified to a few hidden vertices, ending at a named exit gate. Left alone the simulator flies what the aircraft really flew. Tower's plan is the direct path to the same gate. Level and speed are held at the flight's median.
+
+**What we learned, and it changes the pitch.**
+- **Real cruise traffic already flies nearly straight.** Across every region Tower's plan is about 0.5 percent shorter than what was flown, not the 7 to 8 percent the simulated scenarios show. Those scenarios bend every route through one central fix on purpose. Do not quote the simulated figure as if it described real airspace. The honest efficiency line is "about half a percent in the replay, which is roughly 120 NM in one hour in one sector", and the real value is the conflict-free plan, the reaction to disruptions, and the communication safety net.
+- **The planner scales.** 159 real flights planned with zero conflicts in about 2 s, 80 flights in 0.3 s. The risk flagged for phase 7 is mostly retired.
+- **The replay model invents conflicts the real day did not have.** Holding each flight at its median level and speed removes the small level and speed changes real controllers used, so the "flown" baseline shows 5 to 18 conflicts and an unattended run can show a loss of separation. Say "in the replay model". It is not evidence the real day was unsafe.
+- **Instruction cards needed a floor.** Real traffic produced 62 cards at load, mostly "direct, saves 0 NM". A direct now needs to save 3 NM to earn a card. The same load gives 10, all of them conflict fixes or real shortcuts.
+- Busy-sky decluttering on the map: one-line labels unless an aircraft matters right now, smaller icons, and only airborne flights draw routes once the clock runs.
 
 ### Phase 5. Disruptions. About 2 hours
 The unified `Disruption` schema, planner input, simulator motion, and one Disrupt control: choose a kind and click, or press Random.

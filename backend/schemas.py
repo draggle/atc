@@ -123,6 +123,9 @@ class Waypoint(BaseModel):
     name: str
     x_nm: float
     y_nm: float
+    # "fix": an ordinary named waypoint. "gate": a named entry/exit of a real-traffic region.
+    # "hidden": a vertex of a really-flown track; the sim flies it, nobody says or sees it.
+    kind: Literal["fix", "gate", "hidden"] = "fix"
 
 
 class GeoFrame(BaseModel):
@@ -131,6 +134,7 @@ class GeoFrame(BaseModel):
     lon0: float = -79.6248
     projection: Literal["aeqd"] = "aeqd"  # azimuthal equidistant, centred on (lat0, lon0)
     name: str = "Toronto Pearson (CYYZ)"
+    shape: Literal["square", "circle"] = "square"  # the sector boundary drawn on the map
 
 
 class FlightSpec(BaseModel):
@@ -168,6 +172,8 @@ class Scenario(BaseModel):
     traffic_multiplier: float = 1.0
     description: str = ""
     geo: GeoFrame = Field(default_factory=GeoFrame)  # where on Earth this flat sector sits
+    source: Literal["sim", "real"] = "sim"  # real: flights and their routes come from recorded traffic
+    meta: dict[str, Any] = Field(default_factory=dict)  # region, date, window, attribution
 
 
 class Sim(Protocol):

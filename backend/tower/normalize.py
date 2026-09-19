@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 
+from airlines import ICAO_TO_TELEPHONY as _ICAO_TO_TELEPHONY, TELEPHONY_TO_ICAO
 from schemas import Item
 
 PHONETIC: dict[str, str] = {
@@ -48,18 +49,10 @@ TENS: dict[str, str] = {
 DECIMAL_WORDS = {"decimal", "point"}
 SCALE_WORDS = {"thousand", "hundred"}
 
-# Telephony designator -> ICAO three-letter code. Multi-word names are matched longest first.
-TELEPHONY: dict[str, str] = {
-    "air canada": "ACA", "westjet": "WJA", "west jet": "WJA", "jazz": "JZA", "porter": "POE",
-    "delta": "DAL", "united": "UAL", "american": "AAL", "lufthansa": "DLH", "speedbird": "BAW",
-    "air france": "AFR", "klm": "KLM", "ryanair": "RYR", "easy": "EZY", "easyjet": "EZY",
-    "csa": "CSA",
-}
-ICAO_TO_TELEPHONY: dict[str, str] = {
-    "ACA": "Air Canada", "WJA": "WestJet", "JZA": "Jazz", "POE": "Porter", "DAL": "Delta",
-    "UAL": "United", "AAL": "American", "DLH": "Lufthansa", "BAW": "Speedbird",
-    "AFR": "Air France", "KLM": "KLM", "RYR": "Ryanair", "EZY": "Easy", "CSA": "CSA",
-}
+# Telephony designator -> ICAO three-letter code, and back. One shared table: backend/airlines.py.
+# Multi-word names are matched longest first.
+TELEPHONY: dict[str, str] = dict(TELEPHONY_TO_ICAO)
+ICAO_TO_TELEPHONY: dict[str, str] = dict(_ICAO_TO_TELEPHONY)
 _TELEPHONY_BY_LEN = sorted(TELEPHONY.items(), key=lambda kv: -len(kv[0].split()))
 _MAX_TELEPHONY_WORDS = max(len(k.split()) for k in TELEPHONY)
 

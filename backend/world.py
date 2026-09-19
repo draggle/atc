@@ -77,7 +77,9 @@ def scenario_catalog() -> list[dict[str, Any]]:
             try:
                 sc = SC.load(name)
                 out.append({"name": name, "description": sc.description, "flights": len(sc.flights),
-                            "source": "sim"})
+                            "source": sc.source, "meta": {k: sc.meta.get(k) for k in
+                                                          ("region", "label", "date", "hour_utc", "gates")
+                                                          if k in sc.meta}})
             except Exception:  # a broken file must not take the screen down
                 log.exception("scenario %s failed to load", name)
         _CATALOG = out
@@ -128,8 +130,8 @@ class World:
 
     # ------------------------------------------------------------------ setup
 
-    def load(self, name: str) -> None:
-        sc = SC.load(name)
+    def load(self, name: str, max_flights: int | None = None) -> None:
+        sc = SC.thin(SC.load(name), max_flights)
         self._load_scenario(sc)
 
     def _load_scenario(self, sc: Scenario) -> None:
@@ -143,7 +145,7 @@ class World:
         self.errors_injected = self.errors_caught = 0
         self.scenario = sc
         self.sim = Simulator(sc)
-        self.core = TowerCore(waypoints={w.name: (w.x_nm, w.y_nm) for w in sc.waypoints})
+        self.core = TowerCore(waypoints={w.name: (w.x_nm, w.y_nm) for w in sc.waypoints if w.kind != "hidden"})
         self.fleet = PilotFleet(error_rate=self.error_rate, seed=sc.seed, tts=self.tts,
                                 synthesize=self.synthesize)
         self.monitor = SeparationMonitor()
@@ -189,6 +191,10 @@ class World:
         return {"aircraft": self._with_latlon([a.model_dump() for a in states]), "t": self.sim.t,
                 "watching": self.watching()}
 
+    def spoken_waypoints(self) -> list[str]:
+        """Fix names a human could say or hear. Hidden track vertices are never spoken."""
+        return [n for n, w in self.sim.waypoints.items() if w.kind != "hidden"]
+
     def geo_payload(self) -> dict[str, Any]:
         half = (self.scenario.sector_nm if self.scenario else 200.0) / 2.0
         return {**self.frame.model_dump(), "half_nm": half, "bounds": GEO.bounds(self.frame, half)}
@@ -211,7 +217,10 @@ class World:
             "tower_enabled": self.tower_enabled,
             "auto_speak": self.auto_speak,
             "t": self.sim.t,
-            "waypoints": self._with_latlon([w.model_dump() for w in (sc.waypoints if sc else [])]),
+            "waypoints": self._with_latlon([w.model_dump() for w in (sc.waypoints if sc else [])
+                                            if w.kind != "hidden"]),
+            "source": sc.source if sc else "sim",
+            "meta": sc.meta if sc else {},
             "zones": self._with_latlon([z.model_dump() for z in self.sim.zones]),
             "geo": self.geo_payload(),
             "sector_nm": sc.sector_nm if sc else 200.0,
@@ -472,7 +481,7 @@ class World:
     def _new_tx(self, text_raw: str, speaker: str, audio_ref: str = "", conf: float = 1.0,
                 n_best: list[str] | None = None, text_stock: str | None = None,
                 duration_s: float = 3.0) -> Transmission:
-        wps = list(self.sim.waypoints)
+        wps = self.spoken_waypoints()
         norm0 = normalize(dataset_normalize(text_raw))
         pref = _route_of(self, norm0)
         norm = snap_waypoints(norm0, wps, pref)
@@ -485,7 +494,7 @@ class World:
     async def _transcribe(self, samples: np.ndarray) -> tuple[str, float, list[str], str | None, float]:
         if self.asr is None:
             self.asr = await asyncio.to_thread(get_asr)
-        prompt = build_prompt([_spoken(cs) for cs in self.sim.active], list(self.sim.waypoints))
+        prompt = build_prompt([_spoken(cs) for cs in self.sim.active], self.spoken_waypoints())
         t0 = time.perf_counter()
         r = await asyncio.to_thread(self.asr.transcribe, samples, prompt)
         return r.text, r.confidence, list(r.n_best), r.text_stock, time.perf_counter() - t0
@@ -762,7 +771,10 @@ def _route_of(world: "World", text_norm: str) -> list[str]:
         return []
     s = snap(text_norm, active)
     a = world.sim.get(s.best) if s.best else None
-    return list(a.route) if a else []
+    if a is None:
+        return []
+    sayable = set(world.spoken_waypoints())
+    return [n for n in a.route if n in sayable]
 
 
 def _spoken(callsign: str) -> str:

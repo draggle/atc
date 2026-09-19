@@ -37,6 +37,7 @@ Every message is one JSON object `{"type": ..., "payload": {...}, "t": <sim seco
 | `{"type":"agent_text","text"}` | typed request to the world-builder agent |
 | `{"type":"radio_text","text"}` | typed controller transmission, fallback when there is no mic |
 | `{"type":"configure","source":"sim","scenario","density"}` | build a world and its plan. Lifecycle becomes `ready`. **The clock does not start.** `load_scenario` with `name` still works as an alias |
+| `{"type":"configure","source":"real","scenario":"real/<region>_<date>_<hhmm>","max_flights"}` | load recorded traffic, thinned evenly over the hour to at most `max_flights`. `state` then carries `source: "real"`, `meta` (region, label, date, hour_utc, gates, attribution, caveats), `geo.shape: "circle"`, and waypoints with `kind: "gate"`. Hidden track vertices are never sent |
 | `{"type":"start"}` | `ready` or `paused` to `running` |
 | `{"type":"pause"}` | `running` to `paused` |
 | `{"type":"reset"}` | back to the world as it was loaded: clock at zero, nothing issued. New `world_id` |

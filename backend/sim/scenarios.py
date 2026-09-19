@@ -15,6 +15,7 @@ A flight's `route` is a route name or an explicit waypoint list. Intruders set
 from __future__ import annotations
 
 import copy
+import json
 import math
 import random
 from pathlib import Path
@@ -30,11 +31,45 @@ ACTYPES = {"ACA": "A320", "WJA": "B738", "POE": "E195", "JZA": "CRJ9", "DAL": "A
 LEVELS_FT = [28000, 30000, 32000, 34000, 36000]
 
 
+REAL_DIR = SCENARIO_DIR / "real"  # built from recorded traffic by tools/real_build.py
+
+
 def list_scenarios() -> list[str]:
-    return sorted(p.stem for p in SCENARIO_DIR.glob("*.yaml"))
+    sims = sorted(p.stem for p in SCENARIO_DIR.glob("*.yaml"))
+    reals = sorted(f"real/{p.stem}" for p in REAL_DIR.glob("*.json")) if REAL_DIR.exists() else []
+    return sims + reals
+
+
+def thin(scenario: Scenario, max_flights: int | None) -> Scenario:
+    """At most max_flights, evenly spread over the entry order so the rhythm of the hour survives.
+
+    Hidden track vertices that no remaining flight uses are dropped. Gates stay, so the map keeps
+    the same names whatever the cap.
+    """
+    regular = [f for f in scenario.flights if not f.is_intruder]
+    if not max_flights or max_flights <= 0 or len(regular) <= max_flights:
+        return scenario
+    sc = copy.deepcopy(scenario)
+    regular = sorted((f for f in sc.flights if not f.is_intruder), key=lambda f: f.entry_time_s)
+    step = len(regular) / max_flights
+    keep = [regular[int(i * step)] for i in range(max_flights)]
+    used = {w for f in keep for w in f.route}
+    sc.flights = keep + [f for f in sc.flights if f.is_intruder]
+    sc.waypoints = [w for w in sc.waypoints if w.kind != "hidden" or w.name in used]
+    sc.meta = {**sc.meta, "flights_available": len(regular), "max_flights": max_flights}
+    return sc
 
 
 def load(name: str) -> Scenario:
+    if name.startswith("real/"):
+        path = REAL_DIR / f"{name.split('/', 1)[1]}.json"
+        if not path.exists():
+            raise FileNotFoundError(f"no real scenario {name}; run tools/real_build.py")
+        return Scenario.model_validate(json.loads(path.read_text()))
+    return _load_yaml(name)
+
+
+def _load_yaml(name: str) -> Scenario:
     """Load `backend/scenarios/<name>.yaml` (or a path) and expand route names."""
     path = Path(name) if name.endswith(".yaml") else SCENARIO_DIR / f"{name}.yaml"
     raw = yaml.safe_load(path.read_text())

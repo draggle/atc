@@ -130,6 +130,8 @@ export interface Waypoint {
   y_nm: number;
   lat?: number;
   lon?: number;
+  /** "gate": a named entry/exit of a real-traffic region. Hidden track vertices never reach the screen. */
+  kind?: "fix" | "gate" | "hidden";
 }
 
 /** Where on Earth the flat simulator plane sits. Azimuthal equidistant around (lat0, lon0). */
@@ -138,6 +140,8 @@ export interface GeoFrame {
   lon0: number;
   projection: "aeqd";
   name: string;
+  /** the sector boundary to draw */
+  shape?: "square" | "circle";
   /** half the sector width, NM */
   half_nm?: number;
   /** [[west, south], [east, north]] covering the sector, for fitting the map */
@@ -249,11 +253,25 @@ export interface AgentReply {
 /** Nothing moves until "running". idle = no world loaded, ready = loaded and previewable. */
 export type Lifecycle = "idle" | "ready" | "running" | "paused" | "ended";
 
+/** What a real-traffic scenario was built from. */
+export interface ScenarioMeta {
+  region?: string;
+  label?: string;
+  date?: string;
+  hour_utc?: number;
+  gates?: number;
+  attribution?: string;
+  caveats?: string;
+  flights_available?: number;
+  max_flights?: number;
+}
+
 export interface ScenarioInfo {
   name: string;
   description: string;
   flights: number;
   source: "sim" | "real";
+  meta?: ScenarioMeta;
 }
 
 export interface Notice {
@@ -272,6 +290,9 @@ export interface SimState {
   world_id?: number;
   scenarios?: ScenarioInfo[];
   geo?: GeoFrame;
+  /** real: flights and the routes they flew come from recorded traffic */
+  source?: "sim" | "real";
+  meta?: ScenarioMeta;
   t: number;
   waypoints: Waypoint[];
   zones: Zone[];
@@ -320,7 +341,7 @@ export type ClientMessage =
   | { type: "agent_text"; text: string }
   | { type: "radio_text"; text: string }
   | { type: "load_scenario"; name: string }
-  | { type: "configure"; source: "sim" | "real"; scenario: string; density?: number }
+  | { type: "configure"; source: "sim" | "real"; scenario: string; density?: number; max_flights?: number }
   | { type: "start" }
   | { type: "pause" }
   | { type: "reset" }
