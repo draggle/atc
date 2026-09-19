@@ -234,6 +234,11 @@ class World:
         frame = self.frame
         for path in payload["paths"] + payload.get("baseline_paths", []):
             path["lonlat"] = GEO.path_lonlat(frame, path["samples"])
+            # The screen draws from lonlat. The raw 10 s samples stay in the backend: 55 flights of
+            # them made this message 1.3 MB, and real traffic would be several MB on every replan.
+            # Endpoints are kept so a consumer can still tell where and when a path starts and ends.
+            if len(path["samples"]) > 2:
+                path["samples"] = [path["samples"][0], path["samples"][-1]]
         payload["trigger"] = trigger
         if changed is None:
             self.emit(event("plan", payload, t=self.sim.t))

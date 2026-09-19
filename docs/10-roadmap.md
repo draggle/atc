@@ -84,10 +84,16 @@ Replace the canvas radar with deck.gl on MapLibre. Build to parity first, then a
 Parity: basemap, aircraft icons rotated to heading with labels, standard lines, Tower lines, waypoints or gates, disruptions, click to place a disruption, alert and watching highlights.
 Depth: tilt and rotate with the mouse, altitude in 3D with an exaggeration slider, vertical stems to the ground, fading trails, replanned routes flash, separation rings on the pair in conflict, translucent 3D volumes for disruptions, globe projection toggle, click a plane for a flight strip (callsign, level, speed, current clearance, card history), follow-camera, hover tooltips, legend.
 Layout: map full-bleed, panels floating over it. Load the `frontend-design` skill before writing this.
-- [ ] Everything the old radar showed is on the new map
-- [ ] Pan, zoom, tilt, and rotate are smooth with 150 aircraft at 60 fps on the demo laptop
-- [ ] Mock mode still works with no backend
-- [ ] The old canvas radar is deleted, not left beside it
+- [x] Everything the old radar showed is on the new map
+- [ ] Pan, zoom, tilt, and rotate are smooth with 150 aircraft at 60 fps on the demo laptop (**not measured yet**: the test browser runs hidden and throttles animation. No slow frames with 22 aircraft. Check by eye, and again with real traffic in phase 4)
+- [x] Mock mode still works with no backend (mock emits the same lat/lon fields)
+- [x] The old canvas radar is deleted, not left beside it
+
+Parity and most of the depth landed Saturday afternoon: deck.gl on MapLibre 5 with the free CARTO dark basemap, dimmed so traffic is the brightest thing on screen. Tilt, rotate, top-down, altitude in 3D with an exaggeration slider, stems, trails, flashing replans, 3D storm columns, intruders with predicted tracks, alert / checking / watching rings, click a plane for a flight strip with follow-camera, click the map to drop a disruption, hover tooltips. Panels float over a full-screen map. Type is B612, the face Airbus designed for cockpit displays. If the basemap cannot load, the airspace still draws on plain ink.
+
+Still open in this phase: separation rings on a conflicting pair, the globe view is wired but untested, 3D aircraft models (possible Higgsfield use), and the frame-rate check above.
+
+Two things found on the way: MapLibre 6 does not load its worker under Next.js dev, so we pin MapLibre 5. And the plan message was 1.28 MB for 55 flights because it carried every 10 s sample; it now carries only the drawable path and is about 70 KB.
 
 ### Phase 4. Real traffic. About 4 hours. Parallel with phase 3
 `tools/build_real_scenario.py`: streams one adsb.lol day, keeps aircraft that cross the region box inside the time window above a floor altitude, cleans each track (drop stale points, split legs, resample to 10 s), and writes a compact scenario: flights with entry and exit gate, entry time, level, speed, type, and the **actual track**. Output lives in `data/real/`, a few hundred KB each. Backend loads it like any scenario. In real mode the standard line is the actual track.

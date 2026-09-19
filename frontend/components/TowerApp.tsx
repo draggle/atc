@@ -1,12 +1,13 @@
 "use client";
 
 import { createContext, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
+import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { TowerStoreProvider, useTowerDispatch, useTowerState } from "@/lib/store";
 import { connectTower, type TowerClient } from "@/lib/ws";
 import type { ClientMessage } from "@/lib/types";
 import TopBar from "./TopBar";
-import Radar from "./Radar";
+import FlightStrip from "./FlightStrip";
 import InstructionCards from "./InstructionCards";
 import AlertCard from "./AlertCard";
 import Transcript from "./Transcript";
@@ -15,6 +16,12 @@ import SlidersPanel from "./SlidersPanel";
 import PushToTalk from "./PushToTalk";
 import SetupPanel from "./SetupPanel";
 import Notices from "./Notices";
+
+// MapLibre and deck.gl need a browser: no server rendering for the map.
+const MapView = dynamic(() => import("./MapView"), {
+  ssr: false,
+  loading: () => <div className="absolute inset-0 flex items-center justify-center text-sm text-muted">Loading the map</div>,
+});
 
 interface ClientApi {
   send(msg: ClientMessage): void;
@@ -59,34 +66,38 @@ function Screen() {
   const { alerts, resolving, sim } = useTowerState();
   const lifecycle = sim?.lifecycle ?? (sim?.scenario ? "running" : "idle");
   return (
-    <div className="relative h-screen w-screen flex flex-col gap-2 p-2 bg-bg text-fg">
+    <div className="relative h-screen w-screen overflow-hidden bg-bg text-fg">
+      {/* The map is the screen. Everything else floats over it. */}
+      <MapView />
+
+      <div className="absolute top-2 left-2 right-2 z-20">
+        <TopBar />
+      </div>
+
+      <FlightStrip />
+
+      <div className="absolute top-[68px] right-2 bottom-2 z-10 w-[400px] flex flex-col gap-2 overflow-y-auto scroll-thin pr-0.5">
+        {(alerts.length > 0 || resolving.length > 0) && <AlertCard />}
+        <InstructionCards />
+        <PushToTalk />
+        <ScoreboardPanel />
+        <SlidersPanel />
+      </div>
+
+      <div className="absolute left-2 bottom-2 z-10 h-[180px] w-[min(calc(100vw-432px),760px)]">
+        <Transcript />
+      </div>
+
+      {(lifecycle === "ready" || lifecycle === "paused" || lifecycle === "ended") && (
+        <div className="pointer-events-none absolute top-[72px] left-1/2 -translate-x-1/2 z-10 glass px-4 py-2 text-sm text-muted">
+          {lifecycle === "ready" && <>World loaded. Look over the plan, then press <span className="text-ok font-medium">Start</span>.</>}
+          {lifecycle === "paused" && <>Paused. Press <span className="text-ok font-medium">Resume</span> to continue.</>}
+          {lifecycle === "ended" && <>Every flight has left the sector. Press <span className="text-fg font-medium">Reset</span> to run it again.</>}
+        </div>
+      )}
+
       <SetupPanel />
       <Notices />
-      <TopBar />
-      <div className="flex-1 min-h-0 grid gap-2" style={{ gridTemplateColumns: "minmax(0,1fr) 400px" }}>
-        <div className="min-h-0 flex flex-col gap-2">
-          <div className="relative flex-1 min-h-0">
-            <Radar />
-            {(lifecycle === "ready" || lifecycle === "paused" || lifecycle === "ended") && (
-              <div className="pointer-events-none absolute bottom-10 left-1/2 -translate-x-1/2 rounded-md border border-line bg-panel/90 px-4 py-2 text-sm text-muted">
-                {lifecycle === "ready" && <>World loaded. Look over the plan, then press <span className="text-ok font-medium">Start</span>.</>}
-                {lifecycle === "paused" && <>Paused. Press <span className="text-ok font-medium">Resume</span> to continue.</>}
-                {lifecycle === "ended" && <>Every flight has left the sector. Press <span className="text-fg font-medium">Reset</span> to run it again.</>}
-              </div>
-            )}
-          </div>
-          <div className="h-48 shrink-0">
-            <Transcript />
-          </div>
-        </div>
-        <div className="min-h-0 flex flex-col gap-2 overflow-y-auto scroll-thin pr-1">
-          {(alerts.length > 0 || resolving.length > 0) && <AlertCard />}
-          <InstructionCards />
-          <PushToTalk />
-          <ScoreboardPanel />
-          <SlidersPanel />
-        </div>
-      </div>
     </div>
   );
 }

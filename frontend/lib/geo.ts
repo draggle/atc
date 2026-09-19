@@ -1,37 +1,10 @@
-/** Sector NM <-> canvas pixel mapping. x east, y north, sector square centred on the origin (NM from -sector/2 to +sector/2). */
-export interface Projection {
-  size: number; // px of the square
-  ox: number; // px offset of the square within the canvas
-  oy: number;
-  sector: number; // NM
-}
-
-export function makeProjection(width: number, height: number, sector: number): Projection {
-  const pad = 16;
-  const size = Math.max(10, Math.min(width, height) - pad * 2);
-  return { size, ox: (width - size) / 2, oy: (height - size) / 2, sector };
-}
-
-export function toPx(p: Projection, xNm: number, yNm: number): [number, number] {
-  const s = p.size / p.sector;
-  const h = p.sector / 2;
-  return [p.ox + (xNm + h) * s, p.oy + p.size - (yNm + h) * s];
-}
-
-export function toNm(p: Projection, xPx: number, yPx: number): [number, number] {
-  const s = p.sector / p.size;
-  const h = p.sector / 2;
-  return [(xPx - p.ox) * s - h, (p.oy + p.size - yPx) * s - h];
-}
-
-export const nmToPx = (p: Projection, nm: number) => (nm * p.size) / p.sector;
-
-
-// ---------------------------------------------------------------------------
-// Flat plane <-> Earth. Mirrors backend/sim/geoframe.py: azimuthal equidistant on a sphere.
-// The backend sends lat and lon on every position; this exists for mock mode and for turning a
-// click on the map back into sector NM.
-// ---------------------------------------------------------------------------
+/**
+ * Flat plane <-> Earth. Mirrors backend/sim/geoframe.py: azimuthal equidistant on a sphere.
+ * Sector convention: x east, y north, nautical miles, centred on the frame.
+ *
+ * The backend sends lat and lon on every position; this exists for mock mode, for older backends,
+ * and for turning a click on the map back into sector NM.
+ */
 
 export const EARTH_RADIUS_NM = 3440.065;
 const RAD = Math.PI / 180;

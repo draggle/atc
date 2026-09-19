@@ -2,6 +2,17 @@
 
 ## Summary, Sunday Sept 20 morning (human-written; auto entries below)
 
+**Whisper fine-tune, Baseten H100, proving job (Sat Sept 19, job `w7rrk13`, team 13, project `k7-t13`).** `openai/whisper-small`, 300 steps only (about 0.85 epoch), warmup 50, batch 16 x grad accum 2, fp16, one H100. 322 s of training at 0.93 steps/s (29.8 samples/s). Whole job 8 min 20 s including install, dataset download and conversion, three evaluations, held-out comparison, and CTranslate2 export. Validation WER on 120 clips at steps 100, 200, 300: 0.28, 0.43, 0.35. That is noise from a small validation slice, and "best" was therefore step 100.
+
+| Model | WER on 200 held-out real clips | Sub / Del / Ins | s per clip (H100) |
+|---|---|---|---|
+| stock whisper-small | 0.671 | 751 / 192 / 390 | 0.050 |
+| **tuned whisper-small, 300 steps on Baseten** | **0.278** | 299 / 84 / 169 | 0.034 |
+
+A rehearsal, not the result: say "five minutes of training" if this number is quoted. Stock errors are dominated by insertions (looping "zero two zero two", invented sentences such as "im going to turn the camera off"). Baseten lists the saved checkpoints with type `whisper`.
+
+**Full run launched 13:53 the same day, job `q9jj663`:** whisper-small, up to 10 epochs with early stopping, validation on all 593 clips every 500 steps, held-out comparison on 1,000 clips. Expected about one hour. Fill in the result here.
+
 **Whisper fine-tune, laptop.** `openai/whisper-tiny` on the full jacktol/atc-dataset train split (11,268 clips), val 593 (120 used at each eval point), MacBook Air M4 16 GB, MPS. lr 5e-5, warmup 100, batch 8 x grad accum 2, 1,200 steps = 1.7 epochs, 62 minutes, decaying noise/pitch/stretch/clip augmentation. Train loss 12.3 to about 1.0. Val WER at steps 200 to 1200: 0.337, 0.375, 0.227, 0.221, 0.214 (best at 1200). Checkpoint `data/checkpoints/whisper-tiny-atc/best`, CTranslate2 int8 export at `data/checkpoints/whisper-tiny-atc-ct2` (loads in faster-whisper, transcribes a held-out clip correctly).
 
 **Held-out comparison, same first 300 clips of the never-trained test split, greedy, text_norm on both sides:**

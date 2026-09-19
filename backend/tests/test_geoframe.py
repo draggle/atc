@@ -92,11 +92,17 @@ def test_every_position_event_carries_lat_lon():
     # the flat values are still there for the planner-facing code and the old radar
     assert all("x_nm" in a and "y_nm" in a for a in ac)
     plan = last("plan")
+    full = {p.callsign: p for p in w.plan.paths}
     for path in plan["paths"] + plan["baseline_paths"]:
-        assert path["lonlat"] and len(path["lonlat"]) <= len(path["samples"])
+        assert len(path["lonlat"]) >= 2
+        assert len(path["samples"]) <= 2, "raw samples stay in the backend; only endpoints go on the wire"
         lon, lat, alt, t = path["lonlat"][0]
         x, y = to_xy(w.frame, lat, lon)
         assert abs(x - path["samples"][0][1]) < 0.05 and abs(y - path["samples"][0][2]) < 0.05
+    for path in plan["paths"]:
+        assert len(path["lonlat"]) <= len(full[path["callsign"]].samples)
+    import json
+    assert len(json.dumps(plan)) < 200_000
 
     w.start()
     d = w.add_disruption("intruder", -60.0, -80.0)

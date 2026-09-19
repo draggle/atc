@@ -56,7 +56,7 @@ The simulator and planner work in a flat plane: x east, y north, nautical miles,
 | `radar.aircraft[]` | `x_nm`, `y_nm` | `lat`, `lon` |
 | `state.waypoints[]`, `state.zones[]` | `x_nm`, `y_nm` | `lat`, `lon` |
 | `state.geo` | | `{lat0, lon0, projection: "aeqd", name, half_nm, bounds: [[west, south], [east, north]]}` |
-| `plan.paths[]`, `plan.baseline_paths[]`, and the same in `plan_update` | `samples: [t, x, y, alt][]` | `lonlat: [lon, lat, alt_ft, t][]`, simplified for drawing: first, last, every corner and level change, and at least one point per 5 minutes |
+| `plan.paths[]`, `plan.baseline_paths[]`, and the same in `plan_update` | `samples`: **endpoints only** on the wire, `[first, last]`. The full 10 s samples stay in the backend | `lonlat: [lon, lat, alt_ft, t][]`, simplified for drawing: first, last, every corner and level change, and at least one point per 5 minutes |
 | `disruption` | `x_nm`, `y_nm`, `predicted_path: [t, x, y][]` | `lat`, `lon`, `predicted_lonlat: [lon, lat, t][]` |
 
 - Order is `[lon, lat]` in arrays, GeoJSON style, which is what deck.gl and MapLibre expect. Named fields are `lat` and `lon`.

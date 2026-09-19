@@ -77,6 +77,10 @@ export interface TowerState {
   notices: ActiveNotice[];
   /** the setup panel is open */
   setupOpen: boolean;
+  /** callsign with its flight strip open */
+  selected: string | null;
+  /** the camera follows the selected aircraft */
+  follow: boolean;
   sliders: Sliders;
   planView: "today" | "tower";
   showStock: boolean;
@@ -103,6 +107,8 @@ export const initialState: TowerState = {
   chat: [],
   notices: [],
   setupOpen: false,
+  selected: null,
+  follow: false,
   sliders: { buffer_nm: 3, error_rate: 0.1, noise: 0.2 },
   planView: "tower",
   showStock: false,
@@ -119,6 +125,8 @@ export type Action =
   | { type: "local_toggle"; key: "tower_enabled" | "auto_speak"; value: boolean }
   | { type: "dismiss_notice"; id: number }
   | { type: "set_setup_open"; open: boolean }
+  | { type: "select"; callsign: string | null }
+  | { type: "set_follow"; on: boolean }
   | { type: "reset" };
 
 const TRANSCRIPT_CAP = 200;
@@ -145,6 +153,8 @@ function clearWorld(state: TowerState): TowerState {
     scoreboard: null,
     stats: null,
     disruptions: {},
+    selected: null,
+    follow: false,
   };
 }
 
@@ -285,6 +295,10 @@ export function reducer(state: TowerState, action: Action): TowerState {
       return { ...state, notices: state.notices.filter((n) => n.id !== action.id) };
     case "set_setup_open":
       return { ...state, setupOpen: action.open };
+    case "select":
+      return { ...state, selected: action.callsign, follow: action.callsign ? state.follow : false };
+    case "set_follow":
+      return { ...state, follow: action.on };
     case "reset":
       return { ...initialState, connection: state.connection };
   }

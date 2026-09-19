@@ -12,7 +12,8 @@ Calm and quiet. Tower says nothing unless it has something worth saying, and it 
 
 ## Views
 
-- **Radar.** Aircraft with labels, planned paths, blocked zones, and intruders. Changed routes flash when a replan lands. Click to drop an intruder or a storm.
+- **Map.** `components/MapView.tsx`: deck.gl layers over a MapLibre basemap, full screen, everything else floats over it. Draw from `lat`/`lon` and `lonlat`, never from `x_nm`. Altitude is real but exaggerated (slider). Aircraft on stems with trails and data blocks, standard routes dashed grey, Tower's plan cyan, replans flash amber, storms as 3D columns, intruders red with a predicted track, rings for alert / checking / watching. Click a plane for the flight strip, click the map to place a disruption (`latLonToNm` turns the click into sector NM).
+- **Flight strip.** `components/FlightStrip.tsx`: everything Tower knows about the selected aircraft, with follow-camera.
 - **Plan toggle.** Fixed routes versus Tower's plan, with a savings counter.
 - **Instruction cards.** One per instruction Tower wants issued: the phrase to say, a one-line reason, and urgency. States are pending, spoken, validated, verified, and error. Push-to-talk to speak a card.
 - **Alert.** A red card with expected versus heard, error type, confidence, a play button for the clip, and the correction to say.
@@ -20,6 +21,12 @@ Calm and quiet. Tower says nothing unless it has something worth saying, and it 
 - **Transcript.** Speaker tag, callsign, text, and a confidence bar, with the stock versus tuned toggle.
 - **Scoreboard.** Miles and time saved, losses of separation, errors caught, response times. Only numbers we measured.
 - **Sliders.** Separation buffer and chaos level: noise, pilot error rate, traffic density.
+
+## Look
+
+Night operations room. Near-black ink, one cool signal colour for Tower's plan (`--accent`), one warm annunciator colour for anything that changed (`--warn`), red only for something wrong. Type is B612 and B612 Mono, the faces Airbus designed for cockpit displays. Floating panels use `.panel` or `.glass`; do not put `position` in those classes, it overrides Tailwind's `absolute`. The basemap is context, not content: keep it dimmer than the traffic.
+
+Pinned: `maplibre-gl@5`. Version 6 fails to load its worker under Next.js dev.
 
 ## Rules
 
