@@ -242,3 +242,40 @@ def test_fleet_error_rate_zero_never_errs(tmp_path):
         r = fleet.respond(clearance(multi_items()[:2], cid=f"c{i}"))
         assert r.injected_error is None and r.kind == "readback"
         assert r.sim_command.value == 24000
+
+
+# --- regressions found when the real ElevenLabs key went in (Sept 19) -------------------------
+
+
+def test_controller_voice_is_valid_for_the_active_backend(monkeypatch):
+    from pilots.tts import ELEVEN_CONTROLLER_VOICE, TTS
+
+    monkeypatch.delenv("ELEVENLABS_CONTROLLER_VOICE_ID", raising=False)
+    eleven = TTS(backend="elevenlabs")
+    assert eleven.controller_voice() == ELEVEN_CONTROLLER_VOICE
+    assert eleven.controller_voice() not in eleven.voices  # never confused with a pilot
+    assert eleven.controller_voice() != "Alex"  # a macOS name is a 404 on ElevenLabs
+    monkeypatch.setenv("ELEVENLABS_CONTROLLER_VOICE_ID", "custom-id")
+    assert TTS(backend="elevenlabs").controller_voice() == "custom-id"
+    assert TTS(backend="silent").controller_voice() == "beep"
+
+
+def test_default_eleven_voices_avoid_paid_library_ids():
+    from pilots.tts import ELEVEN_VOICES
+
+    paid_only = {"21m00Tcm4TlvDq8ikWAM", "ErXwobaYiN019PkySvjV", "TxGEqnHWrfWFTfGW9XjX",
+                 "VR6AewLTigWG4xSOukaG", "AZnzlk1XvdvUeBnXmlld", "MF3mGyEYCl7XYWbV9V6O"}
+    assert not paid_only & set(ELEVEN_VOICES)
+    assert len(set(ELEVEN_VOICES)) == len(ELEVEN_VOICES) >= 6
+
+
+def test_failed_synthesis_beeps_without_poisoning_the_cache(tmp_path, monkeypatch, caplog):
+    from pilots.tts import TTS
+
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)  # makes the real call fail, no network
+    tts = TTS(backend="elevenlabs", cache_dir=tmp_path)
+    with caplog.at_level("WARNING", logger="tower.tts"):
+        out = tts.synthesize("descend flight level two four zero", tts.voices[0])
+    assert out.name.endswith(".fallback.wav") and out.exists()
+    assert not tts.cache_path("descend flight level two four zero", tts.voices[0]).exists()
+    assert tts.last_error and any("beep instead" in r.message for r in caplog.records)

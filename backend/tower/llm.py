@@ -81,7 +81,9 @@ class LLM:
         else:
             from openai import OpenAI
 
-            self.client = OpenAI(api_key=self.api_key, base_url=base_url)
+            # Bounded: the resolver has a ~5 s budget and runs inline. Retries are ours (_with_retry).
+            self.client = OpenAI(api_key=self.api_key, base_url=base_url, max_retries=0,
+                                 timeout=float(os.environ.get("LLM_TIMEOUT_S", "10")))
         self.is_mock = False
 
     @staticmethod

@@ -49,7 +49,6 @@ AUDIO_DIR = DATA_DIR / "audio"
 PILOT_DELAY_S = 1.5  # seconds between a clearance and the pilot keying up
 REPLAN_EVERY_S = 60.0
 CARD_VERIFY_S = 30.0  # a matched clearance with no radar alert for this long is "verified"
-CONTROLLER_VOICE = "Alex"
 
 Emit = Callable[[dict[str, Any]], None]
 
@@ -415,7 +414,7 @@ class World:
             await self._controller(card.phrase, card=card)
             return
         try:
-            path = await asyncio.to_thread(self.tts.synthesize, card.phrase, CONTROLLER_VOICE)
+            path = await asyncio.to_thread(self.tts.synthesize, card.phrase, self.tts.controller_voice())
             ref = f"ctl-{uuid.uuid4().hex[:8]}.wav"
             await asyncio.to_thread(apply_to_file, path, AUDIO_DIR / ref, max(0.05, self.noise * 0.5))
             samples, sr = read_wav(AUDIO_DIR / ref)
