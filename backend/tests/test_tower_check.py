@@ -190,6 +190,14 @@ def test_garbled_fix_name_is_ambiguous_not_an_alert():
     assert v.result == "ambiguous" and "not understood" in v.reason and "ESTIR" in v.reason
 
 
+def test_direct_fused_with_the_fix_name_is_still_an_audible_routing():
+    """Found live: "direct estir" came back from Whisper as one word, "Director". The pilot did read
+    a routing back. That is "I could not hear the fix", never "No readback of route ESTIR"."""
+    for heard in ("director ACA123", "directed ACA123", "directly ACA123", "direction ACA123"):
+        v = _route_case(heard)
+        assert v.result == "ambiguous" and "not understood" in v.reason, (heard, v.result, v.reason)
+
+
 def test_no_routing_read_back_is_still_an_error():
     assert _route_case("roger ACA123").result == "mismatch"
     assert _route_case("climbing ACA123").result == "mismatch"

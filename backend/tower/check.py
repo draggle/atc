@@ -248,7 +248,9 @@ def confirm_phrase(clearance: OpenClearance) -> str:
     return f"{spoken_callsign(clearance.callsign)}, confirm {phrase_from_items('', clearance.items)}"
 
 
-_ROUTE_CUE = re.compile(r"\b(direct|proceed|proceeding|routing|route)\b")
+# "direct\w*": Whisper fuses "direct estir" into one word ("director", "directly"). The pilot still
+# audibly read a routing back.
+_ROUTE_CUE = re.compile(r"\b(direct\w*|proceed|proceeding|routing|route)\b")
 
 
 def route_fix_unheard(verdict: Verdict, text_norm: str) -> Item | None:
