@@ -177,6 +177,7 @@ function differs(a: LonLatAlt[], b: LonLatAlt[]): boolean {
 const FLASH_MS = 4000;
 
 let noticeSeq = 0;
+let staleBackendWarned = false;
 
 /** Drop everything that belonged to the previous world. Settings and chat survive. */
 function clearWorld(state: TowerState): TowerState {
@@ -217,11 +218,20 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
       const base = prevWorld !== undefined && nextWorld !== undefined && prevWorld !== nextWorld ? clearWorld(state) : state;
       // A freshly loaded world closes the setup panel; an idle backend opens it.
       const setupOpen = ev.payload.lifecycle === "idle" ? true : nextWorld !== prevWorld ? false : base.setupOpen;
+      // A backend started before the Voice switch existed ignores it: the switch then looks as if it
+      // works and snaps back on the next state message. Say so once, instead of leaving it a mystery.
+      let notices = base.notices;
+      if (ev.payload.voice === undefined && ev.payload.lifecycle !== undefined && !staleBackendWarned) {
+        staleBackendWarned = true;
+        noticeSeq += 1;
+        notices = [...notices, { id: noticeSeq, at: Date.now(), level: "warn" as const,
+          text: "The backend is older than this screen, so the Voice switch and other new controls will not stick. Restart it: Ctrl+C in its terminal, then run uvicorn again." }].slice(-4);
+      }
       // The backend lists the disruptions still active, so a reconnect or a reload restores them.
       const disruptions = ev.payload.disruptions
         ? Object.fromEntries(ev.payload.disruptions.map((d) => [d.id, d]))
         : base.disruptions;
-      return { ...base, sim: ev.payload, watching: ev.payload.watching ?? base.watching, setupOpen, disruptions };
+      return { ...base, sim: ev.payload, watching: ev.payload.watching ?? base.watching, setupOpen, disruptions, notices };
     }
 
     case "notice": {
