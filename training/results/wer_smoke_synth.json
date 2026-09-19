@@ -1,0 +1,177 @@
+{
+  "manifest": "../data/asr/manifests/synth_test.jsonl",
+  "limit": null,
+  "device": "mps",
+  "results": [
+    {
+      "model": "stock:openai/whisper-tiny",
+      "n_clips": 12,
+      "wer": 0.4878,
+      "substitutions": 37,
+      "deletions": 5,
+      "insertions": 18,
+      "hits": 81,
+      "seconds_per_clip": 0.115,
+      "real_time_factor": 0.05,
+      "worst": [
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00001.wav",
+          "ref": "delta four seven request descent",
+          "hyp": "dont you fall for a certain request to send",
+          "wer": 1.6
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00012.wav",
+          "ref": "speedbird five six direct kerax",
+          "hyp": "speed but five six zero red carot",
+          "wer": 1.0
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00010.wav",
+          "ref": "american three three cross runway two six centre",
+          "hyp": "american free free front romantic extender",
+          "wer": 0.875
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00043.wav",
+          "ref": "delta three four three descend and maintain flight level eight zero",
+          "hyp": "so to free four three defendants maintains like lebelle eight zero",
+          "wer": 0.7272727272727273
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00040.wav",
+          "ref": "ryanair seven eight six two maintain flight level three five zero",
+          "hyp": "ryan harris at an eight six two main tained slide level three five zero",
+          "wer": 0.6363636363636364
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00049.wav",
+          "ref": "ryanair four five eight climb to flight level two one zero",
+          "hyp": "right there for five day coin to fly level two one zero",
+          "wer": 0.5454545454545454
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00019.wav",
+          "ref": "united one seven eight two turn left heading three three zero",
+          "hyp": "youre not at one seven eight turn left hitting three three zero",
+          "wer": 0.45454545454545453
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00026.wav",
+          "ref": "down to four thousand contact tower one three two decimal seven lufthansa eight six",
+          "hyp": "down to four zero zero zero contact tower one three two decimal seven looked at her eight six",
+          "wer": 0.42857142857142855
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00050.wav",
+          "ref": "easy four two one five maintain flight level one three zero",
+          "hyp": "bp four two one five maintains the right level one three zero",
+          "wer": 0.36363636363636365
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00024.wav",
+          "ref": "one six zero on the speed maintain flight level one four zero four six six three",
+          "hyp": "one six zero on the speed maintains light level one four zero four six six three",
+          "wer": 0.125
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00004.wav",
+          "ref": "seven three nine tower on one two nine decimal nine",
+          "hyp": "seven three nine tower on one two nine zero nine",
+          "wer": 0.1
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00038.wav",
+          "ref": "climbing flight level three eight zero seven one four six",
+          "hyp": "climbing flight level three eight zero seven one four",
+          "wer": 0.1
+        }
+      ]
+    },
+    {
+      "model": "tuned:../data/checkpoints/whisper-smoke/best",
+      "n_clips": 12,
+      "wer": 0.2846,
+      "substitutions": 26,
+      "deletions": 2,
+      "insertions": 7,
+      "hits": 95,
+      "seconds_per_clip": 0.041,
+      "real_time_factor": 0.018,
+      "worst": [
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00012.wav",
+          "ref": "speedbird five six direct kerax",
+          "hyp": "speedbook five six zero red terror",
+          "wer": 0.8
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00001.wav",
+          "ref": "delta four seven request descent",
+          "hyp": "delta four setting request to send",
+          "wer": 0.6
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00010.wav",
+          "ref": "american three three cross runway two six centre",
+          "hyp": "american free free across runway two six centa",
+          "wer": 0.5
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00049.wav",
+          "ref": "ryanair four five eight climb to flight level two one zero",
+          "hyp": "line there for five eight coins to fly level two one zero",
+          "wer": 0.45454545454545453
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00040.wav",
+          "ref": "ryanair seven eight six two maintain flight level three five zero",
+          "hyp": "ryan harris seven eight six two maintains slide level three five zero",
+          "wer": 0.36363636363636365
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00026.wav",
+          "ref": "down to four thousand contact tower one three two decimal seven lufthansa eight six",
+          "hyp": "down to four zero zero zero contact tower one three two decimal seven looked answer eight six",
+          "wer": 0.35714285714285715
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00050.wav",
+          "ref": "easy four two one five maintain flight level one three zero",
+          "hyp": "cp four two one five maintains slide level one three zero",
+          "wer": 0.2727272727272727
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00043.wav",
+          "ref": "delta three four three descend and maintain flight level eight zero",
+          "hyp": "delta three four three descendant maintains flight level eight zero",
+          "wer": 0.2727272727272727
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00024.wav",
+          "ref": "one six zero on the speed maintain flight level one four zero four six six three",
+          "hyp": "one six zero on the speed maintains light level one four zero four six six three",
+          "wer": 0.125
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00038.wav",
+          "ref": "climbing flight level three eight zero seven one four six",
+          "hyp": "climbing flight level three eight zero seven one four",
+          "wer": 0.1
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00019.wav",
+          "ref": "united one seven eight two turn left heading three three zero",
+          "hyp": "united one seven eight two turn left hitting three three zero",
+          "wer": 0.09090909090909091
+        },
+        {
+          "path": "/Users/josephbarbosa/Desktop/htn/data/asr/synthetic/synth_00004.wav",
+          "ref": "seven three nine tower on one two nine decimal nine",
+          "hyp": "seven three nine tower on one two nine decimal nine",
+          "wer": 0.0
+        }
+      ]
+    }
+  ]
+}

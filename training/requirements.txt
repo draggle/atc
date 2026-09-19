@@ -1,0 +1,21 @@
+# Installed into training/.venv with `uv pip install -r requirements.txt`.
+# torch is intentionally unpinned: on the Mac it is 2.14 (MPS); the Baseten image ships its own CUDA torch.
+torch
+transformers>=4.45
+datasets
+evaluate
+jiwer
+accelerate
+soundfile
+librosa
+scipy
+numpy
+pyarrow
+faster-whisper
+ctranslate2
+huggingface_hub
+fastapi
+uvicorn
+pytest
+# Baseten CLI + truss_train SDK (the config.py files import truss_train). Only needed on the machine that submits jobs.
+truss

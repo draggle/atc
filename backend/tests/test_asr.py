@@ -1,0 +1,76 @@
+import shutil
+
+import pytest
+
+from tower.asr import BasetenWhisper, dataset_normalize, logprob_to_confidence
+
+PHRASE = "air canada one two three descend flight level two four zero"
+
+
+def test_dataset_normalize():
+    assert dataset_normalize("Air Canada 123, descend flight level 240.") == (
+        "air canada one two three descend flight level two four zero"
+    )
+    assert dataset_normalize("Contact departure 124.65, good day!") == (
+        "contact departure one two four decimal six five good day"
+    )
+    assert dataset_normalize("Turn left heading 270") == "turn left heading two seven zero"
+    assert dataset_normalize("Runway 24L") == "runway two four l"
+
+
+def test_logprob_to_confidence():
+    assert logprob_to_confidence(0.0) == 1.0
+    assert 0.3 < logprob_to_confidence(-1.0) < 0.4
+    assert logprob_to_confidence(None) == 0.5
+
+
+def test_baseten_extract_shapes():
+    assert BasetenWhisper._extract({"text": " hello ", "avg_logprob": -0.2}) == ("hello", -0.2, [])
+    text, lp, nb = BasetenWhisper._extract(
+        {"model_output": {"segments": [{"text": "a", "avg_logprob": -0.4}, {"text": "b", "avg_logprob": -0.6}],
+                          "n_best": ["a b", {"text": "a d"}]}}
+    )
+    assert text == "a b" and abs(lp + 0.5) < 1e-9 and nb == ["a b", "a d"]
+
+
+@pytest.fixture(scope="module")
+def spoken_clip(tmp_path_factory):
+    if shutil.which("say") is None or shutil.which("ffmpeg") is None:
+        pytest.skip("macOS say/ffmpeg not available")
+    from pilots.tts import TTS
+
+    tts = TTS(backend="say", cache_dir=tmp_path_factory.mktemp("tts"))
+    return tts.synthesize(PHRASE, "Samantha")
+
+
+@pytest.fixture(scope="module")
+def local_whisper():
+    try:
+        from tower.asr import LocalWhisper
+
+        return LocalWhisper("base.en")
+    except Exception as exc:  # model download or CTranslate2 failure
+        pytest.skip(f"LocalWhisper unavailable: {exc!r}")
+
+
+def test_local_whisper_transcribes_say_clip(spoken_clip, local_whisper):
+    res = local_whisper.transcribe(spoken_clip, prompt="air canada, westjet, flight level")
+    norm = dataset_normalize(res.text)
+    print("\nASR:", res.text, "| conf", round(res.confidence, 3), "| latency", round(res.latency_s, 2), "s")
+    assert res.n_best and res.n_best[0] == res.text
+    assert 0.0 <= res.confidence <= 1.0
+    assert "two four zero" in norm or "two forty" in norm
+    assert "canada" in norm
+    assert res.latency_s < 30
+
+
+def test_local_whisper_accepts_arrays_and_radio_audio(spoken_clip, local_whisper):
+    from pilots.radio import radio_effect
+    from tower.audio import read_wav
+
+    samples, sr = read_wav(spoken_clip)
+    noisy = radio_effect(samples, sr, noise_level=0.2, rng=0)
+    res = local_whisper.transcribe(noisy, prompt=PHRASE)
+    norm = dataset_normalize(res.text)
+    print("\nASR(radio):", res.text)
+    assert "canada" in norm or "two four zero" in norm
