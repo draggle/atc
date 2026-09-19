@@ -147,7 +147,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 async def health() -> dict[str, Any]:
     return {"ok": True, "scenario": world.scenario.name if world.scenario else None, "t": world.sim.t,
             "lifecycle": world.lifecycle, "speed": world.speed,
-            "asr": type(world.asr).__name__ if world.asr else None, "clients": len(hub.clients)}
+            "asr": type(world.asr).__name__ if world.asr else None, "clients": len(hub.clients),
+            "memory": world.memory.status()}
 
 
 @app.get("/scenarios")

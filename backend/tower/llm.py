@@ -221,6 +221,38 @@ class MockLLM:
             if "frequency_history" not in done and verdict.get("result") == "partial" or \
                     "frequency_history" not in done and error in ("omitted_item", "ack_only") and budget_left > 2:
                 return call("frequency_history", callsign=callsign, n=3)
+            # With a searchable memory (Elasticsearch), also ask the radar what the aircraft is doing
+            # and who is close, so the trace shows real searches even without a model behind it.
+            if ctx.get("memory") and budget_left > 2:
+                watchable = any(i.get("type") in ("altitude", "heading") for i in expected)
+                if "aircraft_track" not in done and watchable and error in ("wrong_value", "wrong_unit", None):
+                    return call("aircraft_track", callsign=callsign, seconds=30)
+                if "nearby_aircraft" not in done and ctx.get("similar_callsigns") and error != "wrong_aircraft":
+                    return call("nearby_aircraft", callsign=callsign, radius_nm=30)
+
+        # 2a. Radar already settles it: the aircraft is at the expected level or the heard one.
+        track = done.get("aircraft_track")
+        if isinstance(track, dict) and track.get("samples"):
+            exp_alt = next((i for i in expected if i.get("type") == "altitude"), None)
+            heard_alt = next((i for i in (verdict.get("heard") or []) if i.get("type") == "altitude"), None)
+
+            def feet(item: dict[str, Any] | None) -> float | None:
+                if not item:
+                    return None
+                try:
+                    v = float(item.get("value"))
+                except (TypeError, ValueError):
+                    return None
+                return v * 100 if item.get("unit") == "FL" or v < 1000 else v
+
+            end, target = float(track.get("alt_end_ft") or 0), track.get("target_alt_ft")
+            e_ft, h_ft = feet(exp_alt), feet(heard_alt)
+            if e_ft is not None and h_ft is not None and h_ft != e_ft:
+                aim = float(target) if target is not None else end
+                if abs(aim - h_ft) < 150 and abs(aim - e_ft) >= 150:
+                    return call("raise_alert", reason=f"radar shows the aircraft heading for {int(h_ft)} ft, not the cleared {int(e_ft)} ft")
+                if abs(aim - e_ft) < 150:
+                    return call("dismiss", reason=f"radar shows the aircraft {track.get('trend')} toward the cleared {int(e_ft)} ft")
 
         # 2. Decide from the evidence.
         hyps: list[str] = list(done.get("relisten") or [])

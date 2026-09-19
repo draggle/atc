@@ -49,6 +49,7 @@ Read `docs/01-project.md` first, whatever you are working on. Then:
 | Things the overnight build learned that the spec did not know | `docs/09-overnight-findings.md` |
 | What is missing before judging, and the three teammate TRDs | `docs/trd/` |
 | **The working roadmap: Start button, real map, real traffic, disruptions, Manual and Auto. Wins over `06-plan.md` and the TRDs** | `docs/10-roadmap.md` |
+| The resolver's searchable memory on Elasticsearch: what is indexed, the four searches, how to turn it on, merge notes | `docs/11-elastic-memory.md` |
 
 Each of `backend/`, `training/`, and `frontend/` has its own short `CLAUDE.md` with that component's contract.
 
@@ -110,6 +111,7 @@ These are proposals. If the team decides otherwise, change them here so every Cl
 - Aircraft only move when an instruction is issued. Manual: the human says the card. Auto: `World._auto_dispatch` says it or sends it by data link. If planes ignore a replan, check the Manual / Auto switch before suspecting the planner.
 - Live sky: `backend/sim/live.py` takes one snapshot of adsb.lol for a region (`backend/sim/regions.py`) and loads it as a scenario named `live/<region>`. A snapshot, not a stream. Routes are straight projections of the current track, so miles saved is zero by construction there. Falls back to a saved snapshot in `data/live/`, then to a committed replay. Tests never touch the network.
 - Audio is 16 kHz mono everywhere.
+- The resolver's tools read `tower/memory.py` first and fall back to in-process state. Anything new the agent should be able to search goes through `Memory.observe` (it sees every emitted event), never a second store.
 - Positions: the simulator and planner stay in flat NM (`x_nm`, `y_nm`). Real-world `lat` and `lon` are added at the edge by `backend/sim/geoframe.py`. Never do planner math in degrees, and never draw the map from `x_nm`. Arrays are `[lon, lat]`, named fields are `lat` and `lon`.
 - Small commits to `main` are fine during the hackathon. Pull before you push. Do not force-push.
 
@@ -117,7 +119,7 @@ These are proposals. If the team decides otherwise, change them here so every Cl
 
 ```bash
 cd backend && uv venv .venv && uv pip install -e ".[dev]"   # once
-cd backend && .venv/bin/pytest -q                              # 273 tests
+cd backend && .venv/bin/pytest -q                              # 286 tests
 cd backend && .venv/bin/uvicorn app:app --port 8000            # backend, starts idle: load and Start from the screen
 cd frontend && npm install && npm run dev                      # screen at http://localhost:3000, mock mode if no backend
 cd frontend && NEXT_DIST_DIR=.next-verify npm run build        # production build. NEVER plain `npm run build` while `npm run dev` is running: it overwrites .next and the dev page loses its CSS
