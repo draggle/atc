@@ -119,7 +119,7 @@ class World:
         self.emit_plan(self.plan, trigger="initial")
         for card in C.cards_from_plan(self.plan, None, now_t=0.0, states=self.sim.aircraft()):
             self._add_card(card)
-        self.emit(event("radar", {"aircraft": [a.model_dump() for a in self.sim.aircraft()]}, t=0.0))
+        self.emit(event("radar", {"aircraft": [a.model_dump() for a in self.sim.aircraft()], "t": 0.0}, t=0.0))
         self.emit_scoreboard()
 
     # ------------------------------------------------------------------ emitters
@@ -256,7 +256,7 @@ class World:
             now = self.sim.t
             self.monitor.observe(list(self.sim.active.values()), now)
             states = self.sim.aircraft()
-            self.emit(event("radar", {"aircraft": [a.model_dump() for a in states]}, t=now))
+            self.emit(event("radar", {"aircraft": [a.model_dump() for a in states], "t": now}, t=now))
             self._emit_core_events(self.core.tick(now, states))
             for cid, t_match in list(self.matched_at.items()):
                 if now - t_match >= CARD_VERIFY_S and not self.core.conformance.watching(
@@ -270,8 +270,12 @@ class World:
         # run due pilot responses outside the lock: they do TTS and ASR
         due = [f for (t, f) in self.pending if t <= now]
         self.pending = [(t, f) for (t, f) in self.pending if t > now]
-        for f in due:
-            await f()
+        if self.realtime:
+            for f in due:
+                asyncio.create_task(f())  # TTS and ASR must not stall the clock
+        else:
+            for f in due:
+                await f()
 
     # ------------------------------------------------------------------ planning
 
@@ -577,7 +581,7 @@ def snap_waypoints(text_norm: str, waypoints: list[str], preferred: list[str] | 
 
     def fix(m: "re.Match[str]") -> str:
         heard = m.group(2).strip()
-        for pool, bar in ((pref, 40.0), (names, 60.0)):
+        for pool, bar in ((pref, 30.0), (names, 60.0)):
             if not pool:
                 continue
             ranked = sorted(((score(heard, n), n) for n in pool), reverse=True)
