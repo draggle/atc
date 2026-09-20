@@ -59,6 +59,7 @@ from tower.audio import float_to_wav, read_wav
 from tower.memory import Memory, memory_from_env
 from tower.normalize import ICAO_TO_TELEPHONY, normalize
 from tower.pipeline import TowerCore
+from tower.voice import speak_reply
 
 log = logging.getLogger("tower.world")
 
@@ -164,6 +165,7 @@ class World:
         self._voice_since = 0.0
         self.human_on_mic = False  # the controller is holding the mic: Tower keeps quiet
         self.auto_voice = False  # Auto speaks one exchange at a time. Off: every instruction by data link
+        self.speak_replies = os.environ.get("SQUACK_SPEAK", "1") != "0"  # squack says its answers on frequency
         self.next_readback = "random"  # or correct, wrong_value, wrong_aircraft, omitted_item, missing_readback
         self.held: dict[str, tuple[OpenClearance, str | None]] = {}  # said-vs-card conflicts awaiting "send as heard"
         self.alerted: dict[str, tuple[str, float]] = {}  # callsign -> (clearance id of the wrong readback, sim time)
@@ -325,6 +327,7 @@ class World:
             "mode": "auto" if self.auto_speak else "manual",
             "auto_voice": self.auto_voice,
             "voice": not self.auto_speak,
+            "speak_replies": self.speak_replies,
             "clock_speed": self.clock_speed(),
             "next_readback": self.next_readback,
             "t": self.sim.t,
@@ -586,6 +589,11 @@ class World:
         self.auto_voice = bool(enabled)
         if not enabled:
             self._voice_card = None
+        self.emit_state()
+
+    def set_speak_replies(self, enabled: bool) -> None:
+        """Whether squack also says its answers on the frequency (tower/voice.py)."""
+        self.speak_replies = bool(enabled)
         self.emit_state()
 
     def _links_only(self) -> bool:
@@ -1398,8 +1406,12 @@ class World:
             r = await asyncio.to_thread(self.asr.transcribe, samples, prompt)
         return r.text, r.confidence, list(r.n_best), r.text_stock, time.perf_counter() - t0
 
-    async def controller_audio(self, samples: np.ndarray, sr: int = 16000) -> None:
-        """A controller utterance from the mic: transcribe, then treat as controller text."""
+    async def controller_audio(self, samples: np.ndarray, sr: int = 16000,
+                               on_text: Callable[[str], None] | None = None) -> None:
+        """A controller utterance from the mic: transcribe, then treat as controller text.
+
+        `on_text` hears the transcript the moment it exists, before anything is done with it: the
+        command bar's dictation final (app.py) goes out ahead of the transcript line and the pilots."""
         if not self._radio_open():
             return
         if len(samples) / sr < MIN_MIC_S:
@@ -1414,6 +1426,8 @@ class World:
 
         t0 = time.perf_counter()
         text, conf, n_best, stock, lat = await self._transcribe(samples, fast=True, on_stock=stock_heard)
+        if on_text is not None:
+            on_text(text)
         await self._controller(text, audio_ref=ref, conf=conf, n_best=n_best, text_stock=stock,
                                duration_s=len(samples) / sr, asr_latency=lat, late=late)
         log.info("controller: heard in %.2f s, understood %.2f s after the key was released: %r",
@@ -1868,14 +1882,18 @@ class World:
 
     # ------------------------------------------------------------------ world builder agent
 
-    async def agent_audio(self, samples: np.ndarray) -> str:
+    async def agent_audio(self, samples: np.ndarray, on_text: Callable[[str], None] | None = None) -> str:
         text, *_ = await self._transcribe(samples)
+        if on_text is not None:
+            on_text(text)  # the dictation final, before the agent answers
         return await self.agent_request(text)
 
     async def agent_request(self, text: str) -> str:
         from world_agent import handle  # local import: keeps the LLM optional
         reply, actions = await handle(self, text)
         self.emit(event("agent_reply", {"text": reply, "actions": actions}, t=self.sim.t))
+        # squack's voice: the same call belongs after the agent loop's `answer` event once it lands.
+        await speak_reply(self, reply)  # respects self.speak_replies; never raises
         return reply
 
     # tools the agent can call --------------------------------------------------------------

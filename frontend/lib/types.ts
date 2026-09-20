@@ -235,7 +235,8 @@ export interface InstructionCard {
 
 /** A clip is on the frequency right now. Sent before it has been transcribed. */
 export interface RadioAudio {
-  speaker: "pilot" | "controller";
+  /** squack: its spoken answer to the user (tower/voice.py); callsign is null */
+  speaker: "pilot" | "controller" | "squack";
   callsign: string | null;
   audio_ref: string;
   duration_s?: number;
@@ -367,6 +368,15 @@ export interface AgentReply {
   actions: string[];
 }
 
+/** What the mic is hearing while push-to-talk is held. Partials replace each other; the final is the last one for its channel. */
+export interface Dictation {
+  channel: PttChannel;
+  text: string;
+  final: boolean;
+  /** seconds of audio this text covers */
+  t_audio_s: number;
+}
+
 /** Nothing moves until "running". idle = no world loaded, ready = loaded and previewable. */
 export type Lifecycle = "idle" | "ready" | "running" | "paused" | "ended";
 
@@ -416,6 +426,8 @@ export interface SimState {
   auto_voice?: boolean;
   /** The one switch. On: you say the cards. Off: Tower sends them by data link. (voice === !auto_speak) */
   voice?: boolean;
+  /** squack says its answers on the frequency as well as writing them. */
+  speak_replies?: boolean;
   /** How fast the clock is really running. With voice on it drops to 1 whenever there is something to say. */
   clock_speed?: number;
   /** How the next pilot will answer. One shot, then back to "random". */
@@ -468,6 +480,7 @@ export type EventMap = {
   said_check: SaidCheck;
   alert_resolved: AlertResolved;
   risk: RiskReport;
+  dictation: Dictation;
 };
 
 export type EventType = keyof EventMap;
@@ -500,6 +513,8 @@ export type ClientMessage =
   /** Auto with Tower's voice (one exchange at a time), or silent: everything by data link, instantly. */
   | { type: "set_auto_voice"; enabled: boolean }
   | { type: "set_voice"; enabled: boolean }
+  /** squack speaks its answers on the frequency (state.speak_replies). */
+  | { type: "set_speak_replies"; enabled: boolean }
   | { type: "set_next_readback"; mode: NextReadback }
   | { type: "confirm_heard"; clearance_id: string }
   /** No position, or kind "random": Tower puts it where it will matter. Seeded, so it repeats. */
