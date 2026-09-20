@@ -1027,12 +1027,18 @@ class World:
 
     # ------------------------------------------------------------------ disruptions
 
-    def add_disruption(self, kind: str, x_nm: float | None = None, y_nm: float | None = None) -> Disruption | None:
+    def add_disruption(self, kind: str, x_nm: float | None = None, y_nm: float | None = None,
+                       target: str | None = None) -> Disruption | None:
         """Drop a disruption into the world and replan around it.
 
         `kind` is any key of disruptions.PROFILES, or "random". With no position, or for
         "random", it is put where it will matter: on the path of a flight a few minutes ahead.
         Seeded by the scenario and the count so far, so the same presses give the same result.
+
+        `target` is a callsign: "disrupt this flight". The disruption goes on that flight's own
+        planned path, far enough ahead to be avoided and near enough to matter, so the button
+        always does something and always to the aircraft the room is looking at. Placing one by
+        hand meant guessing where a path really runs under a tilted, height-exaggerated map.
         """
         if self.scenario is None:
             self.notice("Load a scenario first.", "warn")
@@ -1054,7 +1060,21 @@ class World:
         if kind == "emergency" and not regular:
             self.notice("An emergency needs a flight that is already in the sector. Press Start first.", "warn")
             return None
-        d = self._make_disruption(kind, x_nm, y_nm, rng)
+        spot = None
+        if target is not None:
+            a = self.sim.active.get(target)
+            if a is None or a.is_intruder:
+                self.notice(f"{target} is not in the sector.", "warn")
+                return None
+            if kind == "emergency":
+                x_nm, y_nm = a.x, a.y  # the flight itself: _make_disruption takes the nearest aircraft
+            else:
+                spot = self._ahead_of(target, DZ.PROFILES[kind])
+                if spot is None:
+                    self.notice(f"{target} is too close to the edge of the sector to put that ahead of it. Pick a flight with more of its path left.", "warn")
+                    return None
+                x_nm = y_nm = None
+        d = self._make_disruption(kind, x_nm, y_nm, rng, spot=spot)
         self.disruptions[d.id] = d
         if kind == "emergency":
             self._drop_pending_cards(d.id)
@@ -1076,6 +1096,52 @@ class World:
     def remove_disruption(self, disruption_id: str) -> None:
         if self.sim.remove_disruption(disruption_id):
             self._disruptions_ended([disruption_id], by_hand=True)
+
+    def _ahead_of(self, callsign: str, prof: "DZ.Profile") -> tuple[float, float, float, float, float | None] | None:
+        """(x, y, level, seconds ahead, radius) on a flight's planned path, for "disrupt this flight".
+
+        A zone is centred where the flight will be once it has its radius, the planner's margin
+        and room to turn in front of it: near enough that the detour starts now, far enough that
+        it is a detour and not a flight through the middle. It takes the small end of the kind's
+        size, which keeps the way round short. An intruder is timed to meet the flight four
+        minutes on. None if the path leaves the middle of the sector before that.
+        """
+        a = self.sim.active[callsign]
+        now = self.sim.t
+        half = (self.scenario.sector_nm if self.scenario else 200.0) / 2.0
+        circle = self.frame.shape == "circle"
+        path = next((p for p in (self.plan.paths if self.plan else []) if p.callsign == callsign and p.samples), None)
+        if path is not None:
+            arr = np.asarray(path.samples, dtype=float).reshape(-1, 4)
+            arr = arr[arr[:, 0] >= now - 1e-6]
+        if path is None or arr.shape[0] < 2:  # no plan: straight on
+            r = math.radians(a.hdg)
+            ts = np.arange(0.0, 900.0, 10.0)
+            arr = np.column_stack([now + ts, a.x + math.sin(r) * a.gs * ts / 3600.0, a.y + math.cos(r) * a.gs * ts / 3600.0,
+                                   np.full_like(ts, a.alt)])
+        run = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(arr[:, 1]), np.diff(arr[:, 2])))])  # NM along the path
+        others = [(b.x, b.y) for b in self.sim.active.values() if b.callsign != callsign and not b.is_intruder]
+        if prof.shape == "circle":
+            radius = float(prof.radius_nm[0])
+            wanted = [radius + room for room in (22.0, 17.0, 13.0)]  # NM from the aircraft to the centre
+        else:
+            radius = None
+            wanted = [a.gs * lead / 3600.0 for lead in (240.0, 200.0, 160.0)]
+        best = None
+        for d in wanted:
+            k = int(np.searchsorted(run, d))
+            if k >= arr.shape[0]:
+                continue
+            x, y = float(arr[k, 1]), float(arr[k, 2])
+            if not DZ.inside_sector(x, y, half * 0.85, circle):
+                continue
+            room = min((math.hypot(x - ox, y - oy) for ox, oy in others), default=999.0)
+            spot = (x, y, float(a.target_alt), max(60.0, float(arr[k, 0]) - now), radius)
+            if room >= (radius or 0.0) + 8.0:
+                return spot  # nobody else is under it
+            if best is None or room > best[0]:
+                best = (room, spot)
+        return best[1] if best else None
 
     def _busy_spot(self, rng: np.random.Generator, clear_nm: float = 0.0) -> tuple[float, float, float, float]:
         """(x, y, level, seconds ahead): where some flight will be in four to seven minutes.
@@ -1120,14 +1186,20 @@ class World:
         return min(regular, key=lambda a: (a.x_nm - x) ** 2 + (a.y_nm - y) ** 2).target_alt_ft
 
     def _make_disruption(self, kind: str, x_nm: float | None, y_nm: float | None,
-                         rng: np.random.Generator) -> Disruption:
+                         rng: np.random.Generator,
+                         spot: tuple[float, float, float, float, float | None] | None = None) -> Disruption:
+        """`spot` (from _ahead_of) replaces Tower's own choice of where it will matter."""
         prof = DZ.PROFILES[kind]
         now = self.sim.t
         half = (self.scenario.sector_nm if self.scenario else 200.0) / 2.0
         circle = self.frame.shape == "circle"
         placed = x_nm is not None and y_nm is not None
-        # A random zone is dropped ahead of the traffic with room to react, never on top of a plane.
-        tx, ty, level, lead = self._busy_spot(rng, clear_nm=prof.radius_nm[1] + 12.0 if prof.shape == "circle" else 0.0)
+        aimed_radius = None
+        if spot is not None:
+            tx, ty, level, lead, aimed_radius = spot
+        else:
+            # A random zone is dropped ahead of the traffic with room to react, never on top of a plane.
+            tx, ty, level, lead = self._busy_spot(rng, clear_nm=prof.radius_nm[1] + 12.0 if prof.shape == "circle" else 0.0)
         expires = now + DZ.uniform(rng, prof.duration_s) if prof.duration_s else None
         n = self.disruption_count
 
@@ -1179,7 +1251,7 @@ class World:
                            hdg_deg=hdg, gs_kt=gs, alt_ft=alt, t_start=now, expires_t=expires)
         else:
             x, y = (float(x_nm), float(y_nm)) if placed else (tx, ty)
-            r = DZ.uniform(rng, prof.radius_nm)
+            r = aimed_radius if aimed_radius is not None else DZ.uniform(rng, prof.radius_nm)
             floor, ceiling = 0.0, DZ.ALL_LEVELS_FT
             if prof.band_ft is not None:
                 lvl = DZ.round_level(self._level_near(x, y, level))

@@ -270,6 +270,8 @@ export interface DisruptionKindInfo {
   label: string;
   blurb: string;
   shape: "point" | "circle";
+  /** false: kept off the menu (the headset agent can still ask for it). Older backends send nothing: shown. */
+  menu?: boolean;
 }
 
 export interface Disruption {
@@ -501,7 +503,8 @@ export type ClientMessage =
   | { type: "set_next_readback"; mode: NextReadback }
   | { type: "confirm_heard"; clearance_id: string }
   /** No position, or kind "random": Tower puts it where it will matter. Seeded, so it repeats. */
-  | { type: "add_disruption"; kind: DisruptionKind | "random"; x_nm?: number; y_nm?: number }
+  // target: a callsign, "disrupt this flight". Tower puts it on that flight's own path, ahead of it.
+  | { type: "add_disruption"; kind: DisruptionKind | "random"; x_nm?: number; y_nm?: number; target?: string }
   | { type: "remove_disruption"; id: string }
   | { type: "speak_card"; id: string }
   | { type: "set_sliders"; buffer_nm: number; error_rate: number; noise: number };
