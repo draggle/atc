@@ -25,6 +25,7 @@ Every message is one JSON object `{"type": ..., "payload": {...}, "t": <sim seco
 | `resolver_step` | `ResolverStep` | each tool call of the resolver |
 | `disruption` | `Disruption` | when a disruption is added, and again with `active: false` when it expires, leaves the sector or is removed. See Disruptions below |
 | `scoreboard` | `Scoreboard` | every few seconds and after every verdict |
+| `risk` | `RiskReport` | at most once per sim second, only when some pair is at or above 0.05 or the previous report was not empty. See Predicted conflicts below |
 | `stats` | `{tier1_latency_s, transmissions, matches, alerts}` | rolling |
 | `agent_reply` | `{text, actions: string[]}` | after the world-builder agent handles a request |
 | `notice` | `{text, level: "info"\|"warn"\|"error"}` | an action was refused or something failed, for example the radio keyed before Start |
@@ -130,6 +131,53 @@ In Auto, Tower issues pending cards itself: one voice exchange at a time, the re
 - A data link reroute is the planned path: the transcript line reads "reroute heading 120 for 59 miles then direct PIKAR", and the aircraft flies the plan's own turn point (`PlannedPath.via`), then direct to its exit.
 - `InstructionCard.minor`: a shortcut too small to be worth a transmission. Never sent to the screen. In silent Auto it is applied quietly by data link.
 - `scoreboard` gained `rerouted`, `reaction_s`, `datalink_sent`, `in_zone_now`, `zone_incursions`.
+
+## Predicted conflicts
+
+TRD 07. Every tick after `sim.step`, the backend rolls the whole sky forward 120 s a few hundred times under noise (`backend/planner/risk.py`) and counts how often each nearby pair would lose separation. The result is the `risk` event; the same numbers feed the replan trigger and the confidence on each card.
+
+```
+{
+  "pairs": [
+    {
+      "a": "ACA123", "b": "WJA456",
+      "p_max": 0.42,            # highest LoS probability over the horizon
+      "t_first_s": 35.0,        # first sample where p >= 0.05, or null
+      "eta_s": 71.0,            # sample of maximum p, seconds from now
+      "min_sep_nm_p5": 3.1,     # 5th percentile of minimum separation
+      "curve": [[0, 0.0], [5, 0.0], ..., [120, 0.12]],   # (t, p) on the 5 s grid
+      "cpa_xy": [12.4, -31.0],  # mean closest-approach midpoint, flat NM
+      "spread_a_nm": 1.8, "spread_b_nm": 2.3            # lateral p5..p95 of each aircraft at eta
+    }
+  ],
+  "horizon_s": 120.0,
+  "n_rollouts": 256,
+  "elapsed_ms": 18.4,
+  "futures_per_s": 167000.0
+}
+```
+
+- `pairs` is sorted by `p_max` descending and holds only pairs with `p_max >= 0.05` (`SHOW_P`). Pairs further apart than 60 NM or 4,000 ft now are never rolled out and never appear.
+- Cadence: at most once per sim second. Not sent when this report and the previous one are both empty, so a quiet sky costs nothing on the wire. A report that has just gone empty is sent once so the screen can drop its cones.
+- `n_rollouts` adapts to a per-tick budget (25 ms at 12 aircraft, 150 ms at 100): it halves when the last call ran over and doubles back up to 256 when it ran under half. The floor is 32. `elapsed_ms` is that call's wall time and `futures_per_s` is `n_rollouts × aircraft / elapsed`, measured that tick. Show the measured number; never replace it with a constant.
+- Thresholds live in `backend/planner/risk.py` and nowhere else: `REPLAN_P` 0.30 triggers `_replan("risk A/B")`, rate-limited to one risk replan per pair per 20 s, and `SHOW_P` 0.05 is the display floor. The screen may add hysteresis (show at 0.05, hide below 0.02) and a 1 s fade so cones do not flicker.
+- Drawing: for each pair, two wedges from each aircraft's position along its intended track to `cpa_xy`, half-width `spread_a_nm` and `spread_b_nm`, converted with the NM to lat/lon helper in `frontend/lib/geo.ts`. Fill alpha 0.10 + 0.35 × `p_max`. Label "LoS 42% · 71 s" at `cpa_xy`.
+
+`InstructionCard` gains two fields, both `null` until a risk replan produced the card:
+
+| field | meaning |
+|---|---|
+| `confidence` | `(1 - risk_after) × margin_factor`, clamped to [0.05, 0.99]. `margin_factor` is 1 when the chosen path beat the runner-up by 20 percent or more of its cost, falling linearly to 0.5 when they tied. Shown, not acted on: gating on it is TRD 06 item A3 |
+| `risk_after` | the residual `p_max` on the pairs this card's aircraft is in, re-scored on the new plan before the card was sent. The strip shows both terms so the number is explainable on demand |
+
+`Scoreboard` gains four fields:
+
+| field | meaning |
+|---|---|
+| `conflicts_predicted` | pairs that first crossed 0.30 in a risk report |
+| `conflicts_resolved` | of those, pairs that later dropped below 0.05 without a loss of separation |
+| `futures_per_s` | the last report's measured `futures_per_s`; `null` before the first report |
+| `cones_now` | pairs in the last report, that is the number of cones on the map now |
 
 ## Voice on, voice off
 

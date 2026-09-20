@@ -12,6 +12,8 @@ import type {
   OpenClearance,
   Plan,
   ResolverStep,
+  RiskPair,
+  RiskReport,
   Scoreboard,
   SimState,
   Stats,
@@ -46,6 +48,15 @@ export interface Track {
 export interface ActiveNotice extends Notice {
   id: number;
   at: number; // ms wall clock
+}
+
+/** One pair the map is drawing, or has just stopped drawing (performance.now ms). */
+export interface SeenRisk {
+  pair: RiskPair;
+  /** when it first appeared, for the fade-in */
+  first: number;
+  /** when a report first arrived without it (or with it under the keep floor); null while it is live */
+  gone: number | null;
 }
 
 export interface Sliders {
@@ -101,6 +112,10 @@ export interface TowerState {
   /** callsign -> what Tower just understood for it ("H270 ↑FL360"), shown on the aircraft for a few seconds */
   acks: Record<string, { text: string; at: number }>;
   showStock: boolean;
+  /** The latest Monte Carlo report (TRD 07): every pair with p_max >= 0.05. */
+  risk: RiskReport | null;
+  /** "A|B" -> that pair's latest numbers and timing, so a cone fades in and outlasts a one-report dip. */
+  riskPairs: Record<string, SeenRisk>;
 }
 
 /** The short form of an instruction, as a radar data block would show it. */
@@ -150,6 +165,8 @@ export const initialState: TowerState = {
   onAir: null,
   acks: {},
   showStock: false,
+  risk: null,
+  riskPairs: {},
 };
 
 export type Action =
@@ -193,6 +210,12 @@ function differs(a: LonLatAlt[], b: LonLatAlt[]): boolean {
 }
 
 const FLASH_MS = 4000;
+/** Cone hysteresis: shows at 0.05, kept while p_max stays above 0.02, and for this long after it leaves the report. */
+const RISK_SHOW_P = 0.05;
+const RISK_KEEP_P = 0.02;
+export const RISK_HOLD_MS = 1000;
+/** A cone reaches full opacity this long after first appearing. */
+export const RISK_FADE_IN_MS = 600;
 
 let noticeSeq = 0;
 let staleBackendWarned = false;
@@ -222,8 +245,12 @@ function clearWorld(state: TowerState): TowerState {
     disruptions: {},
     selected: null,
     follow: false,
+    risk: null,
+    riskPairs: {},
   };
 }
+
+export const riskKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
 
 function upsertClearance(state: TowerState, c: OpenClearance): TowerState {
   return { ...state, clearances: { ...state.clearances, [c.id]: c } };
@@ -411,6 +438,26 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
     case "scoreboard":
       return { ...state, scoreboard: ev.payload };
 
+    case "risk": {
+      const now = performance.now();
+      const riskPairs: Record<string, SeenRisk> = {};
+      // Pairs already drawn stay while they are above the keep floor; new ones need the show floor.
+      // Reports come at most once a second, so the fade-out keys off the report that dropped the
+      // pair, never off time since the last report: a live cone must not pulse between reports.
+      for (const pair of ev.payload.pairs) {
+        const key = riskKey(pair.a, pair.b);
+        const seen = state.riskPairs[key];
+        const live = seen && seen.gone === null ? pair.p_max >= RISK_KEEP_P : pair.p_max >= RISK_SHOW_P;
+        if (live) riskPairs[key] = { pair, first: seen && seen.gone === null ? seen.first : now, gone: null };
+      }
+      for (const [key, seen] of Object.entries(state.riskPairs)) {
+        if (riskPairs[key]) continue;
+        const gone = seen.gone ?? now;
+        if (now - gone < RISK_HOLD_MS) riskPairs[key] = { ...seen, gone };
+      }
+      return { ...state, risk: ev.payload, riskPairs };
+    }
+
     case "stats":
       return { ...state, stats: ev.payload };
 
@@ -464,6 +511,29 @@ export function reducer(state: TowerState, action: Action): TowerState {
 // ---------------------------------------------------------------------------
 // Derived helpers
 // ---------------------------------------------------------------------------
+
+/** The cones to draw right now: each pair still inside its hold time, with its opacity factor (fade-in, then fade-out over the hold). */
+export function visibleRisk(state: TowerState, now: number): { key: string; pair: RiskPair; fade: number }[] {
+  const out: { key: string; pair: RiskPair; fade: number }[] = [];
+  for (const [key, seen] of Object.entries(state.riskPairs)) {
+    const gone = seen.gone === null ? 0 : now - seen.gone;
+    if (gone >= RISK_HOLD_MS) continue;
+    const fadeIn = Math.min(1, (now - seen.first) / RISK_FADE_IN_MS);
+    const fadeOut = 1 - gone / RISK_HOLD_MS;
+    out.push({ key, pair: seen.pair, fade: Math.max(0, Math.min(fadeIn, fadeOut)) });
+  }
+  return out.sort((x, y) => y.pair.p_max - x.pair.p_max);
+}
+
+/** The most likely predicted conflict involving this aircraft, if any is on screen. */
+export function riskFor(state: TowerState, callsign: string | null, now: number): { other: string; pair: RiskPair } | null {
+  if (!callsign) return null;
+  for (const { pair } of visibleRisk(state, now)) {
+    if (pair.a === callsign) return { other: pair.b, pair };
+    if (pair.b === callsign) return { other: pair.a, pair };
+  }
+  return null;
+}
 
 /** callsign -> "alert" | "resolving", for radar highlighting */
 export function highlightMap(state: TowerState): Record<string, "alert" | "resolving"> {
