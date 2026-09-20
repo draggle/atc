@@ -49,3 +49,11 @@ Pinned: `maplibre-gl@5`. Version 6 fails to load its worker under Next.js dev.
 - An alert must be impossible to miss and must never fire for a correct readback in the demo path.
 - Everything must work on one laptop in a loud room. Push-to-talk is required.
 - Cap the number of cards on screen. The exact cap is an open team decision.
+
+## The map keeps its colours
+
+The panels went monochrome with the squack restyle; the map did not. On the map colour is information: cyan is squack's plan, amber is anything that changed, red is something wrong, a storm is purple, closed airspace red, a launch amber. The colour table and `ZONE_LOOK` at the top of `components/MapView.tsx` are the single place for them, and the legend in `SettingsSheet.tsx` uses the same values. Do not flatten them to white again without asking: it was tried, and lines could no longer be told apart.
+
+## The right side is one column
+
+Top to bottom of the window: the alert (when there is one), the **Command Backlog** (`InstructionCards`, the tall part, scrolls inside itself), **Next readback** (`NextReadback.tsx`: By chance, Correct, Wrong value, Wrong plane, No reply; one shot, highlighted while armed, disabled in Autonomous), and **Analytics** resting on the bottom edge, opening upwards and taking its room from the list. Next readback is there and not only in Settings because it is pressed in the same breath as saying a card.

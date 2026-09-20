@@ -33,47 +33,46 @@ const BASEMAP = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.jso
 const FALLBACK_STYLE: StyleSpecification = {
   version: 8,
   sources: {},
-  layers: [{ id: "ink", type: "background", paint: { "background-color": "#0a0a0b" } }],
+  layers: [{ id: "ink", type: "background", paint: { "background-color": "#04060a" } }],
 };
 
-// squack: white ink at different opacities. Colour only when it means something: green = live or
-// correct, red = wrong or a predicted conflict, amber = changed or being checked. Values match the
-// tokens in globals.css (--ok #3ddc84, --warn #f5b83d, --bad #ff5a6e, --bg #0a0a0b, --muted #8a8f98).
-const WHITE = [255, 255, 255] as const;
-const RED = [255, 90, 110] as const;
-const AMBER = [245, 184, 61] as const;
-const GREEN = [61, 220, 132] as const;
-const MUTED = [138, 143, 152] as const;
-const white = (a: number): RGBA => [WHITE[0], WHITE[1], WHITE[2], Math.round(255 * a)];
+// The map keeps the night-operations-room colours: one cool signal colour for Tower's plan (cyan),
+// one warm one for anything that changed (amber), red only for something wrong, and each kind of
+// zone in its own hue. The panels around it went monochrome with the squack restyle; on the map
+// colour is information (whose line is whose, what kind of zone that is), so it stays.
+const RED = [255, 77, 94] as const;
+const AMBER = [255, 176, 46] as const;
+const GREEN = [52, 211, 153] as const;
+const MUTED = [160, 174, 190] as const;
 const C = {
-  flown: white(0.22),
-  flownDim: white(0.14),
-  tower: white(0.85),
+  flown: [132, 146, 162, 150] as RGBA,
+  flownDim: [132, 146, 162, 70] as RGBA,
+  tower: [70, 200, 255, 215] as RGBA,
   flash: [...AMBER, 255] as RGBA,
-  rerouted: [...AMBER, 190] as RGBA, // still going round something that is still there
-  aircraft: white(1),
+  rerouted: [...AMBER, 150] as RGBA, // still going round something that is still there
+  aircraft: [224, 232, 242, 255] as RGBA,
   intruder: [...RED, 255] as RGBA,
   mayday: [...AMBER, 255] as RGBA,
   alert: [...RED, 255] as RGBA,
   resolving: [...AMBER, 255] as RGBA,
-  watching: white(0.5),
-  stem: white(0.2),
-  waypoint: white(0.45),
-  gate: white(0.8),
-  sector: white(0.3),
-  trail: white(0.28),
-  ghost: white(0.12),
-  ink: [10, 10, 11, 255] as RGBA,
+  watching: [34, 211, 238, 255] as RGBA,
+  stem: [224, 232, 242, 60] as RGBA,
+  waypoint: [160, 174, 190, 190] as RGBA,
+  gate: [70, 200, 255, 220] as RGBA,
+  sector: [70, 200, 255, 90] as RGBA,
+  trail: [224, 232, 242, 90] as RGBA,
+  ghost: [226, 232, 240, 70] as RGBA,
+  ink: [4, 6, 10, 255] as RGBA,
   muted: [...MUTED, 255] as RGBA,
-  zoneFill: white(0.06),
-  zoneLine: white(0.3),
+  zoneFill: [168, 85, 247, 46] as RGBA,
+  zoneLine: [190, 130, 255, 150] as RGBA,
   onAir: GREEN,
-  // The issue drawn beside a selected aircraft with a standing alert: white is what was cleared,
+  // The issue drawn beside a selected aircraft with a standing alert: cyan is what was cleared,
   // red is what was read back or flown instead.
-  cleared: white(1),
+  cleared: [70, 200, 255, 255] as RGBA,
   wrong: [...RED, 255] as RGBA,
   warn: [...AMBER, 255] as RGBA,
-  pill: [10, 10, 11, 235] as RGBA,
+  pill: [6, 9, 14, 235] as RGBA,
   risk: [RED[0], RED[1], RED[2]] as [number, number, number],
 };
 
@@ -168,12 +167,12 @@ const iconOf = (p: { is_intruder: boolean; threat?: string | null }): keyof type
 const tintOf = (p: { is_intruder: boolean; threat?: string | null }): RGBA =>
   p.threat === "emergency" ? C.mayday : C.intruder;
 
-// Every zone is the same quiet white volume; what it is, is written on it.
+// Each kind of zone in its own colour: a storm is purple, closed airspace red, a launch amber.
 const ZONE_LOOK: Record<string, { fill: RGBA; line: RGBA; top: number }> = {
-  storm: { fill: C.zoneFill, line: C.zoneLine, top: 45000 },
-  closed: { fill: C.zoneFill, line: C.zoneLine, top: 45000 },
-  rocket: { fill: C.zoneFill, line: C.zoneLine, top: 60000 },
-  intruder_buffer: { fill: white(0.04), line: white(0.22), top: 1500 },
+  storm: { fill: [168, 85, 247, 46], line: [190, 130, 255, 150], top: 45000 },
+  closed: { fill: [255, 77, 94, 40], line: [255, 77, 94, 160], top: 45000 },
+  rocket: { fill: [255, 176, 46, 38], line: [255, 190, 90, 170], top: 60000 },
+  intruder_buffer: { fill: [255, 77, 94, 22], line: [255, 77, 94, 150], top: 1500 },
 };
 const zoneLook = (kind: string) => ZONE_LOOK[kind] ?? ZONE_LOOK.storm;
 const fl = (ft: number) => `FL${String(Math.round(ft / 100)).padStart(3, "0")}`;
@@ -199,19 +198,17 @@ function quietBasemap(map: MapLibreMap) {
   try {
     for (const layer of map.getStyle()?.layers ?? []) {
       if (layer.type === "symbol") {
-        map.setPaintProperty(layer.id, "text-color", "#3a3d44");
-        map.setPaintProperty(layer.id, "text-halo-color", "#0a0a0b");
-        map.setPaintProperty(layer.id, "text-opacity", 0.7);
-        map.setPaintProperty(layer.id, "icon-opacity", 0.25);
+        map.setPaintProperty(layer.id, "text-color", "#4a5666");
+        map.setPaintProperty(layer.id, "text-halo-color", "#04060a");
+        map.setPaintProperty(layer.id, "text-opacity", 0.85);
+        map.setPaintProperty(layer.id, "icon-opacity", 0.35);
       } else if (layer.type === "line" && /road|highway|street|rail|tunnel|bridge/i.test(layer.id)) {
-        map.setPaintProperty(layer.id, "line-opacity", 0.2);
+        map.setPaintProperty(layer.id, "line-opacity", 0.25);
       }
     }
-    // A sheet of ground colour over the whole basemap: the coastlines stay legible, the white
-    // traffic is the brightest thing on screen.
-    if (!map.getLayer(DIM_LAYER)) {
-      map.addLayer({ id: DIM_LAYER, type: "background", paint: { "background-color": "#0a0a0b", "background-opacity": 0.35 } });
-    }
+    // No dimming sheet over the basemap: the land and the lakes read as they did before the
+    // restyle, and the coloured traffic is still the brightest thing on the screen.
+    if (map.getLayer(DIM_LAYER)) map.removeLayer(DIM_LAYER);
   } catch {
     /* a style without these layers is fine */
   }
@@ -629,7 +626,7 @@ export default function MapView() {
       getPosition: (d: { centre: [number, number, number] }) => d.centre,
       getText: (z: Zone) => `${z.id}\n${levelsOf(z)}${minutesLeft(z.expires_t, sim?.t ?? 0)}`,
       getSize: 10.5,
-      getColor: C.muted,
+      getColor: (z: Zone) => { const c = zoneLook(z.kind).line; return [c[0], c[1], c[2], 255] as RGBA; },
       getTextAnchor: "middle",
       getAlignmentBaseline: "center",
       lineHeight: 1.2,
@@ -658,7 +655,7 @@ export default function MapView() {
       id: "tower-plan",
       data: pathData.tower,
       getPath: (d: { path: [number, number, number][] }) => d.path,
-      getColor: (d: { callsign: string }) => ((flashUntil[d.callsign] ?? 0) > wallNow ? C.flash : d.callsign === selected ? white(1) : avoiding.has(d.callsign) ? C.rerouted : C.tower),
+      getColor: (d: { callsign: string }) => ((flashUntil[d.callsign] ?? 0) > wallNow ? C.flash : d.callsign === selected ? ([255, 255, 255, 235] as RGBA) : avoiding.has(d.callsign) ? C.rerouted : C.tower),
       getWidth: (d: { callsign: string }) => ((flashUntil[d.callsign] ?? 0) > wallNow ? 3 : d.callsign === selected ? 2.5 : 1.5),
       widthUnits: "pixels",
       capRounded: true,
@@ -705,7 +702,7 @@ export default function MapView() {
       id: "ghost-paths",
       data: ghostList,
       getPath: (g: { path: [number, number, number, number][] }) => g.path.map(([lon, lat, alt]) => [lon, lat, zOf(alt)] as [number, number, number]),
-      getColor: (g: { born: number; until: number }) => [...WHITE, Math.round(C.ghost[3] * Math.max(0, (g.until - wall) / (g.until - g.born)))] as RGBA,
+      getColor: (g: { born: number; until: number }) => [226, 232, 240, Math.round(150 * Math.max(0, (g.until - wall) / (g.until - g.born)))] as RGBA,
       getWidth: 1.5,
       widthUnits: "pixels",
       extensions: [new PathStyleExtension({ dash: true })],
@@ -723,7 +720,7 @@ export default function MapView() {
       getSize: 24,
       sizeUnits: "pixels",
       billboard: false,
-      getColor: (g: { fade: number }) => [...WHITE, Math.round(90 * g.fade)] as RGBA,
+      getColor: (g: { fade: number }) => [226, 232, 240, Math.round(120 * g.fade)] as RGBA,
       parameters: ALWAYS_ON_TOP,
       updateTriggers: { getPosition: [now, exaggeration], getAngle: now, getColor: Math.floor(now / 500) },
     }),
@@ -790,7 +787,7 @@ export default function MapView() {
       getPosition: (p: Shown) => [p.lon, p.lat, 0],
       getRadius: 2,
       radiusUnits: "pixels",
-      getFillColor: (p: Shown) => (p.is_intruder ? [...RED, 140] : white(0.4)),
+      getFillColor: (p: Shown) => (p.is_intruder ? [...RED, 140] : [224, 232, 242, 110]),
     }),
 
     // The issue's geometry sits under the aircraft glyphs and over everything else. Empty unless
@@ -845,7 +842,7 @@ export default function MapView() {
         const [lat, lon] = destinationPoint(p.lat, p.lon, p.target_hdg_deg ?? p.hdg_deg, (p.gs_kt * CLEARED_VECTOR_MIN) / 60);
         return [lon, lat, zOf(p.alt_ft)];
       },
-      getColor: (p: Shown) => (angleBetween(p.hdg_deg, p.target_hdg_deg ?? p.hdg_deg) > 3 ? C.warn : white(0.55)),
+      getColor: (p: Shown) => (angleBetween(p.hdg_deg, p.target_hdg_deg ?? p.hdg_deg) > 3 ? C.warn : ([70, 200, 255, 140] as RGBA)),
       getWidth: (p: Shown) => (angleBetween(p.hdg_deg, p.target_hdg_deg ?? p.hdg_deg) > 3 ? 2 : 1.5),
       widthUnits: "pixels",
       parameters: ALWAYS_ON_TOP,
@@ -869,7 +866,7 @@ export default function MapView() {
         if (h === "resolving") return C.resolving;
         if (p.callsign === talking) return [...C.onAir, Math.round(255 * (1 - pulse * 0.6))] as RGBA; // on the air
         if (watching.includes(p.callsign)) return C.watching;
-        return white(0.8);
+        return [255, 255, 255, 200] as RGBA;
       },
       parameters: ALWAYS_ON_TOP,
       updateTriggers: { getRadius: now, getLineColor: now, getPosition: exaggeration },
@@ -899,7 +896,7 @@ export default function MapView() {
       getPosition: (p: Shown) => [p.lon, p.lat, zOf(p.alt_ft)],
       getText: (p: Shown) => blockLines(p)[0],
       getSize: (p: Shown) => (dense && !important(p) ? 9.5 : 11),
-      getColor: (p: Shown) => (p.is_intruder ? tintOf(p) : dense && !important(p) ? white(0.75) : white(0.96)),
+      getColor: (p: Shown) => (p.is_intruder ? tintOf(p) : dense && !important(p) ? ([200, 210, 222, 190] as RGBA) : ([224, 232, 242, 245] as RGBA)),
       getPixelOffset: [20, -10],
       getTextAnchor: "start",
       getAlignmentBaseline: "top",
