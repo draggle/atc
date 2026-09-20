@@ -878,7 +878,13 @@ class World:
             return RISK.RiskReport(n_rollouts=0)
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         if adapt:
-            budget_ms = 25.0 if len(states) <= 15 else 150.0
+            # Above 1x a tick is a quarter of a second and the planner needs most of it. Measured on
+            # the real Europe hour (about 60 aircraft) at 20x: with 150 ms allowed here the tick ran
+            # to a median of 140 ms and 320 ms at the 95th percentile, over its 250 ms, and the clock
+            # fell behind. 40 ms settles at 64 rollouts there, which is still 1.6 % per future
+            # against a 30 % threshold.
+            fast = self.clock_speed() > 1.0
+            budget_ms = 25.0 if len(states) <= 15 else (40.0 if fast else 150.0)
             if elapsed_ms > budget_ms:
                 self._risk_n = max(RISK_N_MIN, self._risk_n // 2)
             elif elapsed_ms < budget_ms / 2:
