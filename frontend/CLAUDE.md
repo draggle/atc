@@ -17,7 +17,7 @@ Calm and quiet. Tower says nothing unless it has something worth saying, and it 
 - **Flight strip.** `components/FlightStrip.tsx`: everything Tower knows about the selected aircraft, with follow-camera.
 - **Plan toggle.** Fixed routes versus Tower's plan, with a savings counter.
 - **Instruction cards.** One per instruction Tower wants issued: the phrase to say, a one-line reason, and urgency. States are pending, spoken, validated, verified, and error. Push-to-talk to speak a card.
-- **Alert.** A red card with expected versus heard, error type, confidence, a play button for the clip, and the correction to say.
+- **Alert.** A red card with expected versus heard, error type, confidence, a play button for the clip, and the correction to say. Click the card (or Enter on it; Space stays push-to-talk) to `focus` the aircraft: the camera flies in and follows, the flight strip opens with the same issue block on top, and the map draws the issue from `lib/issue.ts`: cyan is what was cleared, red is what was read back or is being flown. Level: rings on the stem. Fix: lines to each fix. Heading: two vectors. Anything else: the label alone.
 - **Agent trace.** Expandable steps the resolver took and what it found. This is the Rox demo.
 - **Transcript.** Speaker tag, callsign, text, and a confidence bar, with the stock versus tuned toggle.
 - **Scoreboard.** Miles and time saved, losses of separation, errors caught, response times. Only numbers we measured.
