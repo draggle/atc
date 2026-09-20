@@ -165,3 +165,6 @@ input[type="range"] { accent-color: var(--accent); }
 .scrim { background: rgba(10, 10, 11, 0.8); }
 /* .hint: one small muted line that floats over the map, for example "World loaded, press Start". */
 .hint { display: inline-flex; align-items: center; gap: 4px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--glass); color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+/* Command bar: the thin caret at the end of the typewriter placeholder, blinking only while a line is being typed. */
+@keyframes cb-caret { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
