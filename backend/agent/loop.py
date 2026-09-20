@@ -244,11 +244,18 @@ class SquackAgent:
         return ans  # World speaks it (tower.voice.speak_reply) once the coroutine that asked has it
 
 
+def _is_descriptor(c: Any) -> bool:
+    """A card the screen can draw, not a tool's own row. `query.cards` returns instruction-card
+    briefs under the same key, and those have no `kind`: without this guard they reached the
+    registry as blank cards."""
+    return isinstance(c, dict) and isinstance(c.get("kind"), str) and c["kind"] in CD.KINDS
+
+
 def _cards_of(result: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
     if isinstance(result.get("cards"), list):
-        out += [c for c in result["cards"] if isinstance(c, dict)]
-    elif isinstance(result.get("card"), dict):
+        out += [c for c in result["cards"] if _is_descriptor(c)]
+    if _is_descriptor(result.get("card")):
         out.append(result["card"])
     return out
 

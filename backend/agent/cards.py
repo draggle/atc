@@ -113,6 +113,9 @@ class StepsCard(Card):
 
 AnyCard = TextCard | TableCard | ListCard | AircraftCard | ComparisonCard | ChartCard | StepsCard
 
+#: Every kind the screen can draw. `loop._is_descriptor` checks against this.
+KINDS = frozenset({"text", "table", "list", "aircraft", "comparison", "chart", "steps"})
+
 
 def dump(card: Card) -> dict[str, Any]:
     return card.model_dump(exclude_none=True)
