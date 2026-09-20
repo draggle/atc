@@ -30,6 +30,8 @@ export function routeText(text: string, callsigns: string[]): "radio" | "agent" 
   const t = text.trim().toLowerCase();
   if (!t) return "agent";
   if (/^(hey |ok |okay )?squack\b/.test(t)) return "agent";
+  // A question is always for squack, even when it names an aircraft: "why did you turn ACA123".
+  if (/^(why|what|who|which|how|when|where|is|are|can|could|should|do|does|did)\b/.test(t)) return "agent";
   const hasCallsign = callsigns.some((cs) => t.includes(cs.toLowerCase()));
   if (hasCallsign && RADIO_VERBS.test(t)) return "radio";
   if (RADIO_VERBS.test(t) && DIGIT_WORDS.test(t) && !SQUACK_WORDS.test(t)) return "radio";

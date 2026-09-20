@@ -3,7 +3,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
 import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
-import { TowerStoreProvider, useTowerDispatch, useTowerState } from "@/lib/store";
+import { DICTATION_HOLD_MS, TowerStoreProvider, useTowerDispatch, useTowerState } from "@/lib/store";
 import { connectTower, type TowerClient } from "@/lib/ws";
 import { radio } from "@/lib/radio";
 import type { ClientMessage } from "@/lib/types";
@@ -42,7 +42,14 @@ function ClientProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const client = connectTower({
       forceMock,
-      onEvent: (event) => dispatch({ type: "event", event }),
+      onEvent: (event) => {
+        dispatch({ type: "event", event });
+        // A dictation final is held on the command bar for a beat, then the slice is cleared (the
+        // reducer checks the age, so a newer final is never cleared by an older timer).
+        if (event.type === "dictation" && event.payload.final) {
+          setTimeout(() => dispatch({ type: "dictation_clear" }), DICTATION_HOLD_MS + 20);
+        }
+      },
       onStatus: (connection) => dispatch({ type: "connection", connection }),
       onLive: () => dispatch({ type: "reset" }),
     });
