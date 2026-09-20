@@ -283,6 +283,13 @@ Measured: futures per second at 12 / 80 / 150 aircraft: TBD (integration pass fi
 - [ ] Futures per second on the scoreboard is the measured number for this laptop, not a constant
 - [ ] 396 tests plus the new `test_risk.py` and `test_world_risk.py` pass
 
+**Integration pass after merging main (Sunday, early).** Main merged into this branch with no conflicts; 438 backend tests, production build clean. What the PR had not measured:
+- **Scale.** Tick cost with the prediction on, real Europe hour: 33 aircraft 23 ms at 1x and 65 ms at 20x; about 60 aircraft 57 ms at 1x, and at 20x a median of 141 ms with 318 ms at the 95th percentile, over the 250 ms a tick has above 1x, so the clock fell behind. The prediction's budget above 1x is now 40 ms (it was 150 ms whatever the clock was doing); it settles at 64 to 128 rollouts there and the same run is 69 ms median, 248 ms at the 95th percentile, which is the periodic replan, not the prediction.
+- **It never speaks with voice off.** Demo, dense and the real Europe hour with four disruptions each: no pair ever reached the 5 % display floor. Tower's plan keeps everyone 8 NM apart and data link applies it in the same second, so there is nothing left to predict. Cones are a voice-on thing.
+- **Voice on is where it earns its place.** With cards left unsaid, pairs appear and climb to 100 % (demo: 4 pairs, 5 predicted; dense: 3 pairs, 7 predicted), which is the conflict the unsaid card was for. For the pitch: leave the DAL789/UAL210 card unsaid, watch the wedge grow, say the card, watch it clear.
+- **No extra churn.** One controller saying one card every 14 s after a storm: still one heading and one back-on-course card per flight, no loss of separation, nobody in the storm. Voice off stress run (six disruptions, four scenarios): same numbers as before the merge.
+- The whole test suite now takes about 2.5 minutes instead of 35 s, because every tick of every world in every test runs the prediction. `World.risk_predict` is injectable if that becomes a nuisance.
+
 ### Phase 7. Scale and robustness. About 2 hours
 - [ ] Planner: initial plan for 150 flights in under 5 seconds, replans inside their budget. If not, cap the scenario and say so
 - [ ] The investigating agent runs off the clock's critical path so the map never freezes while it thinks
