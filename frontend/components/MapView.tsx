@@ -77,6 +77,10 @@ const C = {
 };
 
 const FT_TO_M = 0.3048;
+/** Two fingers on the trackpad swing the camera round the scene: degrees per pixel of swipe. */
+const ORBIT_DEG_PER_PX = 0.22;
+const TILT_DEG_PER_PX = 0.16;
+const MAX_PITCH = 78;
 /** "Understood" on the aircraft: how long the chip stays, and the last part of that it fades over. */
 const ACK_SHOWS_MS = 7000;
 const ACK_FADES_MS = 1500;
@@ -249,6 +253,27 @@ export default function MapView() {
   const topDown = view.topDown;
   const topDownRef = useRef(topDown);
   topDownRef.current = topDown;
+  // What two fingers on the trackpad do (settings sheet, store.view). "orbit": swing round the scene
+  // and tilt it, like any 3D viewer (pinch still zooms). "zoom": the old behaviour, for a mouse wheel.
+  const twoFingers = view.twoFingers;
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || twoFingers !== "orbit") return;
+    const onWheel = (ev: WheelEvent) => {
+      const map = mapRef.current;
+      // Only over the map itself: a panel with a list in it still scrolls. A pinch reaches the
+      // browser as ctrl+wheel, and that stays a zoom.
+      if (!map || ev.ctrlKey || ev.metaKey || (ev.target as HTMLElement | null)?.tagName !== "CANVAS") return;
+      ev.preventDefault();
+      ev.stopPropagation(); // before the map's own scroll-zoom sees it
+      const m = map.getMap();
+      const pitch = Math.max(0, Math.min(MAX_PITCH, m.getPitch() + ev.deltaY * TILT_DEG_PER_PX));
+      m.jumpTo({ bearing: m.getBearing() - ev.deltaX * ORBIT_DEG_PER_PX, pitch });
+    };
+    el.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    return () => el.removeEventListener("wheel", onWheel, { capture: true });
+  }, [twoFingers, loaded]);
   const [fontReady, setFontReady] = useState(false);
   // The Disrupt control lives in the top bar (components/DisruptMenu.tsx); the map only owns the
   // placing click, so the armed kind is in the store where both can see it.
@@ -1035,12 +1060,12 @@ export default function MapView() {
   }, []);
 
   return (
-    <div className={`absolute inset-0 ${dropMode ? "cursor-crosshair" : ""}`}>
+    <div ref={wrapRef} className={`absolute inset-0 ${dropMode ? "cursor-crosshair" : ""}`}>
       <MapGL
         ref={mapRef}
         mapStyle={mapStyle}
         initialViewState={{ longitude: frame.lon0, latitude: frame.lat0, zoom: 5.4, pitch: 52, bearing: -14 }}
-        maxPitch={78}
+        maxPitch={MAX_PITCH}
         attributionControl={{ compact: true }}
         onDragStart={() => {
           // Panning away by hand lets go of the aircraft (an alert card's focus turns follow on

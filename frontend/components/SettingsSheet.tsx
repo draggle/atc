@@ -195,6 +195,12 @@ export default function SettingsSheet() {
                 <button aria-pressed={view.topDown} onClick={() => dispatch({ type: "set_view", view: { topDown: true } })}>Top down</button>
               </div>
             </Row>
+            <Row label="Two fingers" hint="On a trackpad: swing the view round the scene and tilt it, like a 3D viewer (pinch zooms). Zoom is the old behaviour, which is what a mouse wheel wants.">
+              <div className="seg">
+                <button aria-pressed={view.twoFingers === "orbit"} onClick={() => dispatch({ type: "set_view", view: { twoFingers: "orbit" } })}>Orbit</button>
+                <button aria-pressed={view.twoFingers === "zoom"} onClick={() => dispatch({ type: "set_view", view: { twoFingers: "zoom" } })}>Zoom</button>
+              </div>
+            </Row>
             <Row label="Lines">
               <div className="seg">
                 {(["today", "tower", "both", "changed"] as const).map((v) => (
@@ -225,7 +231,7 @@ export default function SettingsSheet() {
               </li>
             </ul>
             <p className="text-xs text-muted">
-              Drag to pan, scroll to zoom, right-drag to tilt and rotate.
+              {view.twoFingers === "orbit" ? "Drag to pan. Two fingers: swing round and tilt. Pinch to zoom." : "Drag to pan, scroll to zoom, right-drag to tilt and rotate."}
               {real && (live
                 ? connection === "mock"
                   ? " Mock snapshot: scripted traffic, not the real sky. Start the backend for a live one."

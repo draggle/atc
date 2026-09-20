@@ -194,7 +194,7 @@ export const initialState: TowerState = {
   notices: [],
   setupOpen: false,
   settingsOpen: false,
-  view: { topDown: false, exaggeration: 6 },
+  view: { topDown: false, exaggeration: 6, twoFingers: "orbit" },
   selected: null,
   follow: false,
   focusSeq: 0,
@@ -258,6 +258,8 @@ export interface ViewSettings {
   topDown: boolean;
   /** altitude exaggeration, 1 to 14 */
   exaggeration: number;
+  /** what two fingers on the trackpad do: swing round the scene and tilt it, or zoom (a mouse wheel wants zoom) */
+  twoFingers: "orbit" | "zoom";
 }
 
 export interface Ghost {
@@ -411,7 +413,8 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
       const simClock = { t, at: now };
       const zones = Array.isArray(ev.payload) ? undefined : ev.payload.zones; // drifting storms
       const clock = Array.isArray(ev.payload) ? undefined : ev.payload.clock_speed;
-      const sim = state.sim ? { ...state.sim, t, ...(zones ? { zones } : {}), ...(clock !== undefined ? { clock_speed: clock } : {}) } : state.sim;
+      const why = Array.isArray(ev.payload) ? undefined : { clock_why: ev.payload.clock_why ?? "", clock_hold_s: ev.payload.clock_hold_s ?? 0 };
+      const sim = state.sim ? { ...state.sim, t, ...(zones ? { zones } : {}), ...(clock !== undefined ? { clock_speed: clock, ...why } : {}) } : state.sim;
       const watching = Array.isArray(ev.payload) ? state.watching : (ev.payload.watching ?? state.watching);
       return { ...state, aircraft, tracks, sim, watching, simClock };
     }
