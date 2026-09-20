@@ -718,12 +718,18 @@ class World:
         watched = list(card.items)
         text = card.phrase
         reroute = self._planned_route(card.callsign) if any(i.type == "heading" for i in card.items) else None
+        sent_path: list[tuple[float, float]] | None = None
         if reroute is not None:
             # By voice a reroute is a heading now and a "direct" later. By data link it is the planned
             # path itself, so the aircraft flies the line drawn on the map, turn for turn.
             via, exit_name, hdg, leg_nm = reroute
             commands = [c for c in commands if c.kind not in ("heading", "direct")]
             commands.append(SimCommand(kind="route", value=exit_name, via=via))
+            # What radar will hold it to: the line it was sent, with the curves it will really fly.
+            gate = self.sim.waypoints.get(exit_name)
+            if gate is not None:
+                from planner.trajectory import flyable
+                sent_path = flyable([(a.x, a.y), *via, (gate.x_nm, gate.y_nm)], a.hdg, a.gs)
             watched = [i if i.type != "heading" else i.model_copy(update={"value": int(round(hdg)) % 360 or 360})
                        for i in card.items if i.type != "route"]
             from pilots.readback import say_callsign, say_digits
@@ -735,7 +741,7 @@ class World:
                           issued_at=now, card_id=card.id)
         self.core.store.open(c)
         self.core.store.resolve(c.id, "matched")
-        self.core.conformance.watch(c, watched, now=now)
+        self.core.conformance.watch(c, watched, now=now, path=sent_path)
         for cmd in commands:
             self.sim.apply(card.callsign, cmd)
         card.via = "datalink"

@@ -247,6 +247,8 @@ Also fixed on the way: the item validator first rejected heading 000, so a card 
 
 396 backend tests. `tests/test_freeform.py` has the phrases; add to it when a phrase is missed at the mic.
 
+**A false "NOT FLYING THE CLEARANCE" with voice off, fixed.** By data link an aircraft is sent a path ("heading 155 for 8 miles, then direct ESTIR") and flies it, but radar verification was still told to wait for heading 155. On a short leg with a big turn the aircraft never points down the leg: the turn alone needs five or six miles, and it has to start back before the corner. It flew the route exactly, and a minute later was reported for it (2 of 15 reroutes in a six-disruption run). `ConformanceMonitor.watch(..., path=)` now judges a data-link reroute on the line it was sent, as `flyable` draws it: within `PATH_TOLERANCE_NM` (4), confirmed once it is on the line *and going the way the line goes*, reported after 20 s off it. Voice on is unchanged: there the aircraft really is given a heading. The test flies the real simulator through such a jog, asserts the old check raises the false alert, the new one does not, and that an aircraft which really leaves its route is still reported.
+
 ### Phase 7. Scale and robustness. About 2 hours
 - [ ] Planner: initial plan for 150 flights in under 5 seconds, replans inside their budget. If not, cap the scenario and say so
 - [ ] The investigating agent runs off the clock's critical path so the map never freezes while it thinks
