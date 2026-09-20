@@ -83,8 +83,15 @@ def profile(kind: str | None) -> Profile:
     return PROFILES.get(ALIASES.get(kind or "", kind or ""), PROFILES["fighter"])
 
 
-def catalog() -> list[dict[str, str]]:
-    return [{"kind": p.kind, "label": p.label, "blurb": p.blurb, "shape": p.shape} for p in PROFILES.values()]
+# The four on the screen's menu and on the flight strip. The rest (drone, balloon, unknown, closed
+# airspace) are one of these with other numbers, rarely touch cruise traffic, and made the menu a
+# guessing game. They stay in the table, and the headset agent can still ask for them.
+MENU_KINDS = ("storm", "rocket", "fighter", "emergency")
+
+
+def catalog() -> list[dict[str, object]]:
+    return [{"kind": p.kind, "label": p.label, "blurb": p.blurb, "shape": p.shape, "menu": p.kind in MENU_KINDS}
+            for p in PROFILES.values()]
 
 
 # What the Random button draws from. Two kinds for now, one of each shape, until the reaction to
