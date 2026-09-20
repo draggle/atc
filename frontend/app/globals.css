@@ -1,19 +1,20 @@
 @import "tailwindcss";
 
 :root {
-  /* Night operations room: near-black ink, one cool signal colour for Tower's plan, one warm
-     annunciator colour for anything that changed, red only for something wrong. */
-  --bg: #04060a;
-  --panel: #0a0e14;
-  --panel-2: #10161f;
-  --line: #1c2633;
-  --fg: #dbe3ec;
-  --muted: #74808e;
-  --accent: #46c8ff;
-  --ok: #3ddc97;
-  --warn: #ffb02e;
-  --bad: #ff4d5e;
-  --glass: rgba(8, 11, 17, 0.82);
+  /* squack. One dark ground, white ink, opacity for hierarchy. Colour only when it means something:
+     green = live, correct, on frequency. red = wrong. amber = Tower is asking. Nothing else is coloured. */
+  --bg: #0a0a0b;
+  --panel: #111214;
+  --panel-2: #17181b;
+  --line: #232529;
+  --fg: #ececec;
+  --muted: #8a8f98;
+  --accent: #ececec;      /* Tower's own lines and chips are white, not cyan */
+  --ok: #3ddc84;
+  --warn: #f5b83d;
+  --bad: #ff5a6e;
+  --glass: rgba(17, 18, 20, 0.92);
+  --radius: 8px;
 }
 
 @theme inline {
@@ -27,7 +28,7 @@
   --color-ok: var(--ok);
   --color-warn: var(--warn);
   --color-bad: var(--bad);
-  --font-sans: var(--font-b612), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-jakarta), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-b612-mono), ui-monospace, "SF Mono", Menlo, monospace;
 }
 
@@ -40,44 +41,25 @@ html, body {
 }
 
 .panel {
-  background: var(--glass);
-  border: 1px solid rgba(70, 200, 255, 0.13);
-  border-radius: 8px;
-  backdrop-filter: blur(14px) saturate(1.2);
-  -webkit-backdrop-filter: blur(14px) saturate(1.2);
-  box-shadow: 0 18px 50px -24px rgba(0, 0, 0, 0.9);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
 }
 
-/* Panels that float over the map: translucent, blurred, with instrument-bezel corner ticks. */
+/* Panels that float over the map: flat, quiet, one hairline. No blur, no glow, no bezel ticks. */
 .glass {
-  /* no position here: it must not override Tailwind's absolute/relative on the same element.
-     The corner ticks still anchor, because every .glass in the app is positioned. */
   background: var(--glass);
-  border: 1px solid rgba(70, 200, 255, 0.14);
-  border-radius: 8px;
-  backdrop-filter: blur(14px) saturate(1.2);
-  -webkit-backdrop-filter: blur(14px) saturate(1.2);
-  box-shadow: 0 18px 50px -20px rgba(0, 0, 0, 0.9), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
 }
-.glass::before,
-.glass::after {
-  content: "";
-  position: absolute;
-  width: 9px;
-  height: 9px;
-  pointer-events: none;
-  border-color: rgba(70, 200, 255, 0.55);
-  border-style: solid;
-}
-.glass::before { top: -1px; left: -1px; border-width: 1px 0 0 1px; border-top-left-radius: 8px; }
-.glass::after { bottom: -1px; right: -1px; border-width: 0 1px 1px 0; border-bottom-right-radius: 8px; }
-.glass .panel { background: rgba(14, 19, 27, 0.72); }
+.glass .panel { background: var(--panel-2); }
 
 .eyebrow {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: none;
   color: var(--muted);
 }
 

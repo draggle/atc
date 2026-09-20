@@ -6,7 +6,7 @@ import "./globals.css";
 // dense screen, at a glance, under stress. The right voice for an air traffic tool.
 const b612 = B612({ subsets: ["latin"], weight: ["400", "700"], variable: "--font-b612", display: "swap" });
 // Plus Jakarta Sans carries the wordmark on the boot screen only.
-const jakarta = Plus_Jakarta_Sans({ subsets: ["latin"], weight: ["600"], variable: "--font-jakarta", display: "swap" });
+const jakarta = Plus_Jakarta_Sans({ subsets: ["latin"], weight: ["500", "600"], variable: "--font-jakarta", display: "swap" });
 const b612Mono = B612_Mono({ subsets: ["latin"], weight: ["400", "700"], variable: "--font-b612-mono", display: "swap" });
 
 export const metadata: Metadata = {
