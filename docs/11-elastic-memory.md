@@ -1,6 +1,6 @@
 # 11. Elastic memory: the resolver's searchable context layer
 
-Written Saturday Sept 19, 2026, for the Elastic "Find the Signal" sponsor prize. Branch `kavir/elastic-memory`. This page is the handoff: what was built, why, how to turn it on, and what to check when merging.
+Written Saturday Sept 19, 2026, for the Elastic "Find the Signal" sponsor prize. Built on branch `kavir/elastic-memory`, **merged into `main` Sunday Sept 20** as a fast-forward with all 368 tests passing. This page is the reference: what was built, why, how to turn it on, and how to show it.
 
 ## The one-paragraph version
 
@@ -17,6 +17,14 @@ Tower's resolver agent already investigates messy readbacks with tools: re-liste
 - [x] With `ELASTIC_URL` unset the app is unchanged: 368 tests pass either way
 - [ ] Not yet seen in a browser: an amber card with a `[Elasticsearch]` line in its expanded trace. The data is there (the demo script reads the same events the screen does), but nobody has watched it on `localhost:3000` yet
 - [ ] Not built: a top-bar badge saying Elastic is connected, and a Kibana dashboard
+
+## What you are looking at, in plain words
+
+Elastic is a notebook the app writes in constantly. Three places show it.
+
+- **`http://127.0.0.1:8000/health`**, the backend's status line. The `memory` part is ours: `enabled: true` means it is connected, `session` is the name of this run (new on every Load so runs never mix), `docs_indexed` is how many entries it has written since Start (about one per aircraft per second, so it climbs on every refresh), `errors: 0` means every write was accepted.
+- **The app at `localhost:3000`.** Every line in the Frequency panel is one entry in the notebook. Every second the map redraws is about eight more. When a pilot's reply is too garbled to judge, the agent investigates, and the lines in its trace that start with `[Elasticsearch]` are the agent reading the notebook: "what was this plane told", "where has it been for 30 seconds", "who is near it", "which real fix name is closest to what I heard".
+- **Kibana Discover**, the notebook opened from Elastic's own site. The query box takes ES|QL. `FROM tower-transmissions | WHERE session LIKE "demo*" | KEEP t, speaker, callsign, text_norm, asr_confidence | SORT t DESC` is the radio log, one row per thing said: `speaker` is controller, pilot, or datalink (an instruction Tower sent as text), `asr_confidence` is how clearly it was heard, 1 for typed, lower for garbled. `FROM tower-resolver_steps | WHERE result_summary LIKE "[Elasticsearch]*" | KEEP t, clearance_id, tool, result_summary | SORT t DESC` is every search the agent ran. `FROM tower-verdicts | STATS n = COUNT(*) BY result, error_type` counts the alerts by type, and the chart button turns it into a bar chart.
 
 ## What the prize asks for, and where each thing is
 
