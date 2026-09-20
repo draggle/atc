@@ -8,6 +8,10 @@ Three arms, common random numbers per run so the arms differ only in what we cla
 Disturbances per run: speed jitter +-3%, entry shift +-60 s, instruction delay 5 to 30 s,
 readback errors injected at `error_rate` per instruction. Error injection happens at the
 sim-command level, so this stays independent of the audio pipeline (Stream B).
+
+The tower_on arm also runs `planner.risk.predict` every RISK_EVERY_S of sim time (TRD 07) and
+counts pairs that first crossed REPLAN_P and pairs that later dropped below SHOW_P with no loss
+of separation, so the batch report and the live scoreboard count the same thing.
 """
 from __future__ import annotations
 
@@ -17,6 +21,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from planner.cards import cards_from_plan, followup_cards, item_to_sim_command, parse_change
+from planner import risk
 from planner.plan import plan as plan_fn, replan
 from schemas import InstructionCard, Plan, Scenario, Scoreboard, SimCommand
 from sim.engine import Simulator
@@ -27,6 +32,8 @@ ARMS = ("fixed", "tower_off", "tower_on")
 ALERT_LATENCY_S = 3.0
 STEP_S = 2.0
 MAX_SIM_S = 3 * 3600.0
+RISK_EVERY_S = 10.0
+RISK_N = 64  # rollouts per prediction in the eval; small to keep a 20-run batch bounded
 
 
 @dataclass
@@ -47,6 +54,8 @@ class RunStats:
     errors_caught: int = 0
     instructions: int = 0
     replans: int = 0
+    conflicts_predicted: int = 0  # pairs that first reached risk.REPLAN_P in a prediction
+    conflicts_resolved: int = 0   # of those, pairs that later fell below risk.SHOW_P with no LoS
 
 
 def _corrupt(cmd: SimCommand, rng: random.Random, waypoints: list[str]) -> SimCommand:
@@ -83,6 +92,10 @@ def _disturb(scenario: Scenario, rng: random.Random, delays: dict[str, float]) -
     return sc
 
 
+def _had_los(mon: SeparationMonitor, key: tuple[str, str]) -> bool:
+    return key in mon._open or any((e[0], e[1]) == key for e in mon.events)
+
+
 def _simulate(scenario: Scenario, nominal: Scenario, plan0: Plan, arm: str, rng: random.Random,
               error_rate: float, buffer_nm: float, replan_s: float) -> RunStats:
     """Fly one disturbed run. Planned arms are card-driven: cards from the plan, replanned every replan_s."""
@@ -96,6 +109,8 @@ def _simulate(scenario: Scenario, nominal: Scenario, plan0: Plan, arm: str, rng:
     followed: set[tuple[str, str]] = set()
     current = plan0
     next_replan = replan_s
+    next_risk = 0.0
+    predicted: dict[tuple[str, str], bool] = {}  # pair -> resolved yet
 
     def schedule(cards: list[InstructionCard], t: float) -> None:
         for c in cards:
@@ -149,6 +164,19 @@ def _simulate(scenario: Scenario, nominal: Scenario, plan0: Plan, arm: str, rng:
                 if key not in followed:
                     followed.add(key)
                     queue.append(_Pending(t + rng.uniform(2, 6), c.callsign, [item_to_sim_command(c.items[0])]))
+            if arm == "tower_on" and t >= next_risk and states:
+                next_risk += RISK_EVERY_S
+                report = risk.predict(states, {p.callsign: p for p in current.paths}, nominal.zones, t,
+                                      n=RISK_N, seed=int(t))
+                above = {(min(p.a, p.b), max(p.a, p.b)): p.p_max for p in report.pairs}
+                for key, p_max in above.items():
+                    if p_max >= risk.REPLAN_P and key not in predicted:
+                        predicted[key] = False
+                        stats.conflicts_predicted += 1
+                for key, done in predicted.items():
+                    if not done and above.get(key, 0.0) < risk.SHOW_P and not _had_los(mon, key):
+                        predicted[key] = True
+                        stats.conflicts_resolved += 1
             if t >= next_replan and states:
                 next_replan += replan_s
                 new = replan(current, states, nominal.waypoints, nominal.zones, buffer_nm, None, frozen_s=60,
@@ -208,6 +236,8 @@ def run(scenario: Scenario, n_runs: int = 20, seed: int = 0, arms: tuple[str, ..
             errors_injected=inj, errors_caught=caught, false_alarms=0,
             mean_alert_latency_s=ALERT_LATENCY_S if arm == "tower_on" and caught else None,
             transmissions=sum(s.instructions for s in runs),
+            conflicts_predicted=sum(s.conflicts_predicted for s in runs),
+            conflicts_resolved=sum(s.conflicts_resolved for s in runs),
         )
         out["arms"][arm] = {
             "los_total": los, "flight_hours": round(fh, 3),
@@ -220,6 +250,8 @@ def run(scenario: Scenario, n_runs: int = 20, seed: int = 0, arms: tuple[str, ..
             "miles_vs_baseline_pct": ((miles - fixed_miles) / fixed_miles * 100) if fixed_miles else None,
             "errors_injected": inj, "errors_caught": caught,
             "replans": sum(s.replans for s in runs),
+            "conflicts_predicted": sum(s.conflicts_predicted for s in runs),
+            "conflicts_resolved": sum(s.conflicts_resolved for s in runs),
             "scoreboard": sb.model_dump(),
         }
     return out

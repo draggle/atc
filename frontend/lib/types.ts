@@ -227,6 +227,10 @@ export interface InstructionCard {
   /** What it clears: a disruption id (STORM1) or another flight's callsign. */
   cause?: string | null;
   emergency?: boolean;
+  /** How sure Tower is of this instruction: (1 - residual risk) x how clearly it beat the runner-up. [0.05, 0.99]. */
+  confidence?: number | null;
+  /** Residual loss-of-separation probability on the pairs this card touches, re-scored after the replan. */
+  risk_after?: number | null;
 }
 
 /** A clip is on the frequency right now. Sent before it has been transcribed. */
@@ -310,6 +314,43 @@ export interface Scoreboard {
   datalink_sent?: number;
   in_zone_now?: number;
   zone_incursions?: number;
+  /** Monte Carlo (TRD 07): pairs that crossed the replan threshold, and those that then cleared without a loss of separation. */
+  conflicts_predicted?: number;
+  conflicts_resolved?: number;
+  /** n_rollouts x aircraft / elapsed, measured on the last prediction. Honest number, never a slogan. */
+  futures_per_s?: number | null;
+  /** pairs currently drawn as cones */
+  cones_now?: number;
+}
+
+/** One pair of aircraft that may lose separation inside the horizon, from a few hundred noisy rollouts. */
+export interface RiskPair {
+  a: string;
+  b: string;
+  /** peak probability of loss of separation over the horizon */
+  p_max: number;
+  /** first sample where p >= 0.05, null when never */
+  t_first_s: number | null;
+  /** sim seconds from the report to the sample of maximum p */
+  eta_s: number;
+  /** 5th percentile of the minimum separation across rollouts, NM */
+  min_sep_nm_p5: number;
+  /** [[t, p], ...] */
+  curve: [number, number][];
+  /** mean closest-approach midpoint, sector NM */
+  cpa_xy: [number, number];
+  /** lateral p5..p95 spread of each aircraft's rollouts at eta, NM */
+  spread_a_nm: number;
+  spread_b_nm: number;
+}
+
+/** `risk` event: at most once per sim second, only pairs with p_max >= 0.05. */
+export interface RiskReport {
+  pairs: RiskPair[];
+  horizon_s: number;
+  n_rollouts: number;
+  elapsed_ms: number;
+  futures_per_s: number;
 }
 
 export interface Stats {
@@ -424,6 +465,7 @@ export type EventMap = {
   radio_audio: RadioAudio;
   said_check: SaidCheck;
   alert_resolved: AlertResolved;
+  risk: RiskReport;
 };
 
 export type EventType = keyof EventMap;

@@ -13,6 +13,8 @@ function Stat({ label, value, tone = "fg" }: { label: string; value: string; ton
 }
 
 const fmt = (n: number | null | undefined, d = 1, suffix = "") => (n === null || n === undefined ? "—" : `${n.toFixed(d)}${suffix}`);
+/** 850, 3.2k, 12k: a rate that is read at a glance and never rounds a hundred up to a thousand. */
+const fmtRate = (n: number | null | undefined) => (n === null || n === undefined ? "—" : n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n)));
 
 export default function ScoreboardPanel() {
   const { scoreboard: s, stats, sim } = useTowerState();
@@ -36,6 +38,10 @@ export default function ScoreboardPanel() {
           <Stat label="time saved" value={projected ? "n/a" : fmt(s.time_saved_s / 60, 1, " min")} tone={projected ? "fg" : "ok"} />
           <Stat label="loss of sep" value={String(s.losses_of_separation)} tone={s.losses_of_separation > 0 ? "bad" : "ok"} />
           <Stat label="closest" value={fmt(s.closest_approach_nm, 1, " NM")} tone={s.closest_approach_nm !== null && s.closest_approach_nm < 5 ? "bad" : "fg"} />
+          {/* Monte Carlo (TRD 07): what the rollouts saw coming, what cleared before it happened, and the measured rate. */}
+          <Stat label="conflicts predicted" value={String(s.conflicts_predicted ?? 0)} tone={(s.conflicts_predicted ?? 0) > (s.conflicts_resolved ?? 0) ? "warn" : "fg"} />
+          <Stat label="resolved early" value={String(s.conflicts_resolved ?? 0)} tone={(s.conflicts_resolved ?? 0) > 0 ? "ok" : "fg"} />
+          <Stat label="futures / s" value={fmtRate(s.futures_per_s)} />
           <Stat label="errors caught" value={`${s.errors_caught} / ${s.errors_injected}`} tone={s.errors_caught < s.errors_injected ? "warn" : "fg"} />
           <Stat label="false alarms" value={String(s.false_alarms)} tone={s.false_alarms > 0 ? "warn" : "fg"} />
           <Stat label="alert latency" value={fmt(s.mean_alert_latency_s, 1, " s")} />

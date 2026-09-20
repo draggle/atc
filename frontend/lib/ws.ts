@@ -27,7 +27,7 @@ const EVENT_TYPES = new Set<string>([
   "radar", "plan", "plan_update", "instruction_card", "disruption", "scoreboard", "agent_reply", "state", "notice",
   // Anything not listed here is dropped without a word. A new backend event needs a line here,
   // in EventMap (lib/types.ts), and in the reducer (lib/store.tsx).
-  "radio_audio", "said_check", "alert_resolved",
+  "radio_audio", "said_check", "alert_resolved", "risk",
 ]);
 
 function parseEvent(raw: string): TowerEvent | null {

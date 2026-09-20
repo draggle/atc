@@ -218,6 +218,8 @@ class PlannedPath(BaseModel):
     distance_nm: float = 0.0
     time_s: float = 0.0
     via: list[tuple[float, float]] = Field(default_factory=list)  # turn points of a reroute, before the exit
+    # Cost of the second candidate that cleared, if any. Feeds the margin term of a card's confidence.
+    runner_up_cost: float | None = None
 
 
 class Plan(BaseModel):
@@ -253,6 +255,11 @@ class InstructionCard(BaseModel):
     origin: Literal["initial", "replan", "followup", "release"] = "replan"
     cause: str | None = None
     emergency: bool = False
+    # TRD 07: (1 - risk_after) x margin_factor, clamped to [0.05, 0.99]. risk_after is the highest
+    # predicted probability of a loss of separation on any pair this aircraft is in, after the plan
+    # that produced this card. None until the risk module has scored a plan.
+    confidence: float | None = None
+    risk_after: float | None = None
 
 
 DisruptionKind = Literal["fighter", "drone", "balloon", "emergency", "unknown", "storm", "closed", "rocket",
@@ -306,6 +313,14 @@ class Scoreboard(BaseModel):
     datalink_sent: int = 0
     in_zone_now: int = 0
     zone_incursions: int = 0
+    # TRD 07 Monte Carlo prediction. conflicts_predicted: pairs whose risk reached the replan
+    # threshold. conflicts_resolved: those that later fell below the display floor with no loss of
+    # separation. futures_per_s: rollouts x aircraft / elapsed, measured on the last call. cones_now:
+    # pairs in the current report.
+    conflicts_predicted: int = 0
+    conflicts_resolved: int = 0
+    futures_per_s: float | None = None
+    cones_now: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +335,7 @@ EventType = Literal[
     "said_check",  # what the controller said does not match the card: nothing went to the pilot
     "alert_resolved",  # a wrong readback was corrected and read back right
     "aside",  # the controller said "disregard", or asked for something no airliner does: not a clearance
+    "risk",  # Monte Carlo conflict prediction: pairs with p_max >= 0.05 and their curves (TRD 07)
 ]
 
 

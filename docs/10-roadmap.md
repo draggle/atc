@@ -249,6 +249,28 @@ Also fixed on the way: the item validator first rejected heading 000, so a card 
 
 **A false "NOT FLYING THE CLEARANCE" with voice off, fixed.** By data link an aircraft is sent a path ("heading 155 for 8 miles, then direct ESTIR") and flies it, but radar verification was still told to wait for heading 155. On a short leg with a big turn the aircraft never points down the leg: the turn alone needs five or six miles, and it has to start back before the corner. It flew the route exactly, and a minute later was reported for it (2 of 15 reroutes in a six-disruption run). `ConformanceMonitor.watch(..., path=)` now judges a data-link reroute on the line it was sent, as `flyable` draws it: within `PATH_TOLERANCE_NM` (4), confirmed once it is on the line *and going the way the line goes*, reported after 20 s off it. Voice on is unchanged: there the aircraft really is given a heading. The test flies the real simulator through such a jog, asserts the old check raises the false alert, the new one does not, and that an aircraft which really leaves its route is still reported.
 
+### Phase 6f. Seeing conflicts before they exist. Sunday
+
+The planner's conflict test is exact and blind: it asks whether the plan, flown perfectly, keeps 5 NM and 1,000 ft. It says nothing about a pilot who acknowledged and has not turned yet, a slow turn, a storm drifting into a path, or a wrong heading that will not be a conflict for another minute. Those were caught by the 15 s or 60 s periodic replan, or by the loss of separation itself. TRD 07 has the spec.
+
+**What it is.** Every tick after `sim.step`, `backend/planner/risk.py` rolls the whole sky forward 120 s a few hundred times with noise (compliance delay 0 to 15 s, ground speed ±3 percent, heading σ 2 degrees, climb and descent rate ±20 percent, zone drift ±15 degrees, all seeded) and counts how often each nearby pair would lose separation at the same 5 s sample. Pure numpy, no World imports, positions as one `(n, aircraft, samples, 3)` array, pairs pruned to those within 60 NM and 4,000 ft now. It is Monte Carlo over disturbances feeding the deterministic planner, not MCTS over actions: the risk decides *when* to replan, the existing planner decides *what*.
+
+**Thresholds.** `REPLAN_P` 0.30: any pair at or above it, with its first crossing inside the horizon, calls `_replan("risk A/B")` at once, rate-limited to one risk replan per pair per 20 s. `SHOW_P` 0.05: the display floor; pairs below it are not in the report. Both live in `risk.py` and nowhere else.
+
+**Budget.** 256 rollouts by default, floor 32. The count halves when the last call ran over its budget (25 ms at 12 aircraft, 150 ms at 100) and doubles back up when it ran under half, so the clock loop never stalls on the 150-flight Europe scenario. Above 1x the prediction runs every 2 s of sim time, not every tick.
+
+**Confidence.** Every card now carries `confidence = (1 - risk_after) × margin_factor`, clamped to [0.05, 0.99]. `risk_after` is the residual `p_max` on the pairs the card's aircraft is in, re-scored on the new plan before the card goes out. `margin_factor` is 1 when the chosen path beat the runner-up candidate by 20 percent or more of its cost, falling linearly to 0.5 when they tied (`PlannedPath.runner_up_cost`). Shown, not acted on: gating below a threshold is TRD 06 item A3. The strip shows both terms, "risk after 0.03, margin 1.0", so the number can be explained when a judge asks.
+
+**What the judge sees.** A translucent red wedge between two aircraft before anything is wrong, labelled "LoS 42% · 71 s", its width the p5 to p95 lateral spread of the rollouts at the closest approach, brightening as the probability rises and gone when the replan clears it. A confidence on every card and strip. Three new scoreboard tiles: conflicts predicted, resolved before they happened, and futures simulated per second, the last one measured from `n_rollouts × aircraft / elapsed` that tick. The slide says "a few hundred futures a tick", never "thousands" unless the counter does.
+
+Measured: futures per second at 12 / 80 / 150 aircraft: TBD (integration pass fills this in).
+
+- [ ] Drop a storm on `demo`: the cone appears before the replan fires, and clears after it
+- [ ] Force a wrong heading toward another aircraft: the risk replan fires earlier than the periodic check would have
+- [ ] Confidence shown on every card and strip, in [0.05, 0.99]
+- [ ] Futures per second on the scoreboard is the measured number for this laptop, not a constant
+- [ ] 396 tests plus the new `test_risk.py` and `test_world_risk.py` pass
+
 ### Phase 7. Scale and robustness. About 2 hours
 - [ ] Planner: initial plan for 150 flights in under 5 seconds, replans inside their budget. If not, cap the scenario and say so
 - [ ] The investigating agent runs off the clock's critical path so the map never freezes while it thinks

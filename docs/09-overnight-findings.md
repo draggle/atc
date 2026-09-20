@@ -38,6 +38,18 @@ Saturday night Sept 19 to Sunday Sept 20. Things the spec did not know that a te
 
 Demo scenario, 20 runs, 2 percent readback errors, buffer 3 NM: fixed routes 0.34 losses of separation per flight hour with a closest approach of 0.04 NM at the CENTA funnel; Tower's plan 0 per flight hour with closest 9.4 NM, and 7.8 to 8.3 percent fewer miles. Dense scenario at 5 percent errors: fixed 154, Tower without validation 1 (an uncorrected wrong readback to 3.07 NM), Tower with validation 0. That last row is the "validation earns the tighter plan" story with real numbers.
 
+## Monte Carlo risk, Sunday
+
+The planner's exact conflict test only sees the plan flown perfectly, so the things that go wrong on the day (a pilot who acknowledged and has not turned, a drifting storm, a wrong heading that is not yet a conflict) were left to the periodic replan or the loss of separation itself. `backend/planner/risk.py` rolls the sky forward 120 s a few hundred times under seeded noise and replans when any pair's probability of losing separation reaches 0.30, which fires earlier than the 15 s or 60 s check and on cases the exact test cannot see. The same residual risk becomes the confidence on each card, so the number a judge sees has two terms that can each be explained. TRD 07 has the design; roadmap phase 6f has what landed.
+
+Measured on the demo laptop, 256 rollouts unless the adaptive count backed off (then `n_rollouts` says so):
+
+| Aircraft | Scenario | `elapsed_ms` | `n_rollouts` | `futures_per_s` |
+|---|---|---|---|---|
+| 12 | `demo` | TBD | TBD | TBD |
+| 80 | `real/<region>` at `max_flights` 80 | TBD | TBD | TBD |
+| 150 | `real/<region>` at `max_flights` 150 | TBD | TBD | TBD |
+
 ## Density sweep
 
 `python -m eval.sweep --scenario dense --densities 1,1.5,2,2.5 --buffers 1,3 --runs 4 --error-rate 0.02`, 220 s. Chart at `docs/img/density-sweep.png`, data at `docs/img/density-sweep.csv`.
