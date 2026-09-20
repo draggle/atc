@@ -14,10 +14,12 @@ export const EDGE = 8;
 export const ROW_TOP = BOTTOM_ROW_H + EDGE;
 
 /**
- * Where the answer dock's own bottom sits: clear of the chat bar, which rests at `bottom-6`.
- * The dock grows up from here to ROW_TOP and never past it.
+ * Where the answer dock's own bottom sits: clear of the chat bar. The bar's column is anchored at
+ * `bottom-6` and carries a permanent key hint under it, so the bar's own top edge is 98px off the
+ * bottom of the window; this leaves the same 6px of air above it. The dock grows up from here to
+ * ROW_TOP and never past it.
  */
-export const DOCK_BOTTOM = 80;
+export const DOCK_BOTTOM = 104;
 
 /** Width of a side box. Narrows with the window so it never runs under the centred chat bar. */
 export const SIDE_W = "min(360px, calc(50vw - 356px))";
