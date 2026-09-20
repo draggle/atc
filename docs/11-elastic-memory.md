@@ -35,7 +35,11 @@ Not done, and honest about it: no dense vectors or reranking (the radio log is s
    ```
    It writes a tiny scripted session and runs all four searches. Every line should say `OK`.
 4. Start the backend. The log says `Elasticsearch memory on https://...`, `/health` shows `memory.docs_indexed` climbing, and the `state` event carries `"memory": "Elasticsearch"`.
-5. To see it in the trace: drag the pilot error rate up, wait for an amber "Checking" card, expand the agent trace. Steps that searched are prefixed `[Elasticsearch]`.
+5. To see it in the trace: drag the pilot error rate and radio noise up, send altitude instructions, wait for an amber "Checking" card, expand the agent trace. Steps that searched are prefixed `[Elasticsearch]`. Or let a script drive it and print every step:
+   ```
+   .venv/bin/python tools/elastic_demo.py
+   ```
+   It talks to the running backend over the WebSocket like the screen does. The agent only wakes on *unclear* readbacks (low speech confidence, a similar callsign, a garbled fix name), never on plainly right or plainly wrong ones, so a run can end with zero steps; run it again or pass `--rounds 6`.
 
 If the cluster is unreachable at start, the app logs one warning and runs without memory. If it dies mid-session, each search fails within 2 s, returns None, and the tool falls back to the in-memory answer, so the resolver slows but the sim never stalls.
 
@@ -51,6 +55,7 @@ If the cluster is unreachable at start, the app logs one warning and runs withou
 | `backend/world.py` | `World(memory=...)`. All events pass through `memory.observe` before the WebSocket. New session per load, waypoints indexed with lat/lon, `memory` in the `state` event |
 | `backend/app.py` | `/health` reports memory status |
 | `backend/tools/elastic_check.py` | New. Live check against the real cluster |
+| `backend/tools/elastic_demo.py` | New. Drives a running backend over the WebSocket and prints every resolver step |
 | `backend/tests/test_memory.py` | 13 tests on a fake Elasticsearch that evaluates the exact query shapes used: filters, geo distance, fuzzy match, collapse, sort. Run offline |
 | `backend/pyproject.toml` | `elasticsearch>=8.15` |
 | `.env.example`, `README.md`, `CLAUDE.md` | The two variables, this doc in the map |
