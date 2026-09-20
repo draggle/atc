@@ -336,6 +336,7 @@ EventType = Literal[
     "alert_resolved",  # a wrong readback was corrected and read back right
     "aside",  # the controller said "disregard", or asked for something no airliner does: not a clearance
     "risk",  # Monte Carlo conflict prediction: pairs with p_max >= 0.05 and their curves (TRD 07)
+    "dictation",  # live transcript of the controller's mic while push-to-talk is held (docs/08)
 ]
 
 
