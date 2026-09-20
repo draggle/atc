@@ -418,6 +418,10 @@ export interface SimState {
   voice?: boolean;
   /** How fast the clock is really running. With voice on it drops to 1 whenever there is something to say. */
   clock_speed?: number;
+  /** Why it is at 1x when a faster speed was chosen: somebody is talking, or a new card has just turned up. */
+  clock_why?: "" | "radio" | "card";
+  /** Real seconds before a waiting card stops holding the clock at 1x. */
+  clock_hold_s?: number;
   /** How the next pilot will answer. One shot, then back to "random". */
   next_readback?: NextReadback;
   lifecycle?: Lifecycle;
@@ -455,7 +459,7 @@ export type EventMap = {
   resolver_step: ResolverStep;
   stats: Stats;
   /** `zones` is present while any zone is drifting or swelling: it replaces `state.zones`. */
-  radar: AircraftState[] | { aircraft: AircraftState[]; t?: number; watching?: string[]; zones?: Zone[]; clock_speed?: number };
+  radar: AircraftState[] | { aircraft: AircraftState[]; t?: number; watching?: string[]; zones?: Zone[]; clock_speed?: number; clock_why?: "" | "radio" | "card"; clock_hold_s?: number };
   plan: Plan;
   plan_update: PlanUpdate;
   instruction_card: InstructionCard;
