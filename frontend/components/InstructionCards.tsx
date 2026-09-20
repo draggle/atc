@@ -166,7 +166,7 @@ function Sent({ card, tag }: { card: InstructionCard; tag: { text: string; cls: 
 }
 
 export default function InstructionCards() {
-  const { cards, cardT, sim, aircraft, held, disruptions } = useTowerState();
+  const { cards, cardT, sim, aircraft, held, disruptions, selected } = useTowerState();
   const [showLater, setShowLater] = useState(false);
   const auto = sim?.auto_speak ?? false; // voice off: squack sends everything itself
   const simT = sim?.t ?? 0;
@@ -179,7 +179,15 @@ export default function InstructionCards() {
   // Wrong readbacks first, then anything that reacts to something (a reroute, a conflict, back on
   // course), then the opening shortcuts, which can wait. Within a group, the soonest first.
   const weight = (c: InstructionCard) => (c.status === "error" ? 0 : c.emergency ? 1 : c.cause || c.origin === "followup" || c.origin === "release" ? 2 : 3);
-  const now = open.filter((c) => c.status === "error" || c.callsign in aircraft).sort((a, b) => weight(a) - weight(b) || a.urgency_s - b.urgency_s);
+  // The aircraft you have selected comes first (after a wrong readback, which outranks everything):
+  // click a flight, put a storm in front of it, and its instruction is the top card, not somewhere
+  // under the opening shortcuts. With nothing selected, what reacts to the newest disruption leads.
+  const wrong = (c: InstructionCard) => (c.status === "error" ? 0 : 1);
+  const mine = (c: InstructionCard) => (selected && c.callsign === selected ? 0 : 1);
+  const born = (c: InstructionCard) => (c.cause ? (disruptions[c.cause]?.t_start ?? 0) : 0);
+  const now = open
+    .filter((c) => c.status === "error" || c.callsign in aircraft)
+    .sort((a, b) => wrong(a) - wrong(b) || mine(a) - mine(b) || weight(a) - weight(b) || born(b) - born(a) || a.urgency_s - b.urgency_s);
   const later = open.filter((c) => c.status !== "error" && !(c.callsign in aircraft)).sort((a, b) => a.urgency_s - b.urgency_s);
   const done = cards.filter((c) => c.status !== "pending" && c.status !== "error").sort(newestFirst);
 

@@ -285,6 +285,8 @@ export interface Disruption {
   floor_ft?: number;
   ceiling_ft?: number;
   expires_t?: number | null;
+  /** sim seconds when it appeared: the newest one's instructions lead the list */
+  t_start?: number;
   /** false when it has expired, left the sector or been removed: the screen drops it. */
   active?: boolean;
   x_nm: number;
