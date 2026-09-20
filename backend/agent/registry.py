@@ -371,6 +371,9 @@ _OPS: dict[str, Callable[[Any, Any], bool]] = {
     "lt": lambda x, v: x is not None and x < v, "lte": lambda x, v: x is not None and x <= v,
     "contains": lambda x, v: str(v).lower() in str(x).lower(),
 }
+# A model that writes ">" instead of "gt" should still get an answer, not an empty table.
+_OPS.update({"==": _OPS["eq"], "!=": _OPS["ne"], ">": _OPS["gt"], ">=": _OPS["gte"],
+             "<": _OPS["lt"], "<=": _OPS["lte"]})
 _FIELDS = ["callsign", "alt_ft", "target_alt_ft", "hdg_deg", "gs_kt", "route", "actype", "is_intruder", "threat", "x_nm", "y_nm"]
 
 
@@ -401,9 +404,13 @@ def _match(row: dict[str, Any], f: dict[str, Any]) -> bool:
         return False
 
 
-@tool("query.aircraft", "List aircraft matching filters. Fields: callsign, alt_ft, hdg_deg, gs_kt, route, actype, is_intruder, threat; also `fl` (flight level) and `heading` with a compass value (north/east/south/west). Ops: eq, ne, gt, gte, lt, lte, contains.",
-      {"filters": {"type": "array", "items": {"type": "object", "properties": {
-          "field": {"type": "string"}, "op": {"type": "string"}, "value": {}}, "required": ["field", "op", "value"]}}})
+@tool("query.aircraft", "List aircraft matching filters. Fields: callsign, alt_ft (feet), hdg_deg, gs_kt, route, actype, is_intruder, threat; also `fl` (flight level in hundreds of feet, so 35,000 ft is fl 350) and `heading` with a compass value (north/east/south/west).",
+      {"filters": {"type": "array", "description": "All filters must match. Empty or absent lists every aircraft.",
+                   "items": {"type": "object", "properties": {
+          "field": {"type": "string", "description": "one of callsign, alt_ft, fl, hdg_deg, heading, gs_kt, route, actype, is_intruder, threat"},
+          "op": {"type": "string", "enum": ["eq", "ne", "gt", "gte", "lt", "lte", "contains"]},
+          "value": {"anyOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"}]}},
+          "required": ["field", "op", "value"]}}})
 def _q_aircraft(world: "World", a: dict[str, Any]) -> dict[str, Any]:
     rows_all = [s.model_dump() for s in world.sim.aircraft()]
     filters = a.get("filters") or []

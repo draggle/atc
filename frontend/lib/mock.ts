@@ -516,6 +516,51 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
       scoreboard();
     });
 
+    // Omitted item: two-part clearance, pilot reads back only the turn. The alert must say what is
+    // missing, not lay a heading beside a speed as though they were a pair.
+    const turnAndSlow = [item("heading", 270, "deg", "turn_left"), item("speed", 250, "kt", "reduce")];
+    after(17200, () =>
+      card({
+        id: `c${g}-5`,
+        callsign: "FLE702",
+        items: turnAndSlow,
+        phrase: "Flyeast seven zero two, turn left heading two seven zero, reduce speed two five zero knots",
+        reason: "Spacing behind POE331 into SIMCO",
+        urgency_s: 60,
+        status: "pending",
+        clearance_id: null,
+        confidence: 0.84,
+        risk_after: 0.04,
+      }),
+    );
+    after(18400, () => {
+      setCard(`c${g}-5`, "spoken", `cl-c${g}-5`);
+      send({ type: "transcript", payload: transmission("controller", "flyeast seven zero two turn left heading two seven zero reduce speed two five zero knots", 0.95, undefined, "FLE702"), t: simT });
+      send({ type: "clearance_opened", payload: clearance(`cl-c${g}-5`, "FLE702", turnAndSlow, "open", `c${g}-5`), t: simT });
+    });
+    after(20200, () => {
+      send({ type: "transcript", payload: transmission("pilot", "left heading two seven zero flyeast seven zero two", 0.9, "left heading to seven zero fly east seven zero two", "FLE702"), t: simT });
+      send({ type: "clearance_updated", payload: clearance(`cl-c${g}-5`, "FLE702", turnAndSlow, "partial", `c${g}-5`), t: simT });
+      score = { ...score, errors_injected: score.errors_injected + 1, errors_caught: score.errors_caught + 1 };
+      const v: AlertPayload = {
+        clearance_id: `cl-c${g}-5`,
+        readback_transmission_id: `tx-${txCounter}`,
+        result: "partial",
+        error_type: "omitted_item",
+        expected: turnAndSlow,
+        heard: [item("heading", 270, "deg", "turn_left")],
+        confidence: 0.85,
+        reason: "Readback omitted 250 kt",
+        decided_by: "rules",
+        correction_phrase: "Flyeast seven zero two, read back speed two five zero knots",
+        audio_ref: `mock/tx-${txCounter}.wav`,
+        callsign: "FLE702",
+      };
+      send({ type: "alert", payload: v, t: simT });
+      setCard(`c${g}-5`, "error", `cl-c${g}-5`);
+      scoreboard();
+    });
+
     // Ambiguous: garbled readback, resolver wakes, three steps, then a verdict.
     after(21000, () =>
       card({
