@@ -151,3 +151,17 @@ Every line is one tool call except 7 and 8. Rehearse with the keyword router too
 Interfaces fixed before anyone starts: the card descriptor in section 5, the four event payloads in section 4, the tool naming `group.verb`, and `agent_text` carrying `ui_state: {selected, planView, speed, voice}`.
 
 **Integrator checks at the end:** full suite green (`pytest -q`, currently 437); `NEXT_DIST_DIR=.next-verify npm run build` clean; the nine demo lines in section 6 run against a live backend with a key and, separately, lines 1, 2, 3, 6 with no key; the clock never drops below the chosen speed while a sim job runs (watch `radar.clock_speed`); every `answer` arrives within 8 s or says why; `agent_reply` still reaches the old headset path; README status row and `docs/10-roadmap.md` get a phase 6h entry with the measured p50 latency of one tool call on the demo laptop.
+
+## 10. Rung (j): agent mode, the screen squack composes. Added Sunday afternoon
+
+A second mode behind a toggle at the top right: **normal** and **squack decides**. Same backend, same events. The map, the bar, and the top strip are pinned in both. In normal mode the panel layer is the hand-laid-out UI and squack's answers dock above the bar. In agent mode the panel layer is a **stage** of at most three slots that squack fills with cards from the registry (section 5), and nothing else is on screen until squack puts it there.
+
+**Inputs to the agent.** Two kinds, handled by the same loop: a user message from the bar, and an environment event chosen by a **wake policy**: alert, risk over `REPLAN_P`, a `plan_update` with changed flights, a disruption, a lifecycle change, an escalation. Everything else never wakes the agent. Debounce 5 s, batch what arrived, hard cap one agent turn per 5 s.
+
+**Outputs.** A `stage` event: `{slots: [CardDescriptor, ...], ttl_s}`; optional `ui_command`s; a one-sentence `answer`. A card may carry `live: {aircraft: "DAL789"}` or `live: {scoreboard: true}` so the frontend keeps its numbers current from the store without another agent turn.
+
+**Director fallback.** Without a Baseten key, or when the model is over budget, a deterministic director produces the stage from the same wake policy: an alert places the alert card, a disruption places a comparison card and the worst flight's aircraft card, a replan places the changed list. The director also runs first on the alert path in every case, so the alert card is on screen within one tick and the agent's turn only adds the why.
+
+**Rules.** The agent never writes markup; it composes from the registry. Cards leave only when replaced or after their ttl. The reply is one sentence; the cards carry the content. Agent mode is never the default at open: the demo opens in normal, and the judge flips the toggle.
+
+**Effort.** Wake policy, stage event, director: 3 h backend. Stage renderer, live bindings, toggle: 3 h frontend. Tuning: an afternoon. Built on rungs b to e and the registry.
