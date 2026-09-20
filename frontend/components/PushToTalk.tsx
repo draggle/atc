@@ -66,8 +66,11 @@ export default function PushToTalk() {
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
-      if (e.code !== "Space" || e.repeat || isTyping(e.target)) return;
+      if (e.code !== "Space" || isTyping(e.target)) return;
+      // Every one of them, not only the first: a held key repeats, and each repeat that got through
+      // was the browser's own "Space = page down", which scrolled the card column while talking.
       e.preventDefault();
+      if (e.repeat) return;
       void start(e.shiftKey ? "agent" : "radio");
     };
     const up = (e: KeyboardEvent) => {
