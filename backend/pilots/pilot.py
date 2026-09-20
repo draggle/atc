@@ -132,8 +132,11 @@ class AIPilot:
         noise_level: float = 0.2,
         error_type: ErrorType | None = None,
         force_error: bool | None = None,
+        waypoints: list[str] | None = None,
     ) -> PilotResponse:
         """Respond to a clearance addressed to this pilot.
+
+        `waypoints` are the sector's sayable fix names, so a direct can be read back to the wrong one.
 
         error_type forces a specific taxonomy error; force_error=True/False overrides the
         error_rate coin flip. Both exist for tests and scripted demos.
@@ -156,7 +159,8 @@ class AIPilot:
         spoken_items, spoken_cs, etype, desc = true_items, self.callsign, None, ""
         if make_error:
             spoken_items, spoken_cs, etype, desc = inject_error(
-                true_items, self.callsign, active, self.rng, self.error_weights, error_type=error_type
+                true_items, self.callsign, active, self.rng, self.error_weights, error_type=error_type,
+                waypoints=waypoints,
             )
 
         if etype == "missing_readback":

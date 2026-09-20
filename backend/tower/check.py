@@ -132,10 +132,50 @@ def _pair(exp: Item, heard: list[Item], used: set[int]) -> int | None:
     return None
 
 
+_BARE_NUMBER = re.compile(r"(?<![A-Za-z\d.])\d+(?:\.\d+)?(?![\d.]|\s*knots|\s*feet|\s*ft)")
+
+
+def _bare_readbacks(expected: list[Item], heard: list[Item], text_norm: str, callsign: str) -> list[Item]:
+    """Pilots shorten a readback to the number: "one eight zero", "four five two one".
+
+    The parser cannot know what a bare number is. The checker can, because it knows what was
+    cleared: a number nothing else claimed, equal to the value of an item nobody read back, is a
+    readback of that item. A bare number that is NOT the cleared value stays unexplained, so a
+    wrong value said this way is still not a match.
+    """
+    claimed = [_num(h.value) for h in heard]
+    own = re.sub(r"\D", "", callsign)  # "NRL 614": the flight number is not a readback
+    free: list[float] = []
+    for tok in _BARE_NUMBER.findall(text_norm):
+        n = _num(tok)
+        if n is None or (own and tok == own):
+            continue
+        if n in claimed:
+            claimed.remove(n)
+        else:
+            free.append(n)
+    out: list[Item] = []
+    have = {h.type for h in heard}
+    for exp in expected:
+        n = _num(exp.value)
+        if n is None or exp.type in have or exp.type not in ("heading", "speed", "squawk", "altitude", "frequency", "altimeter"):
+            continue
+        if n in free:
+            free.remove(n)
+            out.append(exp.model_copy())
+    return out
+
+
 def rules(clearance: OpenClearance, ext: Extraction, text_norm: str) -> Verdict:
     """Layer 1 only. Returns match / partial / mismatch with an error type."""
     expected = [i for i in clearance.items if i.mandatory]
     heard = list(ext.items)
+    # Only from the aircraft that owes the readback: named by the parser, or, when two numbers side
+    # by side hide the callsign from it ("NRL 614 180"), at least saying its own flight number.
+    own_number = re.sub(r"\D", "", clearance.callsign)
+    if ext.callsign == clearance.callsign or (
+            ext.callsign is None and own_number and re.search(rf"(?<!\d){own_number}(?!\d)", text_norm)):
+        heard += _bare_readbacks(expected, heard, text_norm, clearance.callsign)
     v = Verdict(clearance_id=clearance.id, readback_transmission_id=ext.transmission_id,
                 result="match", expected=expected, heard=heard, confidence=0.95, decided_by="rules")
     if ext.callsign and ext.callsign != clearance.callsign:
@@ -243,7 +283,14 @@ def correction_phrase(clearance: OpenClearance, verdict: Verdict) -> str:
     return f"{spoken_callsign(clearance.callsign)}, negative, {body}"
 
 
-_ROUTE_CUE = re.compile(r"\b(direct|proceed|proceeding|routing|route)\b")
+def confirm_phrase(clearance: OpenClearance) -> str:
+    """What to say when the readback could not be understood: ask, do not accuse."""
+    return f"{spoken_callsign(clearance.callsign)}, confirm {phrase_from_items('', clearance.items)}"
+
+
+# "direct\w*": Whisper fuses "direct estir" into one word ("director", "directly"). The pilot still
+# audibly read a routing back.
+_ROUTE_CUE = re.compile(r"\b(direct\w*|proceed|proceeding|routing|route)\b")
 
 
 def route_fix_unheard(verdict: Verdict, text_norm: str) -> Item | None:
@@ -273,6 +320,14 @@ def check(clearance: OpenClearance, readback: Extraction, tx: Transmission,
         return v
 
     v.correction_phrase = correction_phrase(clearance, v)
+
+    if readback.method == "llm" and v.error_type in ("wrong_value", "wrong_unit", "wrong_direction", "wrong_runway"):
+        # The grammar could not read this readback, so the language model filled the items in.
+        # A value it guessed out of garble is a reason to listen again, never proof of an error.
+        v.result = "ambiguous"
+        v.confidence = 0.5
+        v.reason = f"{v.reason}; but that value was guessed by the language model from words the parser could not read"
+        return v
 
     hyp = n_best_supports_expected(clearance, v, tx, active)
     if hyp is not None:
