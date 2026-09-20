@@ -99,22 +99,37 @@ def test_a_waiting_card_holds_the_clock_briefly_and_a_speed_button_always_wins()
     assert w.clock_speed() == 20.0
     w.add_disruption("storm")
     assert any(c.status == "pending" and c.cause for c in w.cards.values() if c.callsign in w.sim.active)
-    assert w.clock_speed() == 1.0 and 0 < w.card_hold_s() <= 12.0  # a new card: time to see it and key the mic
-    clock["t"] += 13.0
+    assert w.clock_speed() == 1.0 and 0 < w.card_hold_s() <= 8.0  # a new card: time to see it and key the mic
+    clock["t"] += 9.0
     assert w.clock_speed() == 20.0  # nobody said it: the chosen speed is back, and the card waits on the list
     assert any(c.status == "pending" and c.cause for c in w.cards.values() if c.callsign in w.sim.active)
 
+    # In a busy sky cards keep coming. One straight after the last hold does not stop the clock again...
     cs = next(c.callsign for c in w.cards.values() if c.status == "pending" and c.cause and c.callsign in w.sim.active)
-    other = next(a for a in w.sim.active if a != cs and not w.sim.active[a].is_intruder)
-    w.add_disruption("storm", target=other)  # a new card gets its own few seconds
+    others = [a for a in w.sim.active if a != cs and not w.sim.active[a].is_intruder]
+    w.add_disruption("storm", target=others[0])
+    assert w.clock_speed() == 20.0
+    # ...and one after a decent interval does, until a speed button says "I have seen it, go".
+    clock["t"] += 30.0
+    w.add_disruption("fighter", target=others[-1])
     assert w.clock_speed() == 1.0
-    w.set_speed(60.0)  # "I have seen it, go"
+    w.set_speed(60.0)
     assert w.clock_speed() == 60.0 and w.card_hold_s() == 0.0
 
     w.set_ptt(True)  # an exchange in progress still runs in real time, whatever was pressed
     assert w.clock_speed() == 1.0
     w.set_ptt(False)
     assert w.clock_speed() == 60.0
+
+    # An instruction whose readback never gets matched holds the clock for seconds, not for its
+    # whole 25 s timeout.
+    w.set_next_readback("missing_readback")
+    asyncio.run(w.controller_text(f"{C.say_callsign(others[0])}, turn left heading two seven zero"))
+    assert w.core.store.open_clearances(others[0]) and w.clock_speed() == 1.0
+    run(w, 3)  # the pilot's turn comes and goes: this one says nothing
+    clock["t"] += 11.0
+    w.set_speed(60.0)  # (clears the hold of any card the replans in between put up)
+    assert w.core.store.open_clearances(others[0]) and w.clock_speed() == 60.0
 
 
 def test_saying_the_card_goes_through_and_is_marked_said_by_you():
