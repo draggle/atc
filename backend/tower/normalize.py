@@ -425,6 +425,10 @@ def phrase_item(item: Item) -> str:
     """ICAO phraseology for one item, e.g. 'descend flight level two four zero'."""
     a = item.action or ""
     v = item.value
+    if item.type == "manoeuvre":
+        side = "left" if a.endswith("left") else "right"
+        return (f"make a {side} three sixty" if a.startswith("orbit_")
+                else f"hold present position, {side} turns" if a.startswith("hold_") else str(v).lower())
     if item.type == "altitude":
         level = f"flight level {spell_digits(int(v))}" if item.unit == "FL" else spell_altitude_ft(float(v))
         verb = {"climb": "climb", "descend": "descend", "maintain": "maintain"}.get(a, "maintain")

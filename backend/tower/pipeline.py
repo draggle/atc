@@ -12,6 +12,7 @@ from typing import Any
 from schemas import (
     AircraftState,
     Extraction,
+    Item,
     OpenClearance,
     SimCommand,
     Speaker,
@@ -27,6 +28,7 @@ from tower import freeform as FF
 from tower import parse as P
 from tower.commands import items_to_sim_command
 from tower.conform import ConformanceMonitor
+from tower.interpreter import Interpreter
 from tower.llm import LLM, MockLLM, get_llm
 from tower.normalize import normalize
 from tower.resolver.agent import Resolver
@@ -55,6 +57,7 @@ class TowerCore:
         self.last_extraction: Extraction | None = None
         self.verdicts: list[Verdict] = []
         self.waypoint_names: list[str] = [w.upper() for w in (waypoints or {})]
+        self.interpreter = Interpreter(self.llm)
         tools = ResolverTools(
             relisten=relisten or self._relisten_from_nbest,
             active_aircraft=self._active_aircraft,
@@ -136,6 +139,11 @@ class TowerCore:
             taken = {i.type for i in free_items if i.type != "manoeuvre"}
             ext.items = free_items + [i for i in ext.items if i.type not in taken]
             ext.method = "freeform"
+        elif speaker == "controller" and self.interpreter.available:
+            # The controller's own words go to the interpreter agent instead (World._interpret), off
+            # the clock and with the radar picture. The older fallback only copies out what it thinks
+            # was said, knows nothing of the aircraft, and ran here, inside the lock.
+            ext = grammar
         else:
             ext = P.parse_with_fallback(text, active, speaker, llm, transmission_id=tx.id)
         bad = [i for i in ext.items if not FF.valid(i)]
@@ -144,6 +152,12 @@ class TowerCore:
                         [(i.type, i.value) for i in bad])
             ext.items = [i for i in ext.items if FF.valid(i)]
         return ext
+
+    def open_interpreted(self, tx: Transmission, callsign: str, items: list[Item]) -> list[dict[str, Any]]:
+        """A clearance from the interpreter agent's reading of a transmission the grammar could not."""
+        ext = Extraction(transmission_id=tx.id, callsign=callsign, items=items, method="agent")
+        self.last_extraction = ext
+        return self._on_controller(tx, ext)
 
     def tick(self, now: float, states: list[AircraftState] | None = None) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
