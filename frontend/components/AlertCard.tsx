@@ -279,8 +279,18 @@ function useAlertAutoplay(latest: ActiveAlert | undefined, muted: boolean) {
   }, [latest, muted]);
 }
 
+const CORRECTED_SHOWS_MS = 10000; // a corrected alert says so for this long, then leaves the panel
+
 export default function AlertCard() {
-  const { alerts, resolving } = useTowerState();
+  const { alerts: everyAlert, resolving } = useTowerState();
+  const [, tick] = useState(0);
+  const closing = everyAlert.some((a) => a.resolved);
+  useEffect(() => {
+    if (!closing) return;
+    const t = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [closing]);
+  const alerts = everyAlert.filter((a) => !a.resolved || Date.now() - a.resolved.at < CORRECTED_SHOWS_MS);
   const [muted, setMuted] = useState(false);
   useEffect(() => setMuted(readMute()), []);
   const [latest, ...rest] = alerts;

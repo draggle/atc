@@ -318,6 +318,7 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
       if (ev.payload.status === "matched" && next.alerts.length > 0) {
         const settled = new Set((ev.payload.items ?? []).map((i) => `${i.type}:${String(i.value).toUpperCase()}`));
         const alerts = next.alerts.filter((a) => {
+          if (a.resolved) return true; // already closed as "corrected": it shows that for a moment, then goes
           if (a.clearance_id === id) return false;
           const cs = a.callsign ?? callsignForClearance(next, a.clearance_id);
           if (cs !== ev.payload.callsign || a.expected.length === 0) return true;
