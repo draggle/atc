@@ -20,6 +20,11 @@ STALL_S = 25.0  # this long after the first look, a turn must at least have begu
 STALL_PROGRESS_DEG = 5.0
 TURN_MARGIN_S = 30.0  # on top of the time the turn itself needs
 HDG_TOLERANCE_DEG = 10.0
+# A reroute sent by data link is a path, not a heading: see ConformanceMonitor.watch.
+PATH_TOLERANCE_NM = 4.0  # aircraft stay within 3 NM of the curve the planner drew; this is a little more
+PATH_OFF_S = 20.0  # this long outside it, without a break, before anything is said
+PATH_CONFIRM_S = 40.0  # on the path and pointing along it, this long after it was sent: it is flying the reroute
+PATH_ALONG_DEG = 30.0  # "pointing along it": within this of the direction the path has where the aircraft is
 DIRECT_TOLERANCE_DEG = 15.0
 MAX_WATCH_S = 180.0
 
@@ -33,6 +38,21 @@ def _bearing(dx: float, dy: float) -> float:
     return math.degrees(math.atan2(dx, dy)) % 360.0
 
 
+def _nearest_on_path(x: float, y: float, path: list[tuple[float, float]]) -> tuple[float, float]:
+    """(shortest distance in NM from a point to a polyline, the polyline's direction there)."""
+    best, along = float("inf"), 0.0
+    for (ax, ay), (bx, by) in zip(path, path[1:]):
+        dx, dy = bx - ax, by - ay
+        L2 = dx * dx + dy * dy
+        if L2 == 0:
+            continue
+        f = max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / L2))
+        d = math.hypot(x - (ax + f * dx), y - (ay + f * dy))
+        if d < best:
+            best, along = d, _bearing(dx, dy)
+    return best, along
+
+
 @dataclass
 class Watch:
     clearance: OpenClearance
@@ -44,6 +64,7 @@ class Watch:
     wrong_way_since: float | None = None
     reached: bool = False
     extra: dict = field(default_factory=dict)
+    path: list[tuple[float, float]] | None = None  # the route it was sent, as flown: judged on this, not on `item`
 
     @property
     def callsign(self) -> str:
@@ -58,15 +79,23 @@ class ConformanceMonitor:
         self.watches: list[Watch] = []
 
     def watch(self, clearance: OpenClearance, items: list[Item] | None = None,
-              now: float | None = None) -> list[Watch]:
-        """Watch the motion-affecting items of a clearance (what the pilot read back, ideally)."""
+              now: float | None = None, path: list[tuple[float, float]] | None = None) -> list[Watch]:
+        """Watch the motion-affecting items of a clearance (what the pilot read back, ideally).
+
+        `path`: the aircraft was sent a route by data link ("heading 155 for 8 miles, then direct
+        ESTIR") and flies that line. Its heading item is then judged by whether the aircraft stays
+        on the line. Waiting for it to point at 155 was wrong: on a short leg with a big turn it
+        never gets there before it has to turn back, which is exactly what it was told to do, and
+        a minute later it was reported as "not flying the clearance".
+        """
         t0 = now if now is not None else clearance.issued_at
         out: list[Watch] = []
         for item in (items if items is not None else clearance.items):
             if item.type in ("altitude", "heading", "route"):
                 if item.type == "route" and str(item.value).upper() not in self.waypoints:
                     continue
-                w = Watch(clearance=clearance, item=item, started_at=t0)
+                w = Watch(clearance=clearance, item=item, started_at=t0,
+                          path=list(path) if path and len(path) >= 2 and item.type == "heading" else None)
                 self.watches.append(w)
                 out.append(w)
         return out
@@ -103,6 +132,8 @@ class ConformanceMonitor:
         elapsed = now - w.started_at
         if w.item.type == "altitude":
             return self._altitude(w, s, now, elapsed)
+        if w.path is not None:
+            return self._on_path(w, s, now, elapsed)
         if w.item.type == "heading":
             return self._heading(w, s, elapsed)
         if w.item.type == "route":
@@ -177,6 +208,23 @@ class ConformanceMonitor:
             w.reached = True
             return self._verdict(w, Item(type="heading", value=int(round(s.hdg_deg)) % 360, unit="deg"),
                                  f"{w.callsign} heading {int(s.hdg_deg):03d} has not converged on {int(cleared):03d} after {int(elapsed)} s")
+        return None
+
+    def _on_path(self, w: Watch, s: AircraftState, now: float, elapsed: float) -> Verdict | None:
+        """Is it on the route it was sent? Distance to that line, whatever way it happens to point."""
+        off, along = _nearest_on_path(s.x_nm, s.y_nm, w.path or [])
+        if off <= PATH_TOLERANCE_NM:
+            w.extra.pop("off_since", None)
+            # Near the line is not enough to call it confirmed: an aircraft that ignored the route
+            # is near it too, for the first minute. It has to be going the way the line goes.
+            if elapsed >= PATH_CONFIRM_S and _ang_diff(s.hdg_deg, along) <= PATH_ALONG_DEG:
+                w.reached = True
+            return None
+        since = w.extra.setdefault("off_since", now)
+        if now - since >= PATH_OFF_S:
+            w.reached = True
+            return self._verdict(w, Item(type="heading", value=int(round(s.hdg_deg)) % 360, unit="deg"),
+                                 f"{w.callsign} is {off:.0f} NM off the route it was sent, heading {int(s.hdg_deg):03d}")
         return None
 
     def _direct(self, w: Watch, s: AircraftState, elapsed: float) -> Verdict | None:

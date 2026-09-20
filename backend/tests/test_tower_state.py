@@ -132,3 +132,63 @@ def test_conformance_direct_uses_bearing():
     assert m.tick([state("ACA123", 30000, hdg=180)], 25.0) == []  # first look
     v = m.tick([state("ACA123", 30000, hdg=180)], 60.0)  # 35 s on and still flying away from it
     assert len(v) == 1 and "BOSOX" in v[0].reason
+
+
+# --------------------------------------------------------------------------- a route sent by data link
+
+def _short_sharp_jog():
+    """One aircraft heading east, sent a short leg on a heading far from its own, then direct EXIT:
+    the kind of reroute in Saturday night's screenshot ("heading 155 for 8 miles"). The leg is
+    shorter than the turn, so the aircraft starts back towards the exit before it ever points
+    down the leg. Returns the simulator, the aircraft and the line it was sent."""
+    import math
+
+    from planner.trajectory import flyable
+    from schemas import FlightSpec, Scenario, SimCommand, Waypoint
+    from sim.engine import Simulator
+
+    wps = [Waypoint(name="ENTRY", x_nm=-100, y_nm=0), Waypoint(name="EXIT", x_nm=100, y_nm=0)]
+    sim = Simulator(Scenario(name="t", waypoints=wps, flights=[
+        FlightSpec(callsign="UAL210", route=["ENTRY", "EXIT"], entry_time_s=0, alt_ft=35000, gs_kt=420)]))
+    sim.step(1.0)
+    a = sim.active["UAL210"]
+    via = [(a.x + 3 * math.sin(math.radians(210)), a.y + 3 * math.cos(math.radians(210)))]
+    sent = flyable([(a.x, a.y), *via, (100.0, 0.0)], a.hdg, a.gs)
+    sim.apply("UAL210", SimCommand(kind="route", value="EXIT", via=via))
+    return sim, a, sent
+
+
+def _fly(sim, mon, seconds=150):
+    out = []
+    for _ in range(seconds):
+        sim.step(1.0)
+        out += mon.tick(sim.aircraft(), sim.t)
+    return out
+
+
+def test_an_aircraft_flying_the_route_it_was_sent_is_not_reported():
+    """It never points at 155: the leg is shorter than the turn, so it curves out and back, which is
+    the route. Judged on the heading it was reported as "not flying the clearance" a minute later."""
+    hdg = Item(type="heading", value=210, unit="deg", action="turn_right")
+
+    sim, a, sent = _short_sharp_jog()
+    old_way = ConformanceMonitor({})
+    old_way.watch(clr("c1", "UAL210", [hdg]), now=sim.t)
+    assert _fly(sim, old_way), "this is the false alert: if it stops firing, the test no longer proves anything"
+
+    sim, a, sent = _short_sharp_jog()
+    mon = ConformanceMonitor({})
+    mon.watch(clr("c1", "UAL210", [hdg]), now=sim.t, path=sent)
+    assert _fly(sim, mon) == []
+    assert not mon.watching("UAL210")  # and it was confirmed, not left hanging
+    assert abs(a.y) < 4.0 and a.x > -90  # back on its way to the exit
+
+
+def test_an_aircraft_that_leaves_the_route_it_was_sent_still_is():
+    from schemas import SimCommand
+    sim, a, sent = _short_sharp_jog()
+    mon = ConformanceMonitor({})
+    mon.watch(clr("c1", "UAL210", [Item(type="heading", value=210, unit="deg", action="turn_right")]), now=sim.t, path=sent)
+    sim.apply("UAL210", SimCommand(kind="heading", value=360.0))  # goes north instead
+    alerts = _fly(sim, mon)
+    assert len(alerts) == 1 and "off the route" in alerts[0].reason
