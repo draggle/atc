@@ -501,3 +501,16 @@ def test_agent_request_keeps_agent_reply_and_adds_answer(world):
 
 def test_stage_model_defaults():
     assert Stage().payload() == {"slots": [], "ttl_s": 0.0, "by": "director", "text": ""}
+
+
+def test_only_real_descriptors_reach_the_screen():
+    """`query.cards` returns instruction-card briefs under a key called "cards". They are not
+    things the registry can draw, and before the guard they arrived as blank cards."""
+    from agent.loop import _cards_of
+
+    brief = {"id": "c1", "callsign": "ACA123", "status": "pending", "phrase": "...", "reason": "..."}
+    table = {"kind": "table", "columns": ["a"], "rows": [["b"]]}
+    assert _cards_of({"cards": [brief, brief], "card": table}) == [table]
+    assert _cards_of({"cards": [brief]}) == []
+    assert _cards_of({"card": {"kind": "not-a-kind"}}) == []
+    assert _cards_of({"card": table}) == [table]
