@@ -9,7 +9,7 @@ import pytest
 from pilots.readback import item_phrases, say_callsign
 from schemas import Item, OpenClearance, Transmission
 from tower.check import check
-from tower.normalize import normalize, spoken_callsign, spell_digits
+from tower.normalize import normalize, spell_digits, spoken_callsign
 from tower.parse import parse
 
 ACTIVE = ["ACA123", "ACA133", "NRL614", "DAL456"]
