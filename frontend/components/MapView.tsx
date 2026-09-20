@@ -268,6 +268,15 @@ export default function MapView() {
   const [dropMode, setDropMode] = useState<DropMode>("off");
   const [menuOpen, setMenuOpen] = useState(false);
   const [fontReady, setFontReady] = useState(false);
+  // Agent mode (TRD 08, rung j): the Disrupt and View panels fold to a "···" until asked for, by a
+  // click or by squack's `ui_command panel`. Normal mode never looks at these.
+  const agentMode = state.uiMode === "agent";
+  const [peek, setPeek] = useState<Record<string, boolean>>({});
+  const folded = (name: string) => agentMode && !peek[name] && state.panel !== name;
+  const fold = (name: string, label: string) => (
+    <button type="button" className="glass pointer-events-auto btn w-fit text-muted" title={`Show ${label}`} aria-label={`Show ${label}`} onClick={() => setPeek((p) => ({ ...p, [name]: true }))}>···</button>
+  );
+  const unfold = (name: string) => { setPeek((p) => ({ ...p, [name]: false })); if (state.panel === name) dispatch({ type: "set_panel", panel: null }); };
   const trails = useRef(new Map<string, { at: number; pts: [number, number, number][] }>());
 
   const frame: FrameLike = sim?.geo ?? DEFAULT_FRAME;
@@ -325,6 +334,20 @@ export default function MapView() {
   useEffect(() => {
     if (loaded) fit(topDown ? 0 : 52, topDown ? 0 : -14);
   }, [topDown]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // squack asked for a camera move (`ui_command camera`): apply it once, then tell the store.
+  const cameraReq = state.cameraRequest;
+  useEffect(() => {
+    if (!cameraReq || !loaded) return;
+    const map = mapRef.current;
+    if (cameraReq.exaggeration !== undefined) dispatch({ type: "set_view", view: { exaggeration: cameraReq.exaggeration } });
+    if (cameraReq.top_down) fit(0, 0);
+    else if (map && (cameraReq.pitch !== undefined || cameraReq.bearing !== undefined)) {
+      flyingUntil.current = performance.now() + 900;
+      map.easeTo({ pitch: cameraReq.pitch ?? map.getPitch(), bearing: cameraReq.bearing ?? map.getBearing(), duration: 800 });
+    }
+    dispatch({ type: "camera_consumed", seq: cameraReq.seq });
+  }, [cameraReq, loaded, fit, dispatch]);
 
   // No globe projection. With the deck.gl overlay it drops every aircraft icon, label and ring and
   // leaves only the lines, and at the scale of one sector the Earth looks flat anyway.
@@ -1074,7 +1097,9 @@ export default function MapView() {
       {/* Disrupt: one control. Random puts something where it will matter; Choose lets you place a kind. */}
       {/* z-10: the deck.gl overlay canvas paints above unstacked siblings, so traffic drew over these panels */}
       <div className="pointer-events-none absolute z-10 left-2 top-[52px] bottom-[196px] w-[336px] flex flex-col gap-2 overflow-y-auto scroll-thin">
-      <div className="glass pointer-events-auto px-2.5 py-2">
+      {folded("disrupt") ? fold("disrupt", "the Disrupt control") : (
+      <div className="glass pointer-events-auto px-2.5 py-2 relative">
+        {agentMode && <button type="button" className="absolute top-1.5 right-2 text-[11px] text-muted hover:text-fg" onClick={() => unfold("disrupt")} aria-label="Hide">×</button>}
         <div className="flex items-center gap-2">
           <span className="eyebrow">Disrupt</span>
           <button
@@ -1130,6 +1155,7 @@ export default function MapView() {
           </div>
         )}
       </div>
+      )}
       {/* Everything squack knows about the selected aircraft sits under the control, never over it. */}
       <FlightStrip />
       </div>

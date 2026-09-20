@@ -16,8 +16,10 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -93,6 +95,10 @@ RISK_FAST_CADENCE_S = 2.0  # above 1x the prediction runs every this many sim se
 RISK_EMIT_EVERY_S = 1.0  # the risk event goes out at most this often
 RISK_N_MAX = 256
 RISK_N_MIN = 32
+# --- squack agent (backend/agent/, docs/trd/08-squack-agent-prd.md) ---
+EVENT_RING = 500  # emitted events kept in World.events for query.timeline
+RING_SKIP = {"radar", "scoreboard", "stats", "risk"}  # streams: nothing a timeline would show
+EVENT_ANSWER_GAP_S = 8.0  # squack talks unprompted at most this often
 
 Emit = Callable[[dict[str, Any]], None]
 
@@ -196,6 +202,17 @@ class World:
         self._risk_prev_empty = True  # the previous report had no pairs: nothing to clear on screen
         self.conflicts_predicted = 0
         self.conflicts_resolved = 0
+        # --- squack agent (backend/agent/): ui mode, event ring buffer, wake policy, the agent itself ---
+        from agent.wake import WakePolicy
+        self.ui_mode: str = "normal"  # "normal" | "agent": set_ui_mode
+        self.events: deque[dict[str, Any]] = deque(maxlen=EVENT_RING)  # the last emitted events, minus streams
+        self.wake = WakePolicy()
+        self._agent: Any = None  # SquackAgent, built on first use so the LLM stays optional
+        self._loop: asyncio.AbstractEventLoop | None = None  # for emits from the agent's thread
+        self._loop_thread: threading.Thread | None = None
+        self._agent_busy = False  # a user turn is in flight: event answers wait
+        self._event_backlog: list[dict[str, Any]] = []  # wake batches not yet spoken about
+        self._event_answer_t = -1e18  # real time of the last unprompted answer
         AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------ setup
@@ -273,7 +290,22 @@ class World:
             self.memory.observe(ev)
         except Exception:  # noqa: BLE001 - memory never breaks the event path
             log.exception("memory.observe failed")
+        # --- squack agent: the ring buffer query.timeline reads, and the wake policy ---
+        if ev.get("type") not in RING_SKIP:
+            self.events.append(ev)
+        try:
+            self.wake.observe(ev)
+        except Exception:  # noqa: BLE001 - the agent never breaks the event path
+            log.exception("wake.observe failed")
         self._emit_out(ev)
+
+    def emit_from_thread(self, ev: dict[str, Any]) -> None:
+        """Emit from the agent's worker thread: hand the event to the socket loop if there is one."""
+        loop, owner = self._loop, self._loop_thread
+        if loop is not None and owner is not None and threading.current_thread() is not owner and loop.is_running():
+            loop.call_soon_threadsafe(self._emit, ev)
+        else:
+            self._emit(ev)
 
     # ------------------------------------------------------------------ geography
 
@@ -341,6 +373,7 @@ class World:
             "buffer_nm": self.buffer_nm, "error_rate": self.error_rate, "noise": self.noise,
             "speed": self.speed,
             "lifecycle": self.lifecycle,
+            "ui_mode": self.ui_mode,  # squack agent: "normal" | "agent"
             "world_id": self.world_id,
             "memory": self.memory.label if self.memory.enabled else None,
             "scenarios": scenario_catalog(),
@@ -619,6 +652,7 @@ class World:
         separation monitoring and the core's timeouts never skip, and one radar frame is sent
         at the end.
         """
+        await self._agent_pulse()  # squack agent: wake batches and the stage, in any lifecycle
         if self.scenario is None or self.lifecycle != "running":
             return
         async with self._lock:
@@ -1888,13 +1922,117 @@ class World:
             on_text(text)  # the dictation final, before the agent answers
         return await self.agent_request(text)
 
-    async def agent_request(self, text: str) -> str:
+    async def agent_request(self, text: str, history: list[dict[str, Any]] | None = None,
+                            ui_state: dict[str, Any] | None = None) -> str:
         from world_agent import handle  # local import: keeps the LLM optional
-        reply, actions = await handle(self, text)
+        self._agent_busy = True
+        try:
+            reply, actions = await handle(self, text, history, ui_state)
+        finally:
+            self._agent_busy = False
+        # agent_reply stays for the headset path; the bar reads the `answer` the loop emitted.
         self.emit(event("agent_reply", {"text": reply, "actions": actions}, t=self.sim.t))
-        # squack's voice: the same call belongs after the agent loop's `answer` event once it lands.
         await speak_reply(self, reply)  # respects self.speak_replies; never raises
         return reply
+
+    # --- squack agent (backend/agent/, docs/trd/08-squack-agent-prd.md) ---------------------------
+
+    def agent(self) -> Any:
+        """The SquackAgent, built once. Its LLM is Baseten with a key, the keyword router without."""
+        if self._agent is None:
+            from agent.loop import SquackAgent
+            from tower.llm import get_llm
+            self._agent = SquackAgent(self, get_llm(), emit=self.emit_from_thread)
+        return self._agent
+
+    def _remember_loop(self) -> None:
+        try:
+            self._loop = asyncio.get_running_loop()
+            self._loop_thread = threading.current_thread()
+        except RuntimeError:
+            self._loop = self._loop_thread = None
+
+    def set_ui_mode(self, mode: str) -> None:
+        """normal: the hand-laid-out panels. agent: a stage of at most three cards squack fills."""
+        mode = mode if mode in ("normal", "agent") else "normal"
+        was, self.ui_mode = self.ui_mode, mode
+        self.emit_state()
+        if mode == "agent" and was != "agent":
+            # Do not open on a blank stage: what is going on now, as if it had just happened.
+            batch = [event("disruption", self._disruption_payload(d), t=self.sim.t) for d in self.disruptions.values()]
+            if self.risk.pairs:
+                batch.append(event("risk", self._risk_payload(self.risk), t=self.sim.t))
+            self.wake.pending.clear()
+            self._stage(batch)
+
+    def _stage(self, batch: list[dict[str, Any]]) -> None:
+        from agent.wake import Director
+        stage = Director.stage_for(batch, self)
+        self.emit(event("stage", stage.payload(), t=self.sim.t))
+        self.wake.staged(None, bool(stage.slots))
+
+    async def _speak_reply(self, text: str) -> None:
+        """Say the reply aloud when tower/voice.py (other branch) is present; silent otherwise."""
+        try:
+            from tower.voice import speak_reply  # type: ignore[import-not-found]
+        except ImportError:
+            return
+        try:
+            await speak_reply(self, text)
+        except Exception:  # noqa: BLE001 - the voice never breaks the answer
+            log.exception("speak_reply failed")
+
+    async def _agent_pulse(self) -> None:
+        """Once per tick. A wake batch (agent/wake.py) does two things: in agent mode the director
+        puts the stage up at once; in both modes squack says what happened, an `answer` with
+        for: "event", at most one per EVENT_ANSWER_GAP_S and never while a user turn is in flight
+        (the batch waits in a backlog). With a model the agent's turn writes that answer and, in
+        agent mode, may replace the stage; without one it is the director's own text and cards."""
+        from agent.wake import Director, Stage
+
+        batch = self.wake.poll()
+        if batch is not None:
+            if self.ui_mode == "agent":
+                self._stage(batch)
+            self._event_backlog += batch
+        elif self.ui_mode == "agent" and self.wake.idle_due():
+            self.emit(event("stage", Stage().payload(), t=self.sim.t))
+        if not self._event_backlog or self._agent_busy:
+            return
+        now = self.wake.clock()
+        if now - self._event_answer_t < EVENT_ANSWER_GAP_S:
+            return
+        self._event_answer_t = now
+        batch, self._event_backlog = self._event_backlog, []
+        agent = self.agent()
+        if not agent.has_model:
+            stage = Director.stage_for(batch, self)
+            self.emit(event("answer", {"turn_id": f"ev-{int(now * 1000) & 0xFFFFFF:06x}", "text": stage.text or "Something changed.",
+                                       "cards": stage.slots, "for": "event", "steps": []}, t=self.sim.t))
+            await self._speak_reply(stage.text)
+            return
+        self._remember_loop()
+
+        async def turn() -> None:
+            self._agent_busy = True
+            try:
+                ans = await asyncio.to_thread(agent.handle_events, batch)
+            finally:
+                self._agent_busy = False
+            if ans is None:
+                return
+            if self.ui_mode == "agent" and ans.cards:
+                self.emit(event("stage", Stage(slots=ans.cards, ttl_s=60.0, by="agent", text=ans.text).payload(),
+                                t=self.sim.t))
+                self.wake.staged(None, True)
+            await self._speak_reply(ans.text)
+
+        if self.realtime:
+            task = asyncio.create_task(turn())
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+        else:
+            await turn()
 
     # tools the agent can call --------------------------------------------------------------
 

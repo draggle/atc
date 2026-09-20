@@ -5,6 +5,10 @@ settings. It can never issue a clearance: anything a plane does goes over the ra
 
 With BASETEN_API_KEY set it is a real tool-calling loop (max 3 calls). Without a key it is a
 deterministic keyword parser over the same tool set, so the demo works offline.
+
+Since the squack agent (backend/agent/, TRD 08) `handle` is a thin wrapper over that loop and
+its registry. The original `_llm_agent` and `_keyword_agent` are kept below for reference and
+for tests that drive them directly; nothing in the app calls them any more.
 """
 from __future__ import annotations
 
@@ -50,11 +54,14 @@ AIRLINES = {"air canada": "ACA", "canada": "ACA", "westjet": "WJA", "west jet": 
             "speedbird": "BAW", "british": "BAW"}
 
 
-async def handle(world: "World", text: str) -> tuple[str, list[str]]:
-    llm = get_llm()
-    if isinstance(llm, MockLLM):
-        return await asyncio.to_thread(_keyword_agent, world, text)
-    return await asyncio.to_thread(_llm_agent, world, llm, text)
+async def handle(world: "World", text: str, history: list[dict[str, Any]] | None = None,
+                 ui_state: dict[str, Any] | None = None) -> tuple[str, list[str]]:
+    """The headset and the command bar share one brain: backend/agent/loop.py. Returns the old
+    (reply, actions) pair; the loop itself emits `agent_step` and `answer`."""
+    world._remember_loop()  # noqa: SLF001 - so the loop's events reach the socket from the worker thread
+    agent = world.agent()
+    ans = await asyncio.to_thread(agent.handle_message, text, history, ui_state)
+    return ans.text, ans.actions
 
 
 def _run_tool(world: "World", name: str, args: dict[str, Any]) -> str:

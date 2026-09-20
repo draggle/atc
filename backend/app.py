@@ -320,6 +320,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
         await ws.send_text(json.dumps({"type": "scoreboard", "t": world.sim.t,
                                        "payload": world.scoreboard().model_dump()}, default=_json_default))
     dictation: Dictation | None = None  # open while a push-to-talk channel is held
+    agent_history: list[dict[str, Any]] = []  # squack agent: this connection's last turns
     try:
         while True:
             msg = await ws.receive()
@@ -348,7 +349,13 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 if held is not None:
                     _spawn(held.finish(), "headset request" if held.channel == "agent" else "transmission")
             elif typ == "agent_text":
-                _spawn(world.agent_request(str(data.get("text", ""))), "headset request")
+                # squack agent: ui_state {selected, planView, speed, voice} lets "follow it" resolve;
+                # agent_history is this connection's last 10 turns (backend/agent/loop.py)
+                _spawn(world.agent_request(str(data.get("text", "")), agent_history,
+                                           data.get("ui_state") if isinstance(data.get("ui_state"), dict) else None),
+                       "headset request")
+            elif typ == "set_ui_mode":  # squack agent: {"mode": "normal" | "agent"}. set_mode is manual/auto
+                world.set_ui_mode(str(data.get("mode", "normal")))
             elif typ == "radio_text":
                 _spawn(world.controller_text(str(data.get("text", ""))), "transmission")
             elif typ == "configure" and data.get("source") == "live":

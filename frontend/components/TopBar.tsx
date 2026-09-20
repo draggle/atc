@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { snapshotClock, useTowerDispatch, useTowerState, type Connection } from "@/lib/store";
 import { useClient } from "./TowerApp";
 import type { Lifecycle, SimState } from "@/lib/types";
+import UiModeToggle from "./UiModeToggle";
 
 const SPEEDS = [1, 5, 20, 60] as const;
 
@@ -151,7 +152,7 @@ export default function TopBar() {
           {connection !== "live" && ` · ${connection === "closed" ? "reconnecting" : connection}`}
         </span>
         <div className="h-5 w-px bg-line" />
-        {/* mode toggle lands here */}
+        <UiModeToggle />
         <button
           onClick={() => dispatch({ type: "set_settings_open", open: true })}
           aria-expanded={settingsOpen}
