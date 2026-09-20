@@ -178,3 +178,8 @@ input[type="range"] { accent-color: var(--accent); }
 
 /* Command bar: the thin caret at the end of the typewriter placeholder, blinking only while a line is being typed. */
 @keyframes cb-caret { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+
+/* squack agent: a card entering the stage or the answer dock rises in over a quarter second. */
+@keyframes card-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.card-in { animation: card-in 0.25s cubic-bezier(0.22, 1, 0.36, 1) both; }
+@media (prefers-reduced-motion: reduce) { .card-in { animation-duration: 0.01s; } }

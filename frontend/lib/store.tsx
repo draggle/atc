@@ -22,6 +22,7 @@ import type {
   Transmission,
   LonLatAlt,
 } from "./types";
+import type { AgentStep, Answer, CardDescriptor, SimJob, UiCommand, UiMode } from "./cards/types";
 
 export type Connection = "connecting" | "live" | "mock" | "closed";
 
@@ -64,6 +65,29 @@ export interface Sliders {
   buffer_nm: number;
   error_rate: number;
   noise: number;
+}
+
+/** An `answer` as the dock shows it: the event plus when it landed and whether it was closed. */
+export interface StoredAnswer extends Answer {
+  at: number; // ms wall clock
+  dismissed?: boolean;
+}
+
+/** Agent mode's panel layer: the last `stage` event and when it arrived, so ttls count from there. */
+export interface StageState {
+  slots: CardDescriptor[];
+  by: "director" | "agent";
+  at: number; // ms wall clock
+  ttl_s: number;
+}
+
+/** One camera move squack asked for. MapView applies it once, then reports it consumed. */
+export interface CameraRequest {
+  seq: number;
+  pitch?: number;
+  bearing?: number;
+  exaggeration?: number;
+  top_down?: boolean;
 }
 
 export interface TowerState {
@@ -123,6 +147,22 @@ export interface TowerState {
   riskPairs: Record<string, SeenRisk>;
   /** What the mic is hearing right now (the command bar mirrors it); null DICTATION_HOLD_MS after the final. */
   dictation: (Dictation & { at: number }) | null;
+  // ---- the squack agent (TRD 08). Everything below is additive to the screen above.
+  /** squack's last five answers, oldest first. The dock shows the newest that was not dismissed. */
+  answers: StoredAnswer[];
+  /** turn_id -> the tool calls of that agent turn, in order. (`steps` above is the resolver's.) */
+  agentSteps: Record<string, AgentStep[]>;
+  /** The agent turn in progress or just finished: steps stream for it, the answer closes it. */
+  turn: { id: string; at: number; done: boolean } | null;
+  /** Agent mode's stage. Rendered only when uiMode is "agent"; the director sends it in both. */
+  stage: StageState | null;
+  /** job_id -> the background simulation, running or done */
+  simJobs: Record<string, SimJob>;
+  uiMode: UiMode;
+  /** A camera move asked for by a ui_command; MapView consumes it once. */
+  cameraRequest: CameraRequest | null;
+  /** Which floating panel squack asked to open ("disrupt", "view", "scoreboard", ...). null: none in particular. */
+  panel: string | null;
 }
 
 /** The short form of an instruction, as a radar data block would show it. */
@@ -177,6 +217,14 @@ export const initialState: TowerState = {
   risk: null,
   riskPairs: {},
   dictation: null,
+  answers: [],
+  agentSteps: {},
+  turn: null,
+  stage: null,
+  simJobs: {},
+  uiMode: "normal",
+  cameraRequest: null,
+  panel: null,
 };
 
 export type Action =
@@ -202,7 +250,15 @@ export type Action =
   | { type: "set_follow"; on: boolean }
   /** the hold after a dictation final is over; a final younger than the hold is left alone */
   | { type: "dictation_clear" }
-  | { type: "reset" };
+  | { type: "reset" }
+  // ---- the squack agent (TRD 08)
+  | { type: "set_ui_mode"; mode: UiMode }
+  /** apply a ui.* command on the screen, whether it came as an event or from a card's button */
+  | { type: "ui_command"; command: UiCommand["command"]; args: Record<string, unknown> }
+  | { type: "dismiss_answer"; turn_id: string }
+  /** MapView applied the camera request with this seq */
+  | { type: "camera_consumed"; seq: number }
+  | { type: "set_panel"; panel: string | null };
 
 const TRANSCRIPT_CAP = 200;
 const GHOST_MS = 30000; // how long the old path stays on screen after a reroute
@@ -271,7 +327,53 @@ function clearWorld(state: TowerState): TowerState {
     follow: false,
     risk: null,
     riskPairs: {},
+    stage: null,
   };
+}
+
+const ANSWERS_CAP = 5;
+const PLAN_VIEWS = new Set<string>(["today", "tower", "both", "changed"]);
+
+/**
+ * A ui.* tool ran (or a card's button was pressed): change what the screen shows. Focus and follow
+ * are the existing actions; camera, line_view, panel and mode set state the map and panels read.
+ */
+export function applyUiCommand(state: TowerState, command: UiCommand["command"], args: Record<string, unknown>): TowerState {
+  const cs = typeof args.callsign === "string" ? args.callsign.toUpperCase() : null;
+  switch (command) {
+    case "focus":
+      return cs ? reducer(state, { type: "focus", callsign: cs }) : state;
+    case "follow": {
+      const on = typeof args.on === "boolean" ? args.on : true;
+      if (cs && on) return reducer(state, { type: "focus", callsign: cs });
+      return { ...state, follow: on && !!state.selected };
+    }
+    case "camera": {
+      const num = (k: string) => (typeof args[k] === "number" && Number.isFinite(args[k]) ? (args[k] as number) : undefined);
+      const req: CameraRequest = { seq: (state.cameraRequest?.seq ?? 0) + 1 };
+      if (args.top_down === true) req.top_down = true;
+      if (num("pitch") !== undefined) req.pitch = Math.max(0, Math.min(78, num("pitch")!));
+      if (num("bearing") !== undefined) req.bearing = num("bearing");
+      if (num("exaggeration") !== undefined) req.exaggeration = Math.max(1, Math.min(14, Math.round(num("exaggeration")!)));
+      return { ...state, cameraRequest: req };
+    }
+    case "line_view": {
+      const view = typeof args.view === "string" ? args.view : typeof args.mode === "string" ? args.mode : null;
+      return view && PLAN_VIEWS.has(view) ? { ...state, planView: view as PlanView } : state;
+    }
+    case "panel": {
+      const name = typeof args.name === "string" ? args.name : typeof args.panel === "string" ? args.panel : null;
+      const open = args.open !== false;
+      if (name === "setup") return { ...state, setupOpen: open };
+      return { ...state, panel: open ? name : null };
+    }
+    case "mode": {
+      const mode = args.mode === "agent" || args.mode === "normal" ? args.mode : null;
+      return mode ? { ...state, uiMode: mode } : state;
+    }
+    default:
+      return state;
+  }
 }
 
 export const riskKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
@@ -503,6 +605,32 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
       return next;
     }
 
+    // ---- the squack agent (TRD 08)
+    case "agent_step": {
+      const id = ev.payload.turn_id;
+      const prev = state.agentSteps[id] ?? [];
+      const agentSteps = { ...state.agentSteps, [id]: [...prev.filter((s) => s.step !== ev.payload.step), ev.payload].sort((a, b) => a.step - b.step) };
+      const turn = state.turn?.id === id ? state.turn : { id, at: Date.now(), done: false };
+      return { ...state, agentSteps, turn };
+    }
+
+    case "answer": {
+      const a: StoredAnswer = { ...ev.payload, at: Date.now() };
+      const answers = [...state.answers.filter((x) => x.turn_id !== a.turn_id), a].slice(-ANSWERS_CAP);
+      return { ...state, answers, turn: { id: a.turn_id, at: state.turn?.id === a.turn_id ? state.turn.at : a.at, done: true } };
+    }
+
+    case "ui_command":
+      return applyUiCommand(state, ev.payload.command, ev.payload.args ?? {});
+
+    case "stage": {
+      const slots = (ev.payload.slots ?? []).slice(0, 3);
+      return { ...state, stage: { slots, by: ev.payload.by, at: Date.now(), ttl_s: ev.payload.ttl_s } };
+    }
+
+    case "sim_job":
+      return { ...state, simJobs: { ...state.simJobs, [ev.payload.job_id]: ev.payload } };
+
     default:
       return state;
   }
@@ -548,6 +676,18 @@ export function reducer(state: TowerState, action: Action): TowerState {
       return state.dictation?.final && Date.now() - state.dictation.at >= DICTATION_HOLD_MS ? { ...state, dictation: null } : state;
     case "reset":
       return { ...initialState, connection: state.connection, view: state.view };
+      // The mode is a screen preference, like the connection: it survives a new world.
+      return { ...initialState, connection: state.connection, uiMode: state.uiMode };
+    case "set_ui_mode":
+      return { ...state, uiMode: action.mode };
+    case "ui_command":
+      return applyUiCommand(state, action.command, action.args);
+    case "dismiss_answer":
+      return { ...state, answers: state.answers.map((a) => (a.turn_id === action.turn_id ? { ...a, dismissed: true } : a)) };
+    case "camera_consumed":
+      return state.cameraRequest?.seq === action.seq ? { ...state, cameraRequest: null } : state;
+    case "set_panel":
+      return { ...state, panel: action.panel };
   }
 }
 
