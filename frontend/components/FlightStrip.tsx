@@ -1,6 +1,7 @@
 "use client";
 
-import { useTowerDispatch, useTowerState } from "@/lib/store";
+import { alertFor, useTowerDispatch, useTowerState, type ActiveAlert } from "@/lib/store";
+import { ItemList, alertLook } from "./AlertCard";
 import { useClient } from "./TowerApp";
 
 const THREAT: Record<string, string> = {
@@ -28,13 +29,37 @@ function Field({ label, value, tone }: { label: string; value: string; tone?: st
   );
 }
 
+/** What is wrong with this aircraft, in the alert card's own words and tones. The card owns the actions. */
+function Issue({ alert }: { alert: ActiveAlert }) {
+  const { radar, title, frame, titleCls } = alertLook(alert);
+  return (
+    <div className={`rounded-md border-2 px-2.5 py-2 ${frame}`}>
+      {radar && <div className="text-[10px] uppercase tracking-wider font-semibold text-cyan-200">Read back right, flying wrong</div>}
+      <div className={`text-sm font-bold tracking-wide ${titleCls}`}>{title}</div>
+      <div className="mt-1 grid grid-cols-2 gap-3 text-xs">
+        <div className="min-w-0">
+          <div className="eyebrow mb-0.5">Expected</div>
+          <ItemList items={alert.expected} tone="expected" />
+        </div>
+        <div className="min-w-0">
+          <div className="eyebrow mb-0.5">Heard</div>
+          <ItemList items={alert.heard} tone="heard" />
+        </div>
+      </div>
+      {alert.reason && <p className="mt-1.5 text-[11px] leading-snug text-fg/80">{alert.reason}</p>}
+    </div>
+  );
+}
+
 /** Everything Tower knows about one aircraft: where it is, what it was told, and what it did. */
 export default function FlightStrip() {
-  const { selected, follow, aircraft, plan, cards, clearances, watching } = useTowerState();
+  const state = useTowerState();
+  const { selected, follow, aircraft, plan, cards, clearances, watching } = state;
   const dispatch = useTowerDispatch();
   const { send } = useClient();
   if (!selected) return null;
   const a = aircraft[selected];
+  const alert = alertFor(state, selected);
   const path = plan?.paths.find((p) => p.callsign === selected);
   const history = cards.filter((c) => c.callsign === selected).slice(-4).reverse();
   const open = Object.values(clearances).filter((c) => c.callsign === selected && c.status === "open");
@@ -43,6 +68,7 @@ export default function FlightStrip() {
 
   return (
     <div className="glass pointer-events-auto p-3 flex flex-col gap-3">
+      {alert && <Issue alert={alert} />}
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="eyebrow">{a?.is_intruder ? (THREAT[a.threat ?? ""] ?? "Uncooperative traffic") : "Flight"}</div>
@@ -87,7 +113,7 @@ export default function FlightStrip() {
           </div>
         </div>
       ) : (
-        <p className="text-xs text-muted">This aircraft has left the sector.</p>
+        <p className="text-xs text-muted">{selected} has left the sector.</p>
       )}
 
       {watching.includes(selected) && (

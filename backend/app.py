@@ -50,7 +50,13 @@ class Hub:
     async def pump(self) -> None:
         while True:
             ev = await self.queue.get()
-            data = json.dumps(ev, default=_json_default)
+            try:
+                data = json.dumps(ev, default=_json_default)
+            except Exception:
+                # One event that cannot be sent must never stop all the others. This task dying is
+                # silent: the backend keeps running and every screen freezes on its last frame.
+                log.exception("dropped an event that could not be turned into JSON: %s", ev.get("type"))
+                continue
             dead = []
             for ws in list(self.clients):
                 try:
@@ -64,6 +70,8 @@ class Hub:
 def _json_default(o: Any) -> Any:
     if isinstance(o, (np.floating, np.integer)):
         return o.item()
+    if hasattr(o, "model_dump"):  # a pydantic model that was put in a payload as it was
+        return o.model_dump()
     if isinstance(o, np.ndarray):
         return o.tolist()
     raise TypeError(str(type(o)))
@@ -98,12 +106,13 @@ async def clock() -> None:
     loop = asyncio.get_event_loop()
     while True:
         t0 = loop.time()
-        speed = max(0.05, world.speed)
-        if speed <= 1.0:
-            period, dt = 1.0 / speed, 1.0
-        else:
-            period, dt = 0.25, speed * 0.25
-        try:
+        period = 1.0
+        try:  # everything inside: an exception out here would end the clock without a word
+            speed = max(0.05, world.clock_speed())  # voice on: 1x while anyone is talking, the chosen speed otherwise
+            if speed <= 1.0:
+                period, dt = 1.0 / speed, 1.0
+            else:
+                period, dt = 0.25, speed * 0.25
             await world.tick(dt)
         except Exception:
             log.exception("tick failed")
@@ -115,6 +124,9 @@ async def lifespan(_: FastAPI):
     # Nothing runs until the screen sends "start". TOWER_SCENARIO only preloads a world (ready,
     # not running); TOWER_AUTOSTART=1 restores the old behaviour for headless runs.
     world.speed = SPEED
+    # The screen opens on the path demo: voice off, instructions by data link. TOWER_VOICE=on starts
+    # in the spoken loop instead. (World itself defaults to voice on, which is what the tests drive.)
+    world.auto_speak = os.environ.get("TOWER_VOICE", "off").lower() != "on"
     preload = os.environ.get("TOWER_SCENARIO")
     if preload:
         world.load(preload)
@@ -252,6 +264,12 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 world.set_tower(bool(data.get("enabled", True)))
             elif typ == "set_auto_speak":
                 world.set_auto_speak(bool(data.get("enabled", False)))
+            elif typ == "set_voice":  # the one switch: on = you say the cards, off = Tower sends them by data link
+                world.set_voice(bool(data.get("enabled", False)))
+            elif typ == "set_next_readback":  # script the next pilot reply: correct, wrong_value, wrong_aircraft, ...
+                world.set_next_readback(str(data.get("mode", "random")))
+            elif typ == "confirm_heard":  # said-vs-card conflict: the controller meant what Tower heard
+                world.confirm_heard(str(data.get("clearance_id", "")))
             elif typ == "set_auto_voice":  # Auto with Tower's voice (one exchange at a time) or silent and instant
                 world.set_auto_voice(bool(data.get("enabled", False)))
             elif typ == "set_mode":  # {"mode": "manual" | "auto"}: the same switch, by its real name

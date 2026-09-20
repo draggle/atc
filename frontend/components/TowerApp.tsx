@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { TowerStoreProvider, useTowerDispatch, useTowerState } from "@/lib/store";
 import { connectTower, type TowerClient } from "@/lib/ws";
+import { radio } from "@/lib/radio";
 import type { ClientMessage } from "@/lib/types";
 import TopBar from "./TopBar";
 import InstructionCards from "./InstructionCards";
@@ -50,6 +51,9 @@ function ClientProvider({ children }: { children: ReactNode }) {
       dispatch({ type: "reset" });
     };
   }, [forceMock, dispatch]);
+
+  // Who is on the frequency right now, so the map and the transcript can show it.
+  useEffect(() => radio?.onChange((clip) => dispatch({ type: "on_air", clip: clip && { speaker: clip.speaker, callsign: clip.callsign } })), [dispatch]);
 
   const api = useMemo<ClientApi>(
     () => ({

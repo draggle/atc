@@ -297,11 +297,58 @@ def _runways(toks: list[_Tok]) -> list[_Tok]:
     return out
 
 
+_NUMBER_LEADS = {"heading", "level", "speed"}
+
+
+def _two_heard_as_to(words: list[str]) -> list[str]:
+    """Whisper writes the digit "two" as "to" or "too": "heading to one one" is heading 211.
+
+    Read it as the digit only where the word "to" cannot be meant:
+      - between two spoken digits ("zero to one" is 021)
+      - straight after heading, level or speed with exactly two digits following, which makes the
+        three-digit value those always have. "reduce speed to two five zero" has three digits
+        after it, so that "to" is a word and stays one.
+    Found live: the grammar could not read "heading to one one", and the language model fallback
+    turned it into a confident "heading 011" against a pilot who had read back 211.
+    """
+    out = list(words)
+    for i, w in enumerate(words):
+        if w.lower() not in ("to", "too"):
+            continue
+        prev = words[i - 1].lower() if i else ""
+        run = 0
+        while i + 1 + run < len(words) and words[i + 1 + run].lower() in DIGITS:
+            run += 1
+        if run and (prev in DIGITS or (prev in _NUMBER_LEADS and run == 2)):
+            out[i] = "two"
+    return out
+
+
+def _join_spelled_digits(words: list[str]) -> list[str]:
+    """Whisper sometimes writes a number digit by digit: "Jazz 9-1-2", "heading 2 1 1".
+
+    A run of two or more single digits is one number. Left apart, "JZA9 1 2" kept its callsign but
+    the stray digits counted as unexplained words and woke the language model fallback.
+    """
+    out: list[str] = []
+    run: list[str] = []
+    for w in [*words, ""]:
+        if len(w) == 1 and w.isdigit():
+            run.append(w)
+            continue
+        if run:
+            out.append("".join(run) if len(run) > 1 else run[0])
+            run = []
+        if w:
+            out.append(w)
+    return out
+
+
 def normalize(text: str) -> str:
     """Normalize dataset-convention ATC text to digits and ICAO codes. Idempotent."""
     if not text or not text.strip():
         return ""
-    words = _pre_tokenize(text)
+    words = _join_spelled_digits(_two_heard_as_to(_pre_tokenize(text)))
     toks = _apply_telephony(words)
     toks = _collapse(toks)
     toks = _runways(toks)
@@ -319,8 +366,12 @@ _SPOKEN_DIGIT = {
 _SPOKEN_SIDE = {"L": "left", "R": "right", "C": "centre"}
 
 
-def spell_digits(n: float | str) -> str:
-    """Spell a value one digit at a time in ICAO words: 240 -> 'two four zero', 124.65 -> '... decimal ...'."""
+def spell_digits(n: float | str, sides: bool = True) -> str:
+    """Spell a value one digit at a time in ICAO words: 240 -> 'two four zero', 124.65 -> '... decimal ...'.
+
+    `sides`: L, R and C are a runway's left, right and centre. In a callsign they are letters
+    (`sides=False`): NRL614 is "november romeo lima", never "november right left".
+    """
     s = str(n)
     if isinstance(n, float) and s.endswith(".0"):
         s = s[:-2]
@@ -330,7 +381,7 @@ def spell_digits(n: float | str) -> str:
             words.append(_SPOKEN_DIGIT[ch])
         elif ch == ".":
             words.append("decimal")
-        elif ch.upper() in _SPOKEN_SIDE:
+        elif sides and ch.upper() in _SPOKEN_SIDE:
             words.append(_SPOKEN_SIDE[ch.upper()])
         elif ch.isalpha():
             words.append(_LETTER_WORD[ch.upper()])
@@ -365,9 +416,9 @@ def spoken_callsign(callsign: str) -> str:
     if m and m.group(1) in ICAO_TO_TELEPHONY:
         tail = spell_digits(m.group(2))
         if m.group(3):
-            tail += " " + spell_digits(m.group(3))
+            tail += " " + spell_digits(m.group(3), sides=False)
         return f"{ICAO_TO_TELEPHONY[m.group(1)]} {tail}"
-    return spell_digits(callsign)
+    return spell_digits(callsign, sides=False)
 
 
 def phrase_item(item: Item) -> str:

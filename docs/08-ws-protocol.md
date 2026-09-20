@@ -13,10 +13,10 @@ Every message is one JSON object `{"type": ..., "payload": {...}, "t": <sim seco
 | type | payload | when |
 |---|---|---|
 | `state` | `{scenario, lifecycle, speed, world_id, scenarios: ScenarioInfo[], live_regions: {key, label}[], tower_enabled, auto_speak, t, waypoints: Waypoint[], zones: Zone[], sector_nm, buffer_nm, error_rate, noise, watching}` | on connect, on every lifecycle change, and whenever a setting changes |
-| `radar` | `{aircraft: AircraftState[], zones?: Zone[]}` | once per second. `zones` is present while any zone is drifting or swelling and replaces `state.zones`. An intruder's `AircraftState` carries `threat`: fighter, drone, balloon, emergency or unknown |
+| `radar` | `{aircraft: AircraftState[], zones?: Zone[], clock_speed}` | once per second. `clock_speed` is the speed the clock is really running at: with voice on it drops to 1 whenever a card needs saying or an exchange is in progress, and returns to `state.speed` after. `zones` is present while any zone is drifting or swelling and replaces `state.zones`. An intruder's `AircraftState` carries `threat`: fighter, drone, balloon, emergency or unknown |
 | `plan` | `Plan` | after initial planning and every replan |
 | `plan_update` | `{changed: string[], reason, trigger}` | with every replan |
-| `instruction_card` | `InstructionCard` | when created or when its status changes. Status `superseded` means a newer plan replaced a card nobody had spoken: drop it |
+| `instruction_card` | `InstructionCard` | when created or when its status changes. Status `superseded` means a newer plan replaced a card nobody had spoken: drop it. With voice on a heading card that waits is replaced like this as the aircraft moves on, so the one on the screen can always be said now. `origin` is `initial`, `replan`, `followup` (the second card of a spoken reroute, "proceed direct <exit>", sent only once going direct is clear from where the aircraft is) or `release` |
 | `transcript` | `Transmission` | after every utterance is transcribed |
 | `clearance_opened` | `OpenClearance` | controller transmission with mandatory items |
 | `clearance_updated` | `OpenClearance` | status change |
@@ -129,4 +129,21 @@ In Auto, Tower issues pending cards itself: one voice exchange at a time, the re
 - A data link reroute is the planned path: the transcript line reads "reroute heading 120 for 59 miles then direct PIKAR", and the aircraft flies the plan's own turn point (`PlannedPath.via`), then direct to its exit.
 - `InstructionCard.minor`: a shortcut too small to be worth a transmission. Never sent to the screen. In silent Auto it is applied quietly by data link.
 - `scoreboard` gained `rerouted`, `reaction_s`, `datalink_sent`, `in_zone_now`, `zone_incursions`.
+
+## Voice on, voice off
+
+`{"type":"set_voice","enabled":bool}` is the one switch (`state.voice`; `state.auto_speak` is its opposite and `set_auto_speak` still works). On sets the clock to 1x. Off sends anything still pending by data link at once.
+
+| Event | Payload | When |
+|---|---|---|
+| `radio_audio` | `{speaker: "pilot"\|"controller", callsign, audio_ref, duration_s}` | a clip is on the air, sent before it is transcribed. Play `GET /audio/<audio_ref>`, one at a time, in order. The human's own mic recording is not sent back |
+| `said_check` | `{clearance_id, card_id, callsign, heard, expected, detail}` | what the controller said conflicts with the card. Nothing went to the pilot. The card carries `heard_instead` until it is resolved |
+| `alert_resolved` | `{clearance_id, callsign, by: "correction", seconds}` | the correction was read back right: close that alert |
+
+| Client message | Effect |
+|---|---|
+| `{"type":"confirm_heard","clearance_id"}` | the controller meant what Tower heard: issue it as heard. The card stays open |
+| `{"type":"set_next_readback","mode"}` | `random`, `correct`, `wrong_value`, `wrong_aircraft`, `omitted_item`, `missing_readback`. One shot, reported in `state.next_readback` |
+
+**The screen drops unknown event types.** `frontend/lib/ws.ts` has a whitelist. Add new events there, in `EventMap`, and in the reducer.
 

@@ -26,16 +26,21 @@ _DIR_VERBS = r"(?:descend(?:ing)?|climb(?:ing)?|maintain(?:ing)?|down|up)"
 _ALT_PREFIX = rf"(?:(?P<verb>{_DIR_VERBS})(?: and maintain| to| and)?\s+)?"
 RE_FL = re.compile(rf"\b{_ALT_PREFIX}flight level (?P<fl>\d{{2,3}})\b")
 RE_FT = re.compile(
-    rf"\b(?P<verb>{_DIR_VERBS})(?: and maintain| to| and)?\s+(?P<ft>\d{{3,5}})(?:\s+(?:feet|ft))?\b"
-)
+    rf"\b(?P<verb>{_DIR_VERBS})(?: and maintain| to| and)?\s+(?P<ft>\d{{3,5}})(?!\s+knots)(?:\s+(?:feet|ft))?\b"
+)  # not "maintain 545 knots": that is a speed, and it used to alert as a wrong unit
 RE_FT_UNIT = re.compile(r"\b(?P<ft>\d{3,5}) (?:feet|ft)\b")
-RE_HDG_TURN = re.compile(r"\b(?:turn(?:ing)?\s+)?(?P<dir>left|right)(?:\s+(?:turn\s+)?heading|\s+to)?\s+(?P<hdg>\d{3})\b")
+RE_HDG_TURN = re.compile(r"\b(?:turn(?:ing)?\s+)?(?P<dir>left|right)(?:\s+(?:turn\s+)?heading|\s+turn|\s+to)?\s+(?P<hdg>\d{3})\b")
 RE_HDG = re.compile(r"\b(?:fly\s+|maintain\s+)?heading\s+(?P<hdg>\d{3})\b")
 RE_DIRECT = re.compile(r"\b(?:proceed\s+|cleared\s+)?direct(?:\s+to)?\s+(?P<wpt>[A-Za-z]{3,6})\b")
+# "ESTIR direct": pilots shorten a direct this way. Only when no fix follows "direct", so
+# "proceed direct ESTIR" is never read as a direct to PROCEED.
+# ... and a word followed by digits is a spelled-out callsign ("ESTIR direct NRL 614"), not a fix.
+RE_DIRECT_POST = re.compile(r"\b(?P<wpt>[A-Za-z]{3,6})\s+direct\b(?!\s+(?:to\s+)?[A-Za-z]{3,6}\b(?!\s+\d))")
 RE_SPEED = re.compile(
     r"\b(?:(?:reduce|increase|maintain)\s+)?(?:speed|indicated|mach)?\s*(?:to\s+)?(?P<spd>\d{2,3})\s+knots\b"
     r"|\b(?:(?:reduce|increase|maintain)\s+)?speed\s+(?:to\s+)?(?P<spd2>\d{2,3})\b"
     r"|\b(?:reduce|increase)\s+(?:to\s+)?(?P<spd3>\d{2,3})\b"
+    r"|\b(?P<spd4>\d{2,3})\s+on\s+the\s+speed\b"
 )
 RE_FREQ = re.compile(r"\b(?:contact\s+(?:[a-z]+\s+){0,2})?(?P<freq>1[123]\d\.\d{1,3})\b")
 RE_FREQ_NODOT = re.compile(r"\b(?:contact\s+(?:[a-z]+\s+){0,2})?(?P<freq>1[123]\d{3,4})\b")
@@ -54,6 +59,14 @@ _RWY_ACTIONS = {
     "lineup and wait": "line_up_wait", "cleared to cross": "cross", "cross": "cross",
 }
 _RWY_VERB_WORDS = re.compile(r"\b(cleared to land|cleared for take ?off|hold short|line ?up and wait)\b")
+
+# Words a pilot says next to "direct" that can never be the fix. "unable direct" is a refusal and
+# "say again direct" is a question: neither is a readback of a direct to UNABLE or to AGAIN.
+NOT_A_FIX = {
+    "unable", "say", "again", "negative", "standby", "stand", "by", "request", "requesting", "confirm",
+    "proceed", "proceeding", "cleared", "going", "turning", "climbing", "descending", "maintaining",
+    "when", "able", "expect", "via", "was", "that", "did", "not", "no", "yes",
+}
 
 COMMAND_KEYWORDS: dict[str, str] = {
     "descend": "altitude", "climb": "altitude", "heading": "heading", "direct": "route",
@@ -134,11 +147,20 @@ def _extract_items(span: _Span) -> list[Item]:
         wpt = m.group("wpt")
         if wpt.lower() in COMMAND_KEYWORDS or wpt.lower() in FILLER:
             continue
+        if re.match(r"\s+\d", text[m.end():]) and (len(wpt) == 3 or _is_airline_word(wpt)):
+            continue  # a callsign, not a fix: spelled out ("NRL 614") or shortened ("canada 123")
+        add(m, Item(type="route", value=wpt.upper(), unit=None, action="direct"))
+    for m in RE_DIRECT_POST.finditer(text):
+        wpt = m.group("wpt")
+        if wpt.lower() in COMMAND_KEYWORDS or wpt.lower() in FILLER or wpt.lower() in NOT_A_FIX:
+            continue
+        if span.is_covered_range(m.start(), m.end()):
+            continue
         add(m, Item(type="route", value=wpt.upper(), unit=None, action="direct"))
     for m in RE_SPEED.finditer(text):
         if span.is_covered_range(m.start(), m.end()):
             continue
-        spd = m.group("spd") or m.group("spd2") or m.group("spd3")
+        spd = m.group("spd") or m.group("spd2") or m.group("spd3") or m.group("spd4")
         add(m, Item(type="speed", value=int(spd), unit="kt", action="speed"))
     for m in RE_FREQ.finditer(text):
         add(m, Item(type="frequency", value=float(m.group("freq")), unit="MHz",
@@ -213,6 +235,12 @@ def _find_callsign(span: _Span, speaker: Speaker, active: list[str] | None) -> t
     return heard.replace(" ", "").upper() if not _SHORT_CALLSIGN.match(toks[idx]) else toks[idx], False
 
 
+def _is_airline_word(word: str) -> bool:
+    """One word of an airline's radio name: "canada" of "air canada", "speedbird"."""
+    w = word.lower()
+    return any(w in name.split() for name in cs.TELEPHONY)
+
+
 def parse(text_norm: str, active_callsigns: list[str] | None = None, speaker: Speaker = "unknown",
           transmission_id: str = "") -> Extraction:
     """Grammar-parse normalized text into an Extraction. Never raises on odd input."""
@@ -283,6 +311,11 @@ def parse_with_fallback(text_norm: str, active: list[str] | None, speaker: Speak
         out.callsign = ext.callsign
     if not out.items:
         out.items = ext.items
+    # "llm" means the model supplied or changed what was heard. Stray words can wake the fallback
+    # on a transmission the grammar read completely ("JZA9 1 2 confirm turn left heading 018"): if
+    # the model only agrees, nothing was guessed, and nobody downstream should treat it as a guess.
+    if ext.items and [(i.type, i.value) for i in out.items] == [(i.type, i.value) for i in ext.items]:
+        out.method = "grammar"
     return out
 
 

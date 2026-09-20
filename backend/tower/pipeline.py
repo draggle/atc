@@ -209,6 +209,15 @@ class TowerCore:
         if callsign is None or not ext.items:
             self.store.record(callsign, tx, ext)
             return []
+        said = [(i.type, i.value) for i in ext.items]
+        for again in self.store.open_clearances(callsign):
+            if [(i.type, i.value) for i in again.items] == said:
+                # The controller repeated themselves (or "Say it" was pressed twice). One instruction,
+                # one readback owed. A second clearance would time out as "no readback" about a
+                # pilot who answered. Restart the clock, because the pilot hears it from now.
+                again.issued_at = tx.t_end
+                self.store.record(callsign, tx, ext, again.id)
+                return []
         c = OpenClearance(id=self.store.next_id(), callsign=callsign, items=ext.items, issued_at=tx.t_end,
                           timeout_s=self.store.timeout_s, source_transmission_id=tx.id)
         self.store.open(c)
@@ -239,6 +248,7 @@ class TowerCore:
             v.reason = f"{v.reason}; similar callsigns on frequency"
 
         events: list[dict[str, Any]] = []
+        watching = False  # the resolver asked the radar to settle it: its answer comes later
         if v.result == "ambiguous":
             extra = {"readback_callsign": ext.callsign,
                      "similar_callsigns": self.store.similar_callsign_warnings(active),
@@ -248,12 +258,19 @@ class TowerCore:
                 events.append(event("resolver_step", step, t=tx.t_end))
             v = res.verdict
             if res.watch_request is not None:
+                watching = True
                 self.conformance.watch(clearance, ext.items or clearance.items, now=tx.t_end)
 
         self.verdicts.append(v)
         status = _RESULT_TO_STATUS[v.result]
         self.store.resolve(clearance.id, status)  # type: ignore[arg-type]
         if v.result in ("mismatch", "partial"):
+            events.append(event("alert", {**v.model_dump(), "audio_ref": tx.audio_ref}, t=tx.t_end))
+        elif v.result == "ambiguous" and not watching:
+            # The resolver could not tell, and it is not watching the radar to find out. That is an
+            # answer, and the controller needs it: ask the pilot to confirm. Never a silent close.
+            v.error_type = v.error_type or "missing_readback"
+            v.correction_phrase = CK.confirm_phrase(clearance)
             events.append(event("alert", {**v.model_dump(), "audio_ref": tx.audio_ref}, t=tx.t_end))
         elif v.result == "match":
             # correct readback: verify on radar that the aircraft actually does it

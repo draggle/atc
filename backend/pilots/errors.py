@@ -41,6 +41,7 @@ VALUE_ITEM_WEIGHTS: dict[str, float] = {
     "speed": 1.5,
     "squawk": 1.0,
     "altimeter": 0.5,
+    "route": 2.0,  # only when the pilot is given the sector's fix names, see _mutate_route
 }
 
 
@@ -148,6 +149,20 @@ def _mutate_altimeter(it: Item, rng: random.Random) -> str:
     return f"altimeter {old} read back as {it.value}"
 
 
+def _mutate_route(it: Item, rng: random.Random, waypoints: list[str]) -> str | None:
+    """Direct to the wrong fix. Made-up five-letter names that sound alike are the realistic slip,
+    so the pick leans towards the names closest to the cleared one."""
+    from rapidfuzz import fuzz
+    old = str(it.value).upper()
+    others = sorted({w.upper() for w in waypoints} - {old})
+    if not others:
+        return None
+    ranked = sorted(others, key=lambda w: (-fuzz.ratio(old, w), w))
+    new = rng.choice(ranked[:4])
+    it.value = new
+    return f"route {old} read back as {new}"
+
+
 _VALUE_MUTATORS = {
     "altitude": _mutate_altitude,
     "heading": _mutate_heading,
@@ -158,15 +173,22 @@ _VALUE_MUTATORS = {
 }
 
 
-def _wrong_value(items: list[Item], rng: random.Random) -> tuple[list[Item], str] | None:
-    cands = [i for i, it in enumerate(items) if it.type in _VALUE_MUTATORS]
+def _wrong_value(items: list[Item], rng: random.Random,
+                 waypoints: list[str] | None = None) -> tuple[list[Item], str] | None:
+    # A route item can only go wrong if the pilot knows another fix to say instead.
+    fixes = {w.upper() for w in (waypoints or [])}
+    cands = [i for i, it in enumerate(items)
+             if it.type in _VALUE_MUTATORS or (it.type == "route" and fixes - {str(it.value).upper()})]
     if not cands:
         return None
     weights = [VALUE_ITEM_WEIGHTS.get(items[i].type, 1.0) for i in cands]
     idx = rng.choices(cands, weights=weights, k=1)[0]
     out = _clone(items)
-    desc = _VALUE_MUTATORS[out[idx].type](out[idx], rng)
-    return out, desc
+    if out[idx].type == "route":
+        desc = _mutate_route(out[idx], rng, sorted(fixes))
+    else:
+        desc = _VALUE_MUTATORS[out[idx].type](out[idx], rng)
+    return (out, desc) if desc else None
 
 
 def _wrong_runway(items: list[Item], rng: random.Random) -> tuple[list[Item], str] | None:
@@ -301,12 +323,16 @@ def inject_error(
     rng: random.Random,
     weights: dict[str, float] | None = None,
     error_type: ErrorType | None = None,
+    waypoints: list[str] | None = None,
 ) -> tuple[list[Item], str, ErrorType | None, str]:
     """Return (spoken_items, spoken_callsign, error_type, description).
 
     Picks an error type by weight (or uses `error_type`), and if that type does not apply
     to this clearance (e.g. wrong_runway with no runway item) falls through the other
     applicable types. Returns error_type None only when nothing at all applies.
+
+    `waypoints` are the fix names the pilot could say instead of the cleared one. Without them a
+    direct cannot get a wrong value, because there is no other fix to read back.
     """
     order: list[ErrorType]
     if error_type is not None:
@@ -319,7 +345,7 @@ def inject_error(
 
     for kind in order:
         if kind == "wrong_value":
-            r = _wrong_value(items, rng)
+            r = _wrong_value(items, rng, waypoints)
             if r:
                 return r[0], callsign, kind, r[1]
         elif kind == "wrong_runway":

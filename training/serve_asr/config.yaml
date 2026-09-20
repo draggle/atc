@@ -24,7 +24,8 @@ runtime:
 training_checkpoints:
   download_folder: /tmp/training_checkpoints
   artifact_references:
-    - training_job_id: q9jj663
+    # run 2 (mixed: real + ATCOSIM + our simulator audio). Run 1 was q9jj663: put it back to roll back.
+    - training_job_id: 32ooy2w
       paths:
         - rank-0/best/*
 environment_variables:

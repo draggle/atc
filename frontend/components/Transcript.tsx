@@ -39,7 +39,7 @@ function Row({ t, showStock }: { t: Transmission; showStock: boolean }) {
 }
 
 export default function Transcript() {
-  const { transcript, showStock } = useTowerState();
+  const { transcript, showStock, onAir } = useTowerState();
   const dispatch = useTowerDispatch();
   const endRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -49,7 +49,15 @@ export default function Transcript() {
   return (
     <section className="panel h-full flex flex-col p-2.5">
       <div className="flex items-center justify-between mb-1">
-        <h2 className="text-xs uppercase tracking-wider text-muted">Frequency</h2>
+        <h2 className="text-xs uppercase tracking-wider text-muted flex items-center gap-2">
+          Frequency
+          {onAir && (
+            <span className="inline-flex items-center gap-1.5 rounded border border-ok/40 bg-ok/10 px-1.5 py-0.5 text-[10px] font-semibold text-ok normal-case tracking-normal">
+              <span className="h-1.5 w-1.5 rounded-full bg-ok animate-pulse" />
+              {onAir.speaker === "pilot" ? `${onAir.callsign ?? "pilot"} transmitting` : "Tower transmitting"}
+            </span>
+          )}
+        </h2>
         <div className="flex items-center gap-3 text-[10px]">
           <span className="text-muted">{transcript.length} transmissions</span>
           <button

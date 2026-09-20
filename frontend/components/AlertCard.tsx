@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { callsignForClearance, useTowerDispatch, useTowerState, type ActiveAlert } from "@/lib/store";
 import type { Item } from "@/lib/types";
 import { HTTP_URL } from "@/lib/ws";
@@ -30,13 +30,34 @@ function isRadarAlert(a: ActiveAlert): boolean {
   return a.reason.startsWith("Radar:");
 }
 
-function fmtItem(i: Item): string {
+/** Title and tones for one alert. The flight strip uses the same ones, so the two can never disagree. */
+export function alertLook(a: ActiveAlert) {
+  const radar = isRadarAlert(a);
+  const severe = a.result === "mismatch" || a.result === "missing";
+  const title = radar
+    ? "NOT FLYING THE CLEARANCE"
+    : severe
+      ? a.result === "missing"
+        ? "NO READBACK"
+        : "WRONG READBACK"
+      : a.result === "partial"
+        ? "PARTIAL READBACK"
+        : "UNCLEAR READBACK"; // Tower could not tell, and says so. "CHECKING" is the card while it still is.
+  const frame = radar ? "border-cyan-400 bg-cyan-400/10" : severe ? "border-bad bg-bad/10" : "border-warn bg-warn/10";
+  const pulse = radar ? "alert-pulse-cyan" : severe ? "alert-pulse" : "";
+  const hover = radar ? "hover:bg-cyan-400/15" : severe ? "hover:bg-bad/15" : "hover:bg-warn/15";
+  const soft = radar ? "border-cyan-400/50 bg-cyan-400/10" : severe ? "border-bad/50 bg-bad/10" : "border-warn/50 bg-warn/10";
+  const titleCls = radar ? "text-cyan-300" : severe ? "text-bad" : "text-warn";
+  return { radar, severe, title, frame, pulse, hover, soft, titleCls };
+}
+
+export function fmtItem(i: Item): string {
   const unit = i.unit ? ` ${i.unit}` : "";
   const act = i.action ? `${i.action.replace("_", " ")} ` : "";
   return `${act}${i.type} ${i.value}${unit}`;
 }
 
-function ItemList({ items, tone }: { items: Item[]; tone: "expected" | "heard" }) {
+export function ItemList({ items, tone }: { items: Item[]; tone: "expected" | "heard" }) {
   if (items.length === 0) return <span className="text-muted italic">nothing</span>;
   return (
     <ul className="space-y-0.5">
@@ -46,6 +67,43 @@ function ItemList({ items, tone }: { items: Item[]; tone: "expected" | "heard" }
         </li>
       ))}
     </ul>
+  );
+}
+
+/**
+ * "Take me to it": a click or Enter on the card selects the aircraft, follows it, and flies the camera there.
+ * The card's own controls and a text selection are left alone. Enter only: Space is push-to-talk everywhere.
+ */
+export function useShowOnMap(callsign: string) {
+  const dispatch = useTowerDispatch();
+  if (!callsign) return null;
+  return {
+    role: "button",
+    tabIndex: 0,
+    title: `Show ${callsign} on the map`,
+    onClick: (e: MouseEvent<HTMLElement>) => {
+      if ((e.target as HTMLElement).closest("button, audio, a, input")) return;
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed) return;
+      dispatch({ type: "focus", callsign });
+    },
+    onKeyDown: (e: KeyboardEvent<HTMLElement>) => {
+      if (e.key !== "Enter" || e.target !== e.currentTarget) return;
+      dispatch({ type: "focus", callsign });
+    },
+  };
+}
+
+export const SHOW_CLS = "group cursor-pointer transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/60";
+
+/** The callsign, reading as a link when the card will take you to it. */
+export function CallsignLink({ callsign, live }: { callsign: string; live: boolean }) {
+  if (!live) return <span className="font-mono text-sm">{callsign}</span>;
+  return (
+    <span className="font-mono text-sm">
+      <span className="underline decoration-dotted decoration-muted underline-offset-4 group-hover:decoration-fg">{callsign}</span>
+      <span className="ml-2 text-[10px] text-muted group-hover:text-fg">show on map ›</span>
+    </span>
   );
 }
 
@@ -84,29 +142,28 @@ function AgentTrace({ clearanceId, done }: { clearanceId: string; done: boolean 
 function OneAlert({ a }: { a: ActiveAlert }) {
   const state = useTowerState();
   const dispatch = useTowerDispatch();
-  const severe = a.result === "mismatch" || a.result === "missing";
   const callsign = a.callsign ?? callsignForClearance(state, a.clearance_id) ?? "";
   const hasSteps = (state.steps[a.clearance_id] ?? []).length > 0 || a.decided_by === "resolver";
   const resolving = state.resolving.includes(a.clearance_id);
-  const radar = isRadarAlert(a);
-  const title = radar
-    ? "NOT FLYING THE CLEARANCE"
-    : severe
-      ? a.result === "missing"
-        ? "NO READBACK"
-        : "WRONG READBACK"
-      : a.result === "partial"
-        ? "PARTIAL READBACK"
-        : "CHECKING";
-  const frame = radar
-    ? "border-cyan-400 bg-cyan-400/10 alert-pulse-cyan"
-    : severe
-      ? "border-bad bg-bad/10 alert-pulse"
-      : "border-warn bg-warn/10";
-  const titleCls = radar ? "text-cyan-300" : severe ? "text-bad" : "text-warn";
+  const { radar, title, frame, pulse, hover, soft, titleCls } = alertLook(a);
+  const show = useShowOnMap(callsign);
+  if (a.resolved) {
+    // The controller said the correction and the pilot read it back right. Closed, and it says so.
+    return (
+      <div className="rounded-lg border border-ok/60 bg-ok/10 px-3 py-2">
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] font-bold tracking-wider text-ok">CORRECTED</span>
+          <span className="font-mono text-xs text-muted">{callsign}</span>
+        </div>
+        <p className="mt-1 text-xs text-fg/90">
+          Wrong readback caught, corrected and read back right in {Math.round(a.resolved.seconds)} s.
+        </p>
+      </div>
+    );
+  }
 
   return (
-    <div className={`rounded-lg border-2 p-3 ${frame}`}>
+    <div {...show} className={`rounded-lg border-2 p-3 ${frame} ${pulse} ${show ? `${SHOW_CLS} ${hover}` : ""}`}>
       <div className="flex items-start justify-between gap-2">
         <div>
           {radar && (
@@ -115,7 +172,9 @@ function OneAlert({ a }: { a: ActiveAlert }) {
             </div>
           )}
           <div className={`text-lg font-bold tracking-wide ${titleCls}`}>{title}</div>
-          <div className="font-mono text-sm">{callsign}</div>
+          <div>
+            <CallsignLink callsign={callsign} live={!!show} />
+          </div>
         </div>
         <div className="text-right">
           <div className="text-[10px] uppercase text-muted">{a.error_type?.replace("_", " ") ?? a.result}</div>
@@ -150,7 +209,7 @@ function OneAlert({ a }: { a: ActiveAlert }) {
       </div>
 
       {a.correction_phrase && (
-        <div className={`mt-2 rounded-md border px-2.5 py-2 ${radar ? "border-cyan-400/50 bg-cyan-400/10" : severe ? "border-bad/50 bg-bad/10" : "border-warn/50 bg-warn/10"}`}>
+        <div className={`mt-2 rounded-md border px-2.5 py-2 ${soft}`}>
           <div className="text-[10px] uppercase text-muted">Say now</div>
           <div className="text-[15px] leading-snug">&ldquo;{a.correction_phrase}&rdquo;</div>
         </div>
@@ -164,14 +223,39 @@ function OneAlert({ a }: { a: ActiveAlert }) {
 function Checking({ clearanceId }: { clearanceId: string }) {
   const state = useTowerState();
   const callsign = callsignForClearance(state, clearanceId) ?? "";
+  const show = useShowOnMap(callsign);
+  // The resolver's `watch` tool waits on the radar before it decides, a minute by default. Say so,
+  // with a countdown on the simulator's clock, or a silent minute reads as a missed error.
+  const watch = [...(state.steps[clearanceId] ?? [])].reverse().find((s) => s.tool === "watch");
+  const watchFor = Number(watch?.args?.seconds) > 0 ? Number(watch?.args?.seconds) : 60;
+  const simT = state.sim?.t ?? 0;
+  const [watchT0, setWatchT0] = useState<number | null>(null);
+  useEffect(() => {
+    if (watch && watchT0 === null) setWatchT0(simT);
+  }, [watch, watchT0, simT]);
+  const left = watch ? Math.max(0, Math.ceil(watchFor - (simT - (watchT0 ?? simT)))) : null;
+  // The watch ran out and the radar raised nothing: the aircraft did as it was told. Take the card down.
+  const dispatch = useTowerDispatch();
+  useEffect(() => {
+    if (left !== 0) return;
+    const t = setTimeout(() => dispatch({ type: "stop_resolving", clearance_id: clearanceId }), 4000);
+    return () => clearTimeout(t);
+  }, [left, clearanceId, dispatch]);
   return (
-    <div className="rounded-lg border-2 border-warn bg-warn/10 p-3">
+    <div {...show} className={`rounded-lg border-2 border-warn bg-warn/10 p-3 ${show ? `${SHOW_CLS} hover:bg-warn/15` : ""}`}>
       <div className="flex items-center gap-2">
         <span className="spinner" />
-        <span className="text-lg font-bold tracking-wide text-warn">CHECKING</span>
-        <span className="font-mono text-sm">{callsign}</span>
+        <span className="text-lg font-bold tracking-wide text-warn">{watch ? "WATCHING" : "CHECKING"}</span>
+        <CallsignLink callsign={callsign} live={!!show} />
+        {left !== null && <span className="ml-auto font-mono text-sm tabular-nums text-warn" title="Simulator seconds until Tower decides">{left}s</span>}
       </div>
-      <p className="mt-1 text-xs text-fg/80">Readback unclear. The resolver is gathering evidence before deciding whether to interrupt you.</p>
+      {watch ? (
+        <p className="mt-1 text-xs text-fg/80">
+          The readback was unclear, so Tower is watching what {callsign || "the aircraft"} actually flies before it decides. {left === 0 ? "Nothing wrong on the radar." : `Verdict in about ${left} s.`}
+        </p>
+      ) : (
+        <p className="mt-1 text-xs text-fg/80">Readback unclear. The resolver is gathering evidence before deciding whether to interrupt you.</p>
+      )}
       <AgentTrace clearanceId={clearanceId} done={false} />
     </div>
   );
@@ -195,12 +279,24 @@ function useAlertAutoplay(latest: ActiveAlert | undefined, muted: boolean) {
   }, [latest, muted]);
 }
 
+const CORRECTED_SHOWS_MS = 10000; // a corrected alert says so for this long, then leaves the panel
+
 export default function AlertCard() {
-  const { alerts, resolving } = useTowerState();
+  const { alerts: everyAlert, resolving } = useTowerState();
+  const [, tick] = useState(0);
+  const closing = everyAlert.some((a) => a.resolved);
+  useEffect(() => {
+    if (!closing) return;
+    const t = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [closing]);
+  const alerts = everyAlert.filter((a) => !a.resolved || Date.now() - a.resolved.at < CORRECTED_SHOWS_MS);
   const [muted, setMuted] = useState(false);
   useEffect(() => setMuted(readMute()), []);
   const [latest, ...rest] = alerts;
-  useAlertAutoplay(latest, muted);
+  // Every transmission is now played on the frequency as it happens (lib/radio.ts), so the
+  // alert no longer plays its clip a second time. The clip stays on the card to replay by hand.
+  useAlertAutoplay(undefined, muted);
   const checking = resolving.filter((id) => !alerts.some((a) => a.clearance_id === id));
   if (!latest && checking.length === 0) return null;
   const toggleMute = () => {
@@ -209,7 +305,8 @@ export default function AlertCard() {
     writeMute(v);
   };
   return (
-    <section className="shrink-0 flex flex-col gap-2">
+    // Same backing as the Instructions list below: an alert is read over a zoomed-in, busy map.
+    <section className="panel p-2.5 shrink-0 flex flex-col gap-2">
       <div className="flex items-center justify-between">
         <h2 className="text-xs uppercase tracking-wider text-muted">Alerts</h2>
         <button

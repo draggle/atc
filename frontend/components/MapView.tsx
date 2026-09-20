@@ -17,9 +17,10 @@ import type { Layer, PickingInfo } from "@deck.gl/core";
 import type { StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
-import { highlightMap, snapshotClock, useTowerDispatch, useTowerState } from "@/lib/store";
-import { DEFAULT_FRAME, latLonToNm, nmToLatLon, type FrameLike } from "@/lib/geo";
+import { alertFor, highlightMap, snapshotClock, useTowerDispatch, useTowerState } from "@/lib/store";
+import { DEFAULT_FRAME, destinationPoint, latLonToNm, nmToLatLon, type FrameLike } from "@/lib/geo";
 import { latLonOf, shown, type Shown } from "@/lib/interp";
+import { describeIssue, flightLevel, type IssueFix } from "@/lib/issue";
 import type { Disruption, DisruptionKind, DisruptionKindInfo, PlannedPath, Zone } from "@/lib/types";
 import FlightStrip from "./FlightStrip";
 import { useClient } from "./TowerApp";
@@ -53,6 +54,7 @@ const C = {
   flownDim: [132, 146, 162, 70] as RGBA,
   tower: [70, 200, 255, 215] as RGBA,
   flash: [255, 176, 46, 255] as RGBA,
+  rerouted: [255, 176, 46, 150] as RGBA, // still going round something that is still there
   aircraft: [224, 232, 242, 255] as RGBA,
   intruder: [255, 77, 94, 255] as RGBA,
   mayday: [255, 176, 46, 255] as RGBA,
@@ -64,10 +66,33 @@ const C = {
   sector: [70, 200, 255, 90] as RGBA,
   trail: [224, 232, 242, 90] as RGBA,
   ink: [4, 6, 10, 255] as RGBA,
+  // The issue drawn beside a selected aircraft with a standing alert: cyan is what was cleared,
+  // red is what was read back or flown instead.
+  cleared: [70, 200, 255, 255] as RGBA,
+  wrong: [255, 77, 94, 255] as RGBA,
+  warn: [255, 176, 46, 255] as RGBA,
+  pill: [6, 9, 14, 235] as RGBA,
 };
 
 const FT_TO_M = 0.3048;
-const NM_TO_M = 1852;
+/** Length of the cleared / read-back heading vectors. */
+const HDG_VECTOR_NM = 25;
+/** Focus fly-in: how close, how long, and the part of the screen the panels leave free (the top is deeper because altitude lifts everything). */
+const FOCUS_ZOOM = 7.5;
+const FOCUS_MIN_ZOOM = 5.6;
+const FOCUS_MS = 1200;
+const FOCUS_PADDING = { top: 210, bottom: 250, left: 380, right: 470 };
+/** Web-mercator world coordinates in [0, 1], y down. */
+const mercator = (lon: number, lat: number): [number, number] => [
+  (lon + 180) / 360,
+  (1 - Math.log(Math.tan(Math.PI / 4 + (Math.max(-85, Math.min(85, lat)) * Math.PI) / 360)) / Math.PI) / 2,
+];
+/** TextLayers default to ASCII only; the issue label also needs the separator and the ellipsis. */
+const ISSUE_CHARS = Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)).join("") + "·…";
+
+type IssueSeg = { path: [number, number, number][]; color: RGBA; width: number };
+type IssueMark = { position: [number, number, number]; color: RGBA; radius: number };
+type IssueTag = { position: [number, number, number]; text: string; color: RGBA; offset: [number, number]; anchor: "start" | "middle" | "end" };
 const TRAIL_POINTS = 48;
 const TRAIL_EVERY_MS = 700;
 
@@ -158,7 +183,8 @@ export default function MapView() {
   const state = useTowerState();
   const dispatch = useTowerDispatch();
   const { send } = useClient();
-  const { sim, tracks, plan, planView, flashUntil, disruptions, watching, selected, follow, ghosts, simClock } = state;
+  const { sim, tracks, plan, planView, flashUntil, disruptions, watching, selected, follow, ghosts, simClock, onAir } = state;
+  const talking = onAir?.callsign ?? null;
 
   const mapRef = useRef<MapRef | null>(null);
   const [mapStyle, setMapStyle] = useState<string | StyleSpecification>(BASEMAP);
@@ -167,7 +193,6 @@ export default function MapView() {
   const [exaggeration, setExaggeration] = useState(6);
   const [dropMode, setDropMode] = useState<DropMode>("off");
   const [menuOpen, setMenuOpen] = useState(false);
-  const [globe, setGlobe] = useState(false);
   const [fontReady, setFontReady] = useState(false);
   const trails = useRef(new Map<string, { at: number; pts: [number, number, number][] }>());
 
@@ -222,15 +247,8 @@ export default function MapView() {
     if (loaded) fit();
   }, [sim?.world_id, loaded, fit]);
 
-  useEffect(() => {
-    const map = mapRef.current?.getMap();
-    if (!map || !loaded) return;
-    try {
-      map.setProjection({ type: globe ? "globe" : "mercator" });
-    } catch {
-      /* older styles without projection support: stay flat */
-    }
-  }, [globe, loaded]);
+  // No globe projection. With the deck.gl overlay it drops every aircraft icon, label and ring and
+  // leaves only the lines, and at the scale of one sector the Earth looks flat anyway.
 
   // ---------------------------------------------------------------- aircraft, smoothed
   const planes: Shown[] = useMemo(() => Object.values(tracks).map((tr) => shown(tr, now, frame)), [tracks, now, frame]);
@@ -247,12 +265,79 @@ export default function MapView() {
   }
   for (const cs of Array.from(trails.current.keys())) if (!tracks[cs]) trails.current.delete(cs);
 
-  // follow camera
-  const followed = follow && selected ? planes.find((p) => p.callsign === selected) : undefined;
+  // The issue, if any: only for the selected aircraft, only while an alert stands against it, and
+  // only while it is on the radar. Derived from the interpolated plane, so it moves with it.
+  const selectedPlane = selected ? planes.find((p) => p.callsign === selected) : undefined;
+  const fixIndex = useMemo(() => {
+    const out: Record<string, IssueFix> = {};
+    for (const w of sim?.waypoints ?? []) {
+      const [lat, lon] = latLonOf(w, frame);
+      out[w.name.toUpperCase()] = { name: w.name, lon, lat };
+    }
+    return out;
+  }, [sim?.waypoints, frame]);
+  const standing = selectedPlane ? alertFor(state, selected) : undefined;
+  const issue = standing && selectedPlane ? describeIssue(standing, selectedPlane, fixIndex) : null;
+  const issueRef = useRef(issue);
+  issueRef.current = issue;
+  const planesRef = useRef(planes);
+  planesRef.current = planes;
+
+  // follow camera. Only the centre moves, so the zoom the user (or a focus fly-in) chose is kept.
+  // After a focus fly-in the aircraft is held where that framing put it, not dragged to the middle.
+  const flyingUntil = useRef(0);
+  const focusFrame = useRef<{ callsign: string; offset: [number, number] }>({ callsign: "", offset: [0, 0] });
+  const followed = follow ? selectedPlane : undefined;
   const followKey = followed ? Math.floor(now / 900) : 0;
   useEffect(() => {
-    if (followed) mapRef.current?.easeTo({ center: [followed.lon, followed.lat], duration: 850, easing: (t) => t });
+    if (!followed || performance.now() < flyingUntil.current) return; // a fly-in is still running
+    const offset: [number, number] = focusFrame.current.callsign === followed.callsign ? focusFrame.current.offset : [0, 0];
+    mapRef.current?.easeTo({ center: [followed.lon, followed.lat], offset, duration: 850, easing: (t) => t });
   }, [followKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // "Take me to it": an alert card was clicked. Fly to the aircraft, close enough to read the
+  // geometry. If the issue involves a fix, frame aircraft and fix together between the panels.
+  const seenFocus = useRef(state.focusSeq);
+  useEffect(() => {
+    if (state.focusSeq === seenFocus.current) return;
+    seenFocus.current = state.focusSeq;
+    const map = mapRef.current?.getMap();
+    const p = selected ? planesRef.current.find((x) => x.callsign === selected) : undefined;
+    if (!map || !p || !Number.isFinite(p.lat) || !Number.isFinite(p.lon)) return; // left the radar: nothing to fly to
+    try {
+      const is = issueRef.current?.callsign === p.callsign ? issueRef.current : null;
+      const fixes = [is?.expectedFix, is?.heardFix].filter((f): f is IssueFix => !!f);
+      const bearing = map.getBearing();
+      let zoom = FOCUS_ZOOM;
+      // A level issue's label runs to the right of the aircraft: leave it room before the side panel.
+      let offset: [number, number] = is?.kind === "level" ? [-110, 0] : [0, 0];
+      if (fixes.length > 0) {
+        const lons = [p.lon, ...fixes.map((f) => f.lon)];
+        const lats = [p.lat, ...fixes.map((f) => f.lat)];
+        const cam = map.cameraForBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], { padding: FOCUS_PADDING, bearing });
+        const c = cam?.center as { lng?: number; lat?: number } | [number, number] | undefined;
+        const [clon, clat] = Array.isArray(c) ? c : [c?.lng, c?.lat];
+        if (cam && typeof cam.zoom === "number" && typeof clon === "number" && typeof clat === "number") {
+          // The fit is where the camera would sit; the same view with the aircraft as the anchor
+          // and a screen offset is what the follow camera can then hold without a jump.
+          zoom = Math.max(FOCUS_MIN_ZOOM, Math.min(FOCUS_ZOOM, cam.zoom - 0.2));
+          const world = 512 * 2 ** zoom;
+          const [px, py] = mercator(p.lon, p.lat);
+          const [cx, cy] = mercator(clon, clat);
+          const dx = (px - cx) * world;
+          const dy = (py - cy) * world;
+          const th = (-bearing * Math.PI) / 180;
+          offset = [dx * Math.cos(th) - dy * Math.sin(th), dx * Math.sin(th) + dy * Math.cos(th)];
+        }
+      }
+      const pitch = map.getPitch();
+      focusFrame.current = { callsign: p.callsign, offset };
+      flyingUntil.current = performance.now() + FOCUS_MS + 150;
+      map.flyTo({ center: [p.lon, p.lat], offset, zoom, pitch: pitch >= 35 ? pitch : 52, duration: FOCUS_MS, essential: true });
+    } catch {
+      flyingUntil.current = 0; // the follow camera still takes it there
+    }
+  }, [state.focusSeq]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const highlights = useMemo(() => highlightMap(state), [state]);
 
@@ -272,6 +357,12 @@ export default function MapView() {
     const tower = planView === "today" ? [] : (plan?.paths ?? []).filter((p) => want(p.callsign)).map((p) => ({ callsign: p.callsign, path: pathCoords(p, frame, zOf) }));
     return { flown, tower };
   }, [plan, frame, zOf, lifecycle, airborneKey, planView, selected]);
+
+  // Flights whose path goes round a disruption that is still active stay amber, so which lines
+  // changed because of the storm is visible long after the flash has gone.
+  const activeIds = Object.values(disruptions).filter((d) => d.active !== false).map((d) => d.id);
+  const avoiding = new Set((plan?.paths ?? []).filter((p) => p.changes.some((c) => activeIds.some((id) => c.endsWith(` to clear ${id}`)))).map((p) => p.callsign));
+  const avoidKey = Array.from(avoiding).sort().join(",");
 
   // What each rerouted flight WAS going to fly, and a ghost aircraft still flying it.
   const wall = Date.now();
@@ -310,6 +401,92 @@ export default function MapView() {
   // Busy sky: one line per aircraft, full data block only for the ones that matter right now.
   const dense = planes.length > 22;
   const important = (p: Shown) => p.callsign === selected || !!highlights[p.callsign] || watching.includes(p.callsign) || p.is_intruder;
+
+  // ---------------------------------------------------------------- the issue, as drawable pieces
+  // At most a dozen objects, rebuilt from the interpolated aircraft each frame so they move with it.
+  const issueDraw: { cleared: IssueSeg[]; wrong: IssueSeg[]; marks: IssueMark[]; tags: IssueTag[]; label: IssueTag[] } = { cleared: [], wrong: [], marks: [], tags: [], label: [] };
+  const wrongLevelCs = issue?.levelWrong && selectedPlane ? selectedPlane.callsign : null;
+  if (issue && selectedPlane) {
+    const p = selectedPlane;
+    const z = zOf(p.alt_ft);
+    const at: [number, number, number] = [p.lon, p.lat, z];
+    const wrongWord = issue.wrongIs === "flown" ? "flying" : "read back";
+    const faint = (c: RGBA): RGBA => [c[0], c[1], c[2], 110];
+    const toneColor = issue.tone === "radar" ? C.cleared : issue.tone === "warn" ? C.warn : C.wrong;
+    /** Where the issue's lines end, [lon, lat]: the one-line label goes on the other side of the aircraft. */
+    const ends: [number, number][] = [];
+    /** A tag at the far end of a line reads outward, away from the aircraft, so it never sits on its own line. */
+    const outward = (lon: number, lat: number, text: string, color: RGBA, position: [number, number, number]): IssueTag => {
+      let left = false;
+      try {
+        const map = mapRef.current;
+        if (map) left = map.project([lon, lat]).x < map.project([p.lon, p.lat]).x;
+      } catch {
+        /* no map yet */
+      }
+      return { position, text, color, offset: [left ? -11 : 11, 0], anchor: left ? "end" : "start" };
+    };
+
+    if (issue.kind === "level" && issue.expectedAltFt !== undefined) {
+      // On the aircraft's own stem: where it was cleared to, where it said it was going, and the gap.
+      const level = (ft: number, color: RGBA, word: string, into: IssueSeg[]) => {
+        const top: [number, number, number] = [p.lon, p.lat, zOf(ft)];
+        into.push({ path: [at, top], color, width: 2.5 });
+        issueDraw.marks.push({ position: top, color, radius: 5 });
+        issueDraw.tags.push({ position: top, text: `${word} ${flightLevel(ft)}`, color, offset: [-12, 0], anchor: "end" });
+      };
+      if (issue.heardAltFt !== undefined) level(issue.heardAltFt, C.wrong, wrongWord, issueDraw.wrong);
+      level(issue.expectedAltFt, C.cleared, "cleared", issueDraw.cleared);
+    }
+
+    if (issue.kind === "route") {
+      const leg = (f: IssueFix, color: RGBA, word: string, into: IssueSeg[]) => {
+        const end: [number, number, number] = [f.lon, f.lat, z];
+        ends.push([f.lon, f.lat]);
+        into.push({ path: [at, end], color, width: 2.5 });
+        into.push({ path: [end, [f.lon, f.lat, 0]], color: faint(color), width: 1.2 }); // ties the line's end to the fix on the ground
+        issueDraw.marks.push({ position: end, color, radius: 5 });
+        issueDraw.tags.push(outward(f.lon, f.lat, `${word} ${f.name}`, color, end));
+      };
+      if (issue.heardFix) leg(issue.heardFix, C.wrong, wrongWord, issueDraw.wrong);
+      if (issue.expectedFix) leg(issue.expectedFix, C.cleared, "cleared", issueDraw.cleared);
+    }
+
+    if (issue.kind === "heading" || issue.kind === "route") {
+      const vector = (hdg: number, color: RGBA, word: string, into: IssueSeg[]) => {
+        const [lat, lon] = destinationPoint(p.lat, p.lon, hdg, HDG_VECTOR_NM);
+        const tip: [number, number, number] = [lon, lat, z];
+        ends.push([lon, lat]);
+        into.push({ path: [at, tip], color, width: 2.5 });
+        issueDraw.marks.push({ position: tip, color, radius: 3.5 });
+        issueDraw.tags.push(outward(lon, lat, `${word} ${String(Math.round(hdg) % 360).padStart(3, "0")}`, color, tip));
+      };
+      if (issue.heardHdg !== undefined) vector(issue.heardHdg, C.wrong, wrongWord, issueDraw.wrong);
+      if (issue.kind === "heading" && issue.expectedHdg !== undefined) vector(issue.expectedHdg, C.cleared, "cleared", issueDraw.cleared);
+    }
+
+    // The one-line label. A level issue lives on the stem, so its label sits to the right, under
+    // the data block. Lines fan out from the aircraft, so theirs is centred above or below it,
+    // whichever side the lines do not run through on screen.
+    if (issue.kind === "level") {
+      issueDraw.label.push({ position: at, text: issue.label, color: toneColor, offset: [18, 30], anchor: "start" });
+    } else {
+      let down = 0;
+      try {
+        const map = mapRef.current;
+        if (map && ends.length > 0) {
+          const o = map.project([p.lon, p.lat]);
+          for (const e of ends) {
+            const q = map.project(e);
+            down += (q.y - o.y) / (Math.hypot(q.x - o.x, q.y - o.y) || 1);
+          }
+        }
+      } catch {
+        /* no map yet: below is fine */
+      }
+      issueDraw.label.push({ position: at, text: issue.label, color: toneColor, offset: [0, down > 0 ? -36 : 36], anchor: "middle" });
+    }
+  }
 
   const flashSlot = Math.floor(now / 250);
   const wallNow = Date.now();
@@ -374,12 +551,12 @@ export default function MapView() {
       id: "tower-plan",
       data: pathData.tower,
       getPath: (d: { path: [number, number, number][] }) => d.path,
-      getColor: (d: { callsign: string }) => ((flashUntil[d.callsign] ?? 0) > wallNow ? C.flash : d.callsign === selected ? [255, 255, 255, 235] : C.tower),
+      getColor: (d: { callsign: string }) => ((flashUntil[d.callsign] ?? 0) > wallNow ? C.flash : d.callsign === selected ? [255, 255, 255, 235] : avoiding.has(d.callsign) ? C.rerouted : C.tower),
       getWidth: (d: { callsign: string }) => ((flashUntil[d.callsign] ?? 0) > wallNow ? 4 : d.callsign === selected ? 3 : 1.8),
       widthUnits: "pixels",
       capRounded: true,
       jointRounded: true,
-      updateTriggers: { getColor: [flashSlot, selected], getWidth: [flashSlot, selected] },
+      updateTriggers: { getColor: [flashSlot, selected, avoidKey], getWidth: [flashSlot, selected] },
     }),
 
     // The shadow of a reroute: the path the flight was on, and a ghost still flying it, fading out.
@@ -461,10 +638,10 @@ export default function MapView() {
       data: planes,
       getSourcePosition: (p: Shown) => [p.lon, p.lat, 0],
       getTargetPosition: (p: Shown) => [p.lon, p.lat, zOf(p.alt_ft)],
-      getColor: (p: Shown) => (p.is_intruder ? (p.threat === "emergency" ? [255, 176, 46, 110] : [255, 77, 94, 90]) : C.stem),
-      getWidth: 1,
+      getColor: (p: Shown) => (p.callsign === wrongLevelCs ? ([255, 77, 94, 230] as RGBA) : p.is_intruder ? (p.threat === "emergency" ? [255, 176, 46, 110] : [255, 77, 94, 90]) : C.stem),
+      getWidth: (p: Shown) => (p.callsign === wrongLevelCs ? 2 : 1),
       widthUnits: "pixels",
-      updateTriggers: { getTargetPosition: exaggeration },
+      updateTriggers: { getTargetPosition: exaggeration, getColor: wrongLevelCs, getWidth: wrongLevelCs },
     }),
     new ScatterplotLayer({
       id: "ground-marks",
@@ -475,9 +652,50 @@ export default function MapView() {
       getFillColor: (p: Shown) => (p.is_intruder ? [255, 77, 94, 140] : [224, 232, 242, 110]),
     }),
 
+    // The issue's geometry sits under the aircraft glyphs and over everything else. Empty unless
+    // the selected aircraft has a standing alert.
+    new PathLayer({
+      id: "issue-wrong",
+      data: issueDraw.wrong,
+      getPath: (d: IssueSeg) => d.path,
+      getColor: (d: IssueSeg) => d.color,
+      getWidth: (d: IssueSeg) => d.width,
+      widthUnits: "pixels",
+      billboard: true,
+      extensions: [new PathStyleExtension({ dash: true })],
+      getDashArray: [5, 4],
+      parameters: ALWAYS_ON_TOP,
+    }),
+    new PathLayer<IssueSeg>({
+      id: "issue-cleared",
+      data: issueDraw.cleared,
+      getPath: (d) => d.path,
+      getColor: (d) => d.color,
+      getWidth: (d) => d.width,
+      widthUnits: "pixels",
+      billboard: true,
+      capRounded: true,
+      parameters: ALWAYS_ON_TOP,
+    }),
+    new ScatterplotLayer<IssueMark>({
+      id: "issue-marks",
+      data: issueDraw.marks,
+      getPosition: (d) => d.position,
+      getRadius: (d) => d.radius,
+      radiusUnits: "pixels",
+      filled: true,
+      getFillColor: C.ink,
+      stroked: true,
+      getLineColor: (d) => d.color,
+      getLineWidth: 2,
+      lineWidthUnits: "pixels",
+      billboard: true,
+      parameters: ALWAYS_ON_TOP,
+    }),
+
     new ScatterplotLayer({
       id: "rings",
-      data: planes.filter((p) => highlights[p.callsign] || watching.includes(p.callsign) || p.callsign === selected),
+      data: planes.filter((p) => highlights[p.callsign] || watching.includes(p.callsign) || p.callsign === selected || p.callsign === talking),
       getPosition: (p: Shown) => [p.lon, p.lat, zOf(p.alt_ft)],
       filled: false,
       stroked: true,
@@ -485,11 +703,12 @@ export default function MapView() {
       radiusUnits: "pixels",
       lineWidthUnits: "pixels",
       getLineWidth: 2,
-      getRadius: (p: Shown) => (highlights[p.callsign] === "alert" ? 14 + pulse * 16 : highlights[p.callsign] === "resolving" ? 15 + pulse * 6 : 16),
+      getRadius: (p: Shown) => (highlights[p.callsign] === "alert" ? 14 + pulse * 16 : highlights[p.callsign] === "resolving" ? 15 + pulse * 6 : p.callsign === talking ? 13 + pulse * 10 : 16),
       getLineColor: (p: Shown) => {
         const h = highlights[p.callsign];
         if (h === "alert") return [255, 77, 94, Math.round(255 * (1 - pulse * 0.8))] as RGBA;
         if (h === "resolving") return C.resolving;
+        if (p.callsign === talking) return [52, 211, 153, Math.round(255 * (1 - pulse * 0.6))] as RGBA; // on the air
         if (watching.includes(p.callsign)) return C.watching;
         return [255, 255, 255, 200] as RGBA;
       },
@@ -537,6 +756,45 @@ export default function MapView() {
       outlineColor: C.ink,
       parameters: ALWAYS_ON_TOP,
       updateTriggers: { getPosition: exaggeration, getText: [dense, selected, highlights, watching], getSize: [dense, selected, highlights], getColor: [dense, selected, highlights] },
+    }),
+
+    new TextLayer<IssueTag>({
+      id: "issue-tags",
+      data: issueDraw.tags,
+      getPosition: (d) => d.position,
+      getText: (d) => d.text,
+      getColor: (d) => d.color,
+      getSize: 10.5,
+      getPixelOffset: (d) => d.offset,
+      getTextAnchor: (d) => d.anchor,
+      getAlignmentBaseline: "center",
+      characterSet: ISSUE_CHARS,
+      fontFamily: fontReady ? '"B612 Mono", ui-monospace, monospace' : "ui-monospace, monospace",
+      fontSettings: { sdf: true },
+      outlineWidth: 4,
+      outlineColor: C.ink,
+      parameters: ALWAYS_ON_TOP,
+    }),
+    // What is wrong, in one line, under the data block.
+    new TextLayer<IssueTag>({
+      id: "issue-label",
+      data: issueDraw.label,
+      getPosition: (d) => d.position,
+      getText: (d) => d.text,
+      getColor: (d) => d.color,
+      getSize: 11.5,
+      getPixelOffset: (d) => d.offset,
+      getTextAnchor: (d) => d.anchor,
+      getAlignmentBaseline: "center",
+      characterSet: ISSUE_CHARS,
+      fontFamily: fontReady ? '"B612 Mono", ui-monospace, monospace' : "ui-monospace, monospace",
+      fontSettings: { sdf: true },
+      background: true,
+      getBackgroundColor: C.pill,
+      getBorderColor: (d) => [d.color[0], d.color[1], d.color[2], 170] as RGBA,
+      getBorderWidth: 1,
+      backgroundPadding: [7, 4],
+      parameters: ALWAYS_ON_TOP,
     }),
   ];
 
@@ -591,6 +849,12 @@ export default function MapView() {
         initialViewState={{ longitude: frame.lon0, latitude: frame.lat0, zoom: 5.4, pitch: 52, bearing: -14 }}
         maxPitch={78}
         attributionControl={{ compact: true }}
+        onDragStart={() => {
+          // Panning away by hand lets go of the aircraft (an alert card's focus turns follow on
+          // unasked). Zoom, tilt and rotate keep following. The flight strip turns it back on.
+          flyingUntil.current = 0;
+          if (follow) dispatch({ type: "set_follow", on: false });
+        }}
         onLoad={(e) => {
           quietBasemap(e.target);
           setLoaded(true);
@@ -605,7 +869,8 @@ export default function MapView() {
       </MapGL>
 
       {/* Disrupt: one control. Random puts something where it will matter; Choose lets you place a kind. */}
-      <div className="pointer-events-none absolute left-2 top-[68px] bottom-[330px] w-[336px] flex flex-col gap-2 overflow-y-auto scroll-thin">
+      {/* z-10: the deck.gl overlay canvas paints above unstacked siblings, so traffic drew over these panels */}
+      <div className="pointer-events-none absolute z-10 left-2 top-[68px] bottom-[330px] w-[336px] flex flex-col gap-2 overflow-y-auto scroll-thin">
       <div className="glass pointer-events-auto px-2.5 py-2">
         <div className="flex items-center gap-2">
           <span className="eyebrow">Disrupt</span>
@@ -665,12 +930,11 @@ export default function MapView() {
       </div>
 
       {/* view */}
-      <div className="glass absolute left-2 bottom-[196px] flex flex-col gap-2 px-2.5 py-2 w-[320px]">
+      <div className="glass absolute z-10 left-2 bottom-[196px] flex flex-col gap-2 px-2.5 py-2 w-[320px]">
         <div className="flex items-center gap-2">
           <span className="eyebrow">View</span>
           <button className={chip(false)} onClick={() => fit(52, -14)}>Tilt</button>
           <button className={chip(false)} onClick={() => fit(0, 0)}>Top down</button>
-          <button className={chip(globe)} onClick={() => setGlobe((g) => !g)}>Globe</button>
         </div>
         {/* Which lines to draw. Lives here, with the other view controls, so the top bar stays on one row. */}
         <div className="flex items-center gap-2">
@@ -694,7 +958,7 @@ export default function MapView() {
         <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-mono text-muted pt-0.5">
           <span><span style={{ color: "rgb(132,146,162)" }}>╌╌</span> {sim?.source === "real" ? (sim.meta?.live ? "projected" : "flown") : "standard"}</span>
           <span><span style={{ color: "rgb(70,200,255)" }}>──</span> Tower</span>
-          <span><span style={{ color: "rgb(255,176,46)" }}>──</span> replanned</span>
+          <span><span style={{ color: "rgb(255,176,46)" }}>──</span> rerouted round a disruption</span>
           <span><span style={{ color: "rgb(226,232,240)" }}>┄┄</span> was going to fly</span>
           <span><span style={{ color: "rgb(255,77,94)" }}>◯</span> alert</span>
           <span><span style={{ color: "rgb(255,176,46)" }}>◯</span> checking</span>
