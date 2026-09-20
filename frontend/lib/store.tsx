@@ -98,7 +98,24 @@ export interface TowerState {
   held: Record<string, string>;
   /** Who is on the frequency right now (the clip being played), for the pulse on the map. */
   onAir: { speaker: "pilot" | "controller"; callsign: string | null } | null;
+  /** callsign -> what Tower just understood for it ("H270 ↑FL360"), shown on the aircraft for a few seconds */
+  acks: Record<string, { text: string; at: number }>;
   showStock: boolean;
+}
+
+/** The short form of an instruction, as a radar data block would show it. */
+export function ackText(items: { type: string; value: string | number; unit: string | null; action: string | null }[]): string {
+  const parts: string[] = [];
+  for (const i of items) {
+    if (i.type === "heading") parts.push(`H${String(Math.round(Number(i.value)) % 360 || 360).padStart(3, "0")}`);
+    else if (i.type === "altitude") {
+      const arrow = i.action === "climb" ? "↑" : i.action === "descend" ? "↓" : "=";
+      parts.push(i.unit === "FL" ? `${arrow}FL${String(i.value).padStart(3, "0")}` : `${arrow}${i.value}ft`);
+    } else if (i.type === "speed") parts.push(`${i.value}kt`);
+    else if (i.type === "route") parts.push(`→${i.value}`);
+    else if (i.type === "manoeuvre") parts.push(String(i.value));
+  }
+  return parts.join(" ");
 }
 
 export const initialState: TowerState = {
@@ -131,6 +148,7 @@ export const initialState: TowerState = {
   simClock: { t: 0, at: 0 },
   held: {},
   onAir: null,
+  acks: {},
   showStock: false,
 };
 
@@ -191,6 +209,7 @@ function clearWorld(state: TowerState): TowerState {
     ghosts: {},
     held: {},
     onAir: null,
+    acks: {},
     cards: [],
     cardT: {},
     clearances: {},
@@ -313,6 +332,12 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
       // span for ever. A radar watch is the exception: that card counts itself down.
       let next = upsertClearance(state, ev.payload);
       const id = ev.payload.id;
+      // Spoken, and just understood: put it on the aircraft at once. This is the first thing the
+      // controller sees after letting go of the key, before the pilot has said a word.
+      if (ev.type === "clearance_opened" && ev.payload.status === "open") {
+        const text = ackText(ev.payload.items ?? []);
+        if (text) next = { ...next, acks: { ...next.acks, [ev.payload.callsign]: { text, at: performance.now() } } };
+      }
       // The controller said the correction and the pilot read it back right: that settles every
       // standing alert about the same instruction to the same aircraft. It used to stay until
       // dismissed by hand, which read as "Tower did not hear my correction".
@@ -333,7 +358,12 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
     }
 
     case "transcript": {
-      const transcript = [...state.transcript, ev.payload].slice(-TRANSCRIPT_CAP);
+      // Same id again: the line is being filled in (the stock model's version arrives a moment
+      // after the tuned one, which nothing waits for any more).
+      const at = state.transcript.findIndex((t) => t.id === ev.payload.id);
+      const transcript = at >= 0
+        ? state.transcript.map((t, i) => (i === at ? { ...t, ...ev.payload } : t))
+        : [...state.transcript, ev.payload].slice(-TRANSCRIPT_CAP);
       return { ...state, transcript };
     }
 

@@ -62,7 +62,8 @@ log = logging.getLogger("tower.world")
 
 DATA_DIR = Path(os.environ.get("TOWER_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
 AUDIO_DIR = DATA_DIR / "audio"
-PILOT_DELAY_S = 1.5  # seconds between a clearance and the pilot keying up
+PILOT_DELAY_S = 1.5  # sim seconds between a clearance and the pilot keying up (headless runs and tests)
+PILOT_KEY_UP_S = 0.15  # real seconds, with a screen attached: the wait that is felt, so it is short
 MIN_MIC_S = 0.5  # shorter than this from the mic is a stray key press
 GUESS_MIN_CONF = 0.6  # below this, an instruction only the language model could find is noise
 REPLAN_EVERY_S = 60.0
@@ -144,6 +145,7 @@ class World:
         self.card_t: dict[str, float] = {}  # card id -> sim time it was issued, for "due at"
         self._voice_card: str | None = None  # the card Tower is saying right now, in Auto
         self._turn_back_t: dict[str, float] = {}  # callsign -> when its turn back was last looked at
+        self._tasks: set[asyncio.Task[Any]] = set()  # pilot replies in flight: kept so they are not collected
         self._voice_since = 0.0
         self.human_on_mic = False  # the controller is holding the mic: Tower keeps quiet
         self.auto_voice = False  # Auto speaks one exchange at a time. Off: every instruction by data link
@@ -520,6 +522,13 @@ class World:
 
     def set_ptt(self, down: bool) -> None:
         self.human_on_mic = bool(down)
+        if down and self.asr is not None and hasattr(self.asr, "warm"):
+            # The key is down: in a few seconds there will be audio to send. Get the line to the
+            # speech model open now, so the transmission does not pay for it.
+            try:
+                asyncio.get_running_loop().run_in_executor(None, self.asr.warm)
+            except RuntimeError:  # no loop: a test calling this directly
+                pass
 
     def set_auto_voice(self, enabled: bool) -> None:
         """Auto with or without Tower's voice. Silent is instant: nothing waits for a radio exchange."""
@@ -1138,12 +1147,23 @@ class World:
                                     for h in (n_best or [])],
                             text_stock=text_stock)  # type: ignore[arg-type]
 
-    async def _transcribe(self, samples: np.ndarray) -> tuple[str, float, list[str], str | None, float]:
+    async def _transcribe(self, samples: np.ndarray, fast: bool = False,
+                          on_stock=None) -> tuple[str, float, list[str], str | None, float]:
+        """`fast` is the controller's own voice: one beam, and the stock comparison is not waited
+        for (it goes to `on_stock` when it turns up). See tower/asr.py."""
         if self.asr is None:
             self.asr = await asyncio.to_thread(get_asr)
         prompt = build_prompt([_spoken(cs) for cs in self.sim.active], self.spoken_waypoints())
         t0 = time.perf_counter()
-        r = await asyncio.to_thread(self.asr.transcribe, samples, prompt)
+        kw: dict[str, Any] = {}
+        if fast:
+            kw["fast"] = True
+            if on_stock is not None and type(self.asr).__name__ == "StockAndTuned":
+                kw["on_stock"] = on_stock
+        try:
+            r = await asyncio.to_thread(self.asr.transcribe, samples, prompt, **kw)
+        except TypeError:  # a stand-in model that knows nothing of `fast`
+            r = await asyncio.to_thread(self.asr.transcribe, samples, prompt)
         return r.text, r.confidence, list(r.n_best), r.text_stock, time.perf_counter() - t0
 
     async def controller_audio(self, samples: np.ndarray, sr: int = 16000) -> None:
@@ -1154,9 +1174,27 @@ class World:
             return  # a stray tap of Space, not a transmission (07 section 7.1: drop under 0.5 s)
         ref = f"ctl-{uuid.uuid4().hex[:8]}.wav"
         float_to_wav(AUDIO_DIR / ref, samples, sr)
-        text, conf, n_best, stock, lat = await self._transcribe(samples)
+        loop = asyncio.get_running_loop()
+        late: dict[str, Any] = {}
+
+        def stock_heard(text: str) -> None:  # called from the comparison's thread, a moment later
+            loop.call_soon_threadsafe(self._stock_arrived, late, text)
+
+        t0 = time.perf_counter()
+        text, conf, n_best, stock, lat = await self._transcribe(samples, fast=True, on_stock=stock_heard)
         await self._controller(text, audio_ref=ref, conf=conf, n_best=n_best, text_stock=stock,
-                               duration_s=len(samples) / sr, asr_latency=lat)
+                               duration_s=len(samples) / sr, asr_latency=lat, late=late)
+        log.info("controller: heard in %.2f s, understood %.2f s after the key was released: %r",
+                 lat, time.perf_counter() - t0, text)
+
+    def _stock_arrived(self, late: dict[str, Any], text: str) -> None:
+        """The stock model's version of the controller's words, for the side-by-side. It comes after
+        the transcript line went out, so the line is sent again with it filled in (same id)."""
+        late["stock"] = text
+        p = late.get("payload")
+        if p is not None and not p.get("text_stock"):
+            p["text_stock"] = text
+            self.emit(event("transcript", p, t=self.sim.t))
 
     async def controller_text(self, text: str) -> None:
         if not self._radio_open():
@@ -1166,7 +1204,7 @@ class World:
     async def _controller(self, text: str, *, audio_ref: str = "", conf: float = 1.0,
                           n_best: list[str] | None = None, text_stock: str | None = None,
                           duration_s: float = 3.0, asr_latency: float = 0.0,
-                          card: InstructionCard | None = None) -> None:
+                          card: InstructionCard | None = None, late: dict[str, Any] | None = None) -> None:
         if not text.strip():
             return
         tx = self._new_tx(text, "controller", audio_ref, conf, n_best, text_stock, duration_s)
@@ -1176,7 +1214,12 @@ class World:
             events = self.core.on_transmission(tx, list(self.sim.active), states)
         self.transmissions += 1
         self.tier1_latencies.append(asr_latency + time.perf_counter() - t0)
-        self.emit(event("transcript", self._tx_payload(tx), t=self.sim.t))
+        payload = self._tx_payload(tx)
+        if late is not None:
+            late["payload"] = payload
+            if late.get("stock") and not payload.get("text_stock"):
+                payload["text_stock"] = late["stock"]
+        self.emit(event("transcript", payload, t=self.sim.t))
         if card is not None and self._trust_the_card(card, events):
             conf = min(conf, 0.5)
         self._emit_core_events(events)
@@ -1366,7 +1409,22 @@ class World:
     def _schedule_pilot(self, c: OpenClearance, heard_ok: bool = True, correction: bool = False) -> None:
         async def go() -> None:
             await self._pilot_responds(c, heard_ok, correction=correction)
-        self.pending.append((self.sim.t + PILOT_DELAY_S, go))
+        if not self.realtime:
+            self.pending.append((self.sim.t + PILOT_DELAY_S, go))
+            return
+
+        # With a screen attached the reply does not wait for the clock. The queue above is served
+        # once a tick, so a 1.5 s delay was really 1.5 to 2.5 s of nothing happening after the
+        # controller let go of the key, and that gap is what made the radio feel dead.
+        async def soon() -> None:
+            await asyncio.sleep(PILOT_KEY_UP_S)
+            try:
+                await go()
+            except Exception:
+                log.exception("pilot reply failed for %s", c.callsign)
+        task = asyncio.create_task(soon())
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     async def _pilot_responds(self, c: OpenClearance, heard_ok: bool = True,
                               correction: bool = False) -> None:
@@ -1382,19 +1440,29 @@ class World:
                 kw["error_type"] = self.next_readback
             self.next_readback = "random"  # one shot
             self.emit_state()
+        # Decide first, which is instant, and act on it. The voice is made afterwards: it takes one
+        # to three seconds, and the aircraft used to sit still for all of them.
         if correction:
-            resp: PilotResponse = await asyncio.to_thread(pilot.respond_to_correction, c, self.noise)
+            resp: PilotResponse = pilot.respond_to_correction(c, self.noise, speak=False)
         else:
-            resp = await asyncio.to_thread(pilot.respond, c, heard_ok, list(self.sim.active), **kw)
+            resp = pilot.respond(c, heard_ok, list(self.sim.active), speak=False, **kw)
         meta = self.clearance_meta.setdefault(c.id, {})
         if resp.injected_error:
             meta["injected_error"] = resp.injected_error
             self.errors_injected += 1
         # The plane obeys what the pilot said, whoever the pilot was.
         actor = resp.acting_callsign
+        moved = False
         for cmd in (resp.sim_commands or [resp.sim_command]):
             if cmd.kind != "none" and actor in self.sim.active:
                 self.sim.apply(actor, cmd)
+                moved = True
+        if moved:
+            meta["acted_real"] = time.monotonic()
+            # Show it now, not on the next tick of the clock: the cleared heading and level are in
+            # the radar frame, and the screen draws them the moment they change.
+            self.emit(event("radar", self.radar_payload(), t=self.sim.t))
+        await asyncio.to_thread(pilot.voice_it, resp, c)
         if not resp.transmits:
             return  # missing readback: the timeout in core.tick will raise it
         # Tower hears the pilot through the radio, never reads the text.
