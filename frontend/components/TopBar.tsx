@@ -125,7 +125,7 @@ export default function TopBar() {
             {lifecycle === "paused" ? "Resume" : "Start"}
           </button>
         ) : (
-          <button disabled className="btn btn-round" title={lifecycle === "ended" ? "Every flight has left. Reset from Settings." : "Load a sky first"} aria-label="Start">
+          <button disabled className="btn btn-round" title={lifecycle === "ended" ? "Every flight has left. Press restart." : "Load a sky first"} aria-label="Start">
             <Play />
           </button>
         )}
