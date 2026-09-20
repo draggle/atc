@@ -336,6 +336,12 @@ EventType = Literal[
     "alert_resolved",  # a wrong readback was corrected and read back right
     "aside",  # the controller said "disregard", or asked for something no airliner does: not a clearance
     "risk",  # Monte Carlo conflict prediction: pairs with p_max >= 0.05 and their curves (TRD 07)
+    # The squack agent (docs/trd/08-squack-agent-prd.md, backend/agent/)
+    "agent_step",  # one tool call of the agent: {turn_id, step, tool, args, result_summary, elapsed_ms}
+    "answer",  # the agent's one-sentence reply and its cards: {turn_id, text, cards, for}
+    "ui_command",  # a ui.* tool ran: {command, args}. The screen applies it; the backend does nothing
+    "stage",  # agent mode: the cards on the stage: {slots, ttl_s, by: "director" | "agent"}
+    "sim_job",  # a background Monte Carlo or sweep: {job_id, kind, status, progress, rows?}
 ]
 
 

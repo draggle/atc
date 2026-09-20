@@ -18,6 +18,8 @@ import SetupPanel from "./SetupPanel";
 import Notices from "./Notices";
 import BootScreen from "./BootScreen";
 import CommandBar from "./CommandBar";
+import AnswerDock from "./AnswerDock";
+import Stage from "./Stage";
 
 // MapLibre and deck.gl need a browser: no server rendering for the map.
 const MapView = dynamic(() => import("./MapView"), {
@@ -69,6 +71,7 @@ function ClientProvider({ children }: { children: ReactNode }) {
 
 function Screen() {
   const { alerts, resolving, sim } = useTowerState();
+  const { uiMode } = useTowerState(); // "agent": squack composes the panel layer (TRD 08, rung j)
   const lifecycle = sim?.lifecycle ?? (sim?.scenario ? "running" : "idle");
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-bg text-fg">
@@ -79,6 +82,7 @@ function Screen() {
         <TopBar />
       </div>
 
+      {uiMode === "agent" ? <Stage /> : (
       <div className="absolute top-[60px] right-2 bottom-2 z-10 w-[380px] flex flex-col gap-2 overflow-y-auto scroll-thin pr-0.5">
         {(alerts.length > 0 || resolving.length > 0) && <AlertCard />}
         <InstructionCards />
@@ -86,6 +90,7 @@ function Screen() {
         <ScoreboardPanel />
         <SlidersPanel />
       </div>
+      )}
 
       <div className="absolute left-2 bottom-2 z-10 h-[180px] w-[min(calc(50vw-372px),420px)]">
         <Transcript />
@@ -99,6 +104,7 @@ function Screen() {
         </div>
       )}
 
+      <AnswerDock />
       <CommandBar />
       <SetupPanel />
       <Notices />

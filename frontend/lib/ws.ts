@@ -28,6 +28,8 @@ const EVENT_TYPES = new Set<string>([
   // Anything not listed here is dropped without a word. A new backend event needs a line here,
   // in EventMap (lib/types.ts), and in the reducer (lib/store.tsx).
   "radio_audio", "said_check", "alert_resolved", "risk",
+  // the squack agent (TRD 08)
+  "agent_step", "answer", "ui_command", "stage", "sim_job",
 ]);
 
 function parseEvent(raw: string): TowerEvent | null {

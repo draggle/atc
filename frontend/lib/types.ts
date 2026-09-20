@@ -1,6 +1,7 @@
 /**
  * TypeScript mirror of backend/schemas.py. Change both together and tell the team.
  */
+import type { AgentStep, Answer, SimJob, StageEvent, UiCommand, UiMode } from "./cards/types";
 
 // ---------------------------------------------------------------------------
 // Tower core (03-architecture.md)
@@ -468,6 +469,12 @@ export type EventMap = {
   said_check: SaidCheck;
   alert_resolved: AlertResolved;
   risk: RiskReport;
+  // The squack agent (TRD 08). Card descriptors live in lib/cards/types.ts.
+  agent_step: AgentStep;
+  answer: Answer;
+  ui_command: UiCommand;
+  stage: StageEvent;
+  sim_job: SimJob;
 };
 
 export type EventType = keyof EventMap;
@@ -507,4 +514,6 @@ export type ClientMessage =
   | { type: "add_disruption"; kind: DisruptionKind | "random"; x_nm?: number; y_nm?: number; target?: string }
   | { type: "remove_disruption"; id: string }
   | { type: "speak_card"; id: string }
-  | { type: "set_sliders"; buffer_nm: number; error_rate: number; noise: number };
+  | { type: "set_sliders"; buffer_nm: number; error_rate: number; noise: number }
+  /** normal: the hand-laid-out panels. agent: a stage squack fills with cards (TRD 08, rung j). */
+  | { type: "set_ui_mode"; mode: UiMode };
