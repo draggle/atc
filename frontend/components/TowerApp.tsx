@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { DICTATION_HOLD_MS, TowerStoreProvider, useTowerDispatch, useTowerState } from "@/lib/store";
 import { connectTower, type TowerClient } from "@/lib/ws";
-import { BOTTOM_ROW_H, EDGE, ROW_TOP, SIDE_W } from "@/lib/layout";
+import { BOTTOM_ROW_H, EDGE, SIDE_W } from "@/lib/layout";
 import { radio } from "@/lib/radio";
 import type { ClientMessage } from "@/lib/types";
 import TopBar from "./TopBar";
@@ -19,6 +19,7 @@ import Notices from "./Notices";
 import BootScreen from "./BootScreen";
 import CommandBar from "./CommandBar";
 import AnswerDock from "./AnswerDock";
+import NextReadback from "./NextReadback";
 
 // MapLibre and deck.gl need a browser: no server rendering for the map.
 const MapView = dynamic(() => import("./MapView"), {
@@ -88,21 +89,25 @@ function Screen() {
         <TopBar />
       </div>
 
-      {/* The right rail: the alert on top, then analytics. It stops where the bottom row starts. */}
+      {/* The right side is one column, top to bottom of the window, and it is where the controller
+          works: the alert, then the instructions to say (the tall part, it scrolls inside itself),
+          the next-readback switch that goes with them, and Analytics resting on the bottom edge.
+          Analytics opens upwards and takes its room from the instruction list. */}
       <div
-        className="absolute top-[52px] right-2 z-10 flex flex-col gap-2 overflow-y-auto scroll-thin pr-0.5"
-        style={{ bottom: ROW_TOP + EDGE, width: SIDE_W }}
+        className="absolute top-[52px] right-2 z-10 flex flex-col gap-2"
+        style={{ bottom: EDGE, width: SIDE_W }}
       >
-        {(alerts.length > 0 || resolving.length > 0) && <AlertCard />}
-        <ScoreboardPanel />
+        {(alerts.length > 0 || resolving.length > 0) && (
+          <div className="shrink-0 max-h-[42%] overflow-y-auto scroll-thin"><AlertCard /></div>
+        )}
+        <div className="flex-1 min-h-[150px]"><InstructionCards /></div>
+        <NextReadback />
+        <div className="shrink-0 max-h-[45%] overflow-y-auto scroll-thin"><ScoreboardPanel /></div>
       </div>
 
-      {/* The bottom row, left to right: Frequency, the chat bar and its dock, Sent by squack. */}
+      {/* The bottom row on the left: Frequency, then the chat bar and its dock in the middle. */}
       <div className="absolute left-2 z-10" style={{ bottom: EDGE, height: BOTTOM_ROW_H, width: SIDE_W }}>
         <Transcript />
-      </div>
-      <div className="absolute right-2 z-10" style={{ bottom: EDGE, height: BOTTOM_ROW_H, width: SIDE_W }}>
-        <InstructionCards />
       </div>
 
       <AnswerDock />

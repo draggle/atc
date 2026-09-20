@@ -212,13 +212,13 @@ export default function SettingsSheet() {
             <Slider label="Altitude" value={view.exaggeration} min={1} max={14} step={1} fmt={(v) => `${v}x`} onChange={(v) => dispatch({ type: "set_view", view: { exaggeration: v } })} />
             {/* Legend: one swatch and one word per line, the swatches drawn in the layers' own colours. */}
             <ul className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted pt-1">
-              <li className="flex items-center gap-2">{swatch("dashed", "#fff", 0.35)}{real ? (live ? "projected" : "flown") : "standard"}</li>
-              <li className="flex items-center gap-2">{swatch("solid", "#fff", 0.85)}squack</li>
-              <li className="flex items-center gap-2">{swatch("solid", "var(--warn)")}rerouted</li>
-              <li className="flex items-center gap-2">{swatch("dotted", "#fff", 0.3)}was going to fly</li>
-              <li className="flex items-center gap-2">{swatch("ring", "var(--bad)")}alert</li>
-              <li className="flex items-center gap-2">{swatch("ring", "var(--warn)")}checking</li>
-              <li className="flex items-center gap-2">{swatch("ring", "#fff", 0.5)}watching</li>
+              <li className="flex items-center gap-2">{swatch("dashed", "rgb(132,146,162)")}{real ? (live ? "projected" : "flown") : "standard"}</li>
+              <li className="flex items-center gap-2">{swatch("solid", "rgb(70,200,255)")}squack</li>
+              <li className="flex items-center gap-2">{swatch("solid", "rgb(255,176,46)")}rerouted</li>
+              <li className="flex items-center gap-2">{swatch("dotted", "rgb(226,232,240)", 0.6)}was going to fly</li>
+              <li className="flex items-center gap-2">{swatch("ring", "rgb(255,77,94)")}alert</li>
+              <li className="flex items-center gap-2">{swatch("ring", "rgb(255,176,46)")}checking</li>
+              <li className="flex items-center gap-2">{swatch("ring", "rgb(34,211,238)")}watching</li>
               <li className="flex items-center gap-2">
                 {swatch("wedge", "var(--bad)", 0.7)}predicted conflict
                 {conesNow > 0 && <span className="ml-auto font-mono tabular-nums text-bad">{conesNow}</span>}
