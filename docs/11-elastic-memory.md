@@ -12,7 +12,7 @@ Tower's resolver agent already investigates messy readbacks with tools: re-liste
 |---|---|
 | Messy real-world data in | Whisper transcripts of noisy radio, radar frames, verdicts. `World._emit` pushes every WebSocket event into `Memory.observe` on its way out |
 | An agent that decides what to retrieve and calls tools | The resolver in `backend/tower/resolver/`, a hand-rolled tool loop capped at 4 calls. It chooses among `frequency_history`, `nearby_aircraft`, `aircraft_track`, `sanity_check`, `relisten`, `active_aircraft`, `aircraft_state` |
-| Elasticsearch as the context layer | `backend/tower/memory.py`. Five indices, `tower-transmissions`, `tower-clearances`, `tower-verdicts`, `tower-resolver-steps`, `tower-radar`, plus `tower-waypoints` |
+| Elasticsearch as the context layer | `backend/tower/memory.py`. Five indices, `tower-transmissions`, `tower-clearances`, `tower-verdicts`, `tower-resolver_steps`, `tower-radar`, plus `tower-waypoints` |
 | BM25 | `history(callsign, n, query)`: `multi_match` on `text_norm` and `n_best` with `fuzziness: AUTO`, so the exchange the garbled readback best matches ranks first |
 | Geo query | `nearby(callsign, radius_nm)`: `geo_distance` on a `geo_point` around the aircraft's latest position, `collapse` by callsign for the newest frame each |
 | Time series | `track(callsign, seconds)`: range on `t`, sorted, reduced to altitude and heading trend |
@@ -73,13 +73,14 @@ Every existing test still passes: 287 in `backend/` (273 before this branch).
 ## Status, Sunday morning Sept 20
 
 - Live on a laptop against the Serverless project: backend log shows `Elasticsearch memory on ...`, `_bulk` writes return 200 every second, `elastic_check.py` passes all four searches.
-- `elastic_demo.py` drives the app with pilot error rate and radio noise at maximum; pilot readbacks through ElevenLabs voices and Whisper come back at confidence 0.4 to 0.8, which is the range that wakes the resolver. First full run was in progress when this was written; the count of `[Elasticsearch]` steps it printed is the number to quote.
+- `elastic_demo.py`, one run of three rounds with pilot error rate and radio noise at maximum, ElevenLabs voices, local Whisper, and the real Baseten resolver (`RESOLVER_MODEL=zai-org/GLM-5.3-Fast`): **19 resolver steps, 3 searched Elasticsearch, 9 alerts.** Pilot readbacks came back at confidence 0.34 to 0.8, which is the range that wakes the resolver. Example step, chosen by the model: `aircraft_track(DAL789, 30 s)` returned `[Elasticsearch] climbing over 30.0 s: 35025 to 35775 ft, hdg 071 to 110`. The same steps are visible in Kibana Discover under `tower-resolver_steps`.
+- **Seen in that run:** with the real model, each step costs one to two seconds, and one case hit "resolver ran out of time" after three steps and ended `uncertain`, which is the correct failure. If that happens in rehearsal, consider `BUDGET_S` in `tower/resolver/agent.py` at about 8 s for a real model. The 5 s figure is hard rule 4 in `CLAUDE.md`, so that is the team's call, not this branch's.
 - **When the agent wakes, and when it does not.** Tier 1 alerts on its own for a plainly wrong readback (wrong value, "wilco" only, wrong aircraft) and stays silent for a right one. The resolver, and so the Elastic trace, runs only on an *unclear* one: speech confidence under 0.6, the expected value in another hypothesis, similar callsigns both expecting a readback, or a routing whose fix name was not understood. On stage, raise radio noise to make the first case common. Typed radio text is always the controller, so a judge cannot type a bad readback; the AI pilots must produce it by voice.
 - If a rehearsal never produces an amber card, the fallback is a demo switch that routes every non-matching readback through the resolver. Not built; about 20 lines in `tower/pipeline.py` `_on_pilot`, behind an env var, and it must be off for the Monte Carlo numbers.
 
 ## What would make it stronger, in order
 
 1. A `frontend` badge and a per-step icon for `[Elasticsearch]` steps in `AlertCard.tsx`, so the judge sees the search without reading text.
-2. A Kibana dashboard on `tower-verdicts` and `tower-resolver-steps`: readback errors by type and airline, resolver decisions, seconds to alert. This is the "insights" idea from `docs/00-full-context.md` Part 11 with no new code.
+2. A Kibana dashboard on `tower-verdicts` and `tower-resolver_steps`: readback errors by type and airline, resolver decisions, seconds to alert. This is the "insights" idea from `docs/00-full-context.md` Part 11 with no new code.
 3. Dense vectors on `text_norm` via an Elastic inference endpoint, and a hybrid `rrf` query in `history()`. Only if a paraphrased readback ("down to two four zero") measurably beats BM25 with fuzziness on the held-out synthetic pairs.
 4. Resolver verdicts read back out of `tower-verdicts` as checker training rows (TRD 02 mentions this loop).
