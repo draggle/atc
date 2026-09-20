@@ -318,8 +318,10 @@ async def ws_endpoint(ws: WebSocket) -> None:
             elif typ == "add_disruption":
                 # kind: any of disruptions.PROFILES, or "random". No position means Tower's choice.
                 x, y = data.get("x_nm"), data.get("y_nm")
+                # target: a callsign, "disrupt this flight". Tower puts it on that flight's path ahead.
                 world.add_disruption(str(data.get("kind", "random")),
-                                     float(x) if x is not None else None, float(y) if y is not None else None)
+                                     float(x) if x is not None else None, float(y) if y is not None else None,
+                                     target=str(data["target"]) if data.get("target") else None)
             elif typ == "remove_disruption":
                 world.remove_disruption(str(data.get("id", "")))
             elif typ == "speak_card":

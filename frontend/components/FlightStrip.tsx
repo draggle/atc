@@ -116,6 +116,30 @@ export default function FlightStrip() {
         <p className="text-xs text-muted">{selected} has left the sector.</p>
       )}
 
+      {a && !a.is_intruder && (
+        // Disrupt this flight: Tower puts it on this aircraft's own path, far enough ahead to be
+        // avoided and near enough to matter. No aiming at a tilted map.
+        <div>
+          <div className="eyebrow mb-1">Disrupt this flight</div>
+          <div className="grid grid-cols-4 gap-1.5">
+            {([["storm", "Storm ahead", "violet"], ["rocket", "Launch ahead", "violet"], ["fighter", "Fighter", "bad"], ["emergency", "Mayday", "warn"]] as const).map(([kind, label, tone]) => (
+              <button
+                key={kind}
+                disabled={state.sim?.lifecycle !== "running"}
+                onClick={() => send({ type: "add_disruption", kind, target: selected })}
+                title={kind === "emergency" ? "This flight declares an emergency" : kind === "fighter" ? "An intruder timed to meet this flight" : "On this flight's path, a few minutes ahead"}
+                className={`px-1.5 py-1.5 rounded-md border text-[11px] font-medium leading-tight disabled:opacity-40 ${
+                  tone === "violet" ? "border-purple-400/40 bg-purple-500/10 text-purple-200 hover:bg-purple-500/20"
+                    : tone === "bad" ? "border-bad/40 bg-bad/10 text-bad hover:bg-bad/20"
+                    : "border-warn/40 bg-warn/10 text-warn hover:bg-warn/20"}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {watching.includes(selected) && (
         <div className="text-[11px] text-cyan-300 border border-cyan-400/30 bg-cyan-400/10 rounded-md px-2 py-1">
           Tower is watching this aircraft on radar to confirm it complies.

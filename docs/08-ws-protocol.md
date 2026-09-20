@@ -46,7 +46,7 @@ Every message is one JSON object `{"type": ..., "payload": {...}, "t": <sim seco
 | `{"type":"set_speed","speed"}` | sim seconds per real second, clamped to 0.25 to 120. The screen offers 1, 5, 20, 60 |
 | `{"type":"set_tower","enabled"}` | Tower on or off. Off means readbacks are not checked and the plane flies what the pilot said |
 | `{"type":"set_auto_speak","enabled"}` | the agent speaks instruction cards itself |
-| `{"type":"add_disruption","kind","x_nm"?,"y_nm"?}` | drop a disruption. `kind` is fighter, drone, balloon, emergency, unknown, storm, closed, rocket, or `random`. With no position, or for `random`, Tower puts it on the path of a flight a few minutes ahead. `intruder` still works and means fighter. A position outside the sector is refused with a `notice` |
+| `{"type":"add_disruption","kind","x_nm"?,"y_nm"?}` | drop a disruption. `kind` is fighter, drone, balloon, emergency, unknown, storm, closed, rocket, or `random`. With no position, or for `random`, Tower puts it on the path of a flight a few minutes ahead. `intruder` still works and means fighter. A position outside the sector is refused with a `notice` **`target`: a callsign ("disrupt this flight").** Tower then chooses the position itself: on that flight's planned path, ahead of it, far enough to be avoided and near enough to matter. `x_nm`/`y_nm` are ignored. For `emergency` the target is the flight that declares it |
 | `{"type":"remove_disruption","id"}` | take one out by hand. An emergency aircraft cannot be removed: it is a real flight |
 | `{"type":"speak_card","id"}` | speak one card by TTS now |
 | `{"type":"set_sliders","buffer_nm","error_rate","noise"}` | separation buffer, pilot error rate, radio noise |
