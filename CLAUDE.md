@@ -116,6 +116,7 @@ These are proposals. If the team decides otherwise, change them here so every Cl
 - A new backend event must be added in three places on the screen or it is dropped without a word: the whitelist in `frontend/lib/ws.ts`, `EventMap` in `lib/types.ts`, and the reducer in `lib/store.tsx`.
 - Live sky: `backend/sim/live.py` takes one snapshot of adsb.lol for a region (`backend/sim/regions.py`) and loads it as a scenario named `live/<region>`. A snapshot, not a stream. Routes are straight projections of the current track, so miles saved is zero by construction there. Falls back to a saved snapshot in `data/live/`, then to a committed replay. Tests never touch the network.
 - Audio is 16 kHz mono everywhere.
+- Risk thresholds live in `backend/planner/risk.py`: the replan trigger is 0.30 and the display floor 0.05. The rollout count adapts to a per-tick budget; the scoreboard's futures-per-second is the measured number, never a constant.
 - The resolver's tools read `tower/memory.py` first and fall back to in-process state. Anything new the agent should be able to search goes through `Memory.observe` (it sees every emitted event), never a second store.
 - Positions: the simulator and planner stay in flat NM (`x_nm`, `y_nm`). Real-world `lat` and `lon` are added at the edge by `backend/sim/geoframe.py`. Never do planner math in degrees, and never draw the map from `x_nm`. Arrays are `[lon, lat]`, named fields are `lat` and `lon`.
 - Small commits to `main` are fine during the hackathon. Pull before you push. Do not force-push.

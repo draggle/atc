@@ -1,7 +1,8 @@
 "use client";
 
-import { alertFor, useTowerDispatch, useTowerState, type ActiveAlert } from "@/lib/store";
+import { alertFor, riskFor, useTowerDispatch, useTowerState, type ActiveAlert } from "@/lib/store";
 import { ItemList, alertLook } from "./AlertCard";
+import { Confidence } from "./InstructionCards";
 import { useClient } from "./TowerApp";
 
 const THREAT: Record<string, string> = {
@@ -60,6 +61,7 @@ export default function FlightStrip() {
   if (!selected) return null;
   const a = aircraft[selected];
   const alert = alertFor(state, selected);
+  const risk = riskFor(state, selected, performance.now());
   const path = plan?.paths.find((p) => p.callsign === selected);
   const history = cards.filter((c) => c.callsign === selected).slice(-4).reverse();
   const open = Object.values(clearances).filter((c) => c.callsign === selected && c.status === "open");
@@ -116,6 +118,12 @@ export default function FlightStrip() {
         <p className="text-xs text-muted">{selected} has left the sector.</p>
       )}
 
+      {risk && (
+        <div className="text-[11px] text-bad border border-bad/40 bg-bad/10 rounded-md px-2 py-1">
+          Predicted conflict with <span className="font-mono font-semibold">{risk.other}</span>: {Math.round(risk.pair.p_max * 100)}% in {Math.round(risk.pair.t_first_s ?? risk.pair.eta_s)} s
+          <span className="text-bad/70"> · min sep {risk.pair.min_sep_nm_p5.toFixed(1)} NM</span>
+        </div>
+      )}
       {watching.includes(selected) && (
         <div className="text-[11px] text-cyan-300 border border-cyan-400/30 bg-cyan-400/10 rounded-md px-2 py-1">
           Tower is watching this aircraft on radar to confirm it complies.
@@ -144,10 +152,13 @@ export default function FlightStrip() {
           <p className="text-[11px] text-muted">Nothing issued yet.</p>
         ) : (
           <ul className="flex flex-col gap-1">
-            {history.map((c) => (
+            {history.map((c, i) => (
               <li key={c.id} className="text-[11px] leading-snug flex gap-2">
                 <span className={`font-mono uppercase shrink-0 w-[62px] ${STATUS_CLS[c.status] ?? "text-muted"}`}>{c.status}</span>
-                <span className="text-fg/85">{c.phrase}</span>
+                <span className="min-w-0">
+                  <span className="text-fg/85">{c.phrase}</span>
+                  {i === 0 && <Confidence value={c.confidence} riskAfter={c.risk_after} className="block mt-0.5" />}
+                </span>
               </li>
             ))}
           </ul>
