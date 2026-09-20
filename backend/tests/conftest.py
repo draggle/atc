@@ -6,10 +6,23 @@ Without keys the code takes its deterministic local paths, which is what the tes
 """
 import pytest
 
-PAID = ("BASETEN_API_KEY", "ELEVENLABS_API_KEY", "ASR_MODEL_URL", "ASR_STOCK_MODEL_URL", "CHECKER_MODEL_URL")
+PAID = ("BASETEN_API_KEY", "ELEVENLABS_API_KEY", "ASR_MODEL_URL", "ASR_STOCK_MODEL_URL", "CHECKER_MODEL_URL",
+        # Not billed, but shared: with these set every World() writes into the team's live
+        # Elasticsearch cluster, the memory the resolver searches during a demo.
+        "ELASTIC_URL", "ELASTIC_API_KEY",
+        "OPENAI_API_KEY")
 
 
 @pytest.fixture(autouse=True)
 def _no_paid_services(monkeypatch):
+    # Set to empty, not deleted. Several tests `import app`, and app.py calls load_dotenv() as it is
+    # imported: a deleted variable is put straight back from `.env`, and the app's global World is
+    # built with it. dotenv never overrides a variable that exists, even an empty one, and every
+    # reader in the backend treats empty as "not configured".
     for name in PAID:
-        monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv(name, "")
+    # Belt and braces for the shared one: whatever the environment says, no World built in a test
+    # gets the team's live Elasticsearch memory. (Deleting the variables was not enough: one run
+    # wrote 249 records into the live cluster through the app's global World.)
+    from tower import memory
+    monkeypatch.setattr(memory.ElasticMemory, "from_env", classmethod(lambda cls: None))
