@@ -154,7 +154,10 @@ export default function InstructionCards() {
   // Three piles. "now": needs a human (voice on) or is about to leave (voice off).
   // "later": for flights still to enter the sector. "done": already issued.
   const open = cards.filter((c) => c.status === "pending" || c.status === "error");
-  const now = open.filter((c) => c.status === "error" || c.callsign in aircraft).sort((a, b) => (a.status === "error" ? -1 : 0) - (b.status === "error" ? -1 : 0) || a.urgency_s - b.urgency_s);
+  // Wrong readbacks first, then anything that reacts to something (a reroute, a conflict, back on
+  // course), then the opening shortcuts, which can wait. Within a group, the soonest first.
+  const weight = (c: InstructionCard) => (c.status === "error" ? 0 : c.emergency ? 1 : c.cause || c.origin === "followup" || c.origin === "release" ? 2 : 3);
+  const now = open.filter((c) => c.status === "error" || c.callsign in aircraft).sort((a, b) => weight(a) - weight(b) || a.urgency_s - b.urgency_s);
   const later = open.filter((c) => c.status !== "error" && !(c.callsign in aircraft)).sort((a, b) => a.urgency_s - b.urgency_s);
   const done = cards.filter((c) => c.status !== "pending" && c.status !== "error").sort(newestFirst);
 

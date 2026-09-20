@@ -13,10 +13,10 @@ Every message is one JSON object `{"type": ..., "payload": {...}, "t": <sim seco
 | type | payload | when |
 |---|---|---|
 | `state` | `{scenario, lifecycle, speed, world_id, scenarios: ScenarioInfo[], live_regions: {key, label}[], tower_enabled, auto_speak, t, waypoints: Waypoint[], zones: Zone[], sector_nm, buffer_nm, error_rate, noise, watching}` | on connect, on every lifecycle change, and whenever a setting changes |
-| `radar` | `{aircraft: AircraftState[], zones?: Zone[]}` | once per second. `zones` is present while any zone is drifting or swelling and replaces `state.zones`. An intruder's `AircraftState` carries `threat`: fighter, drone, balloon, emergency or unknown |
+| `radar` | `{aircraft: AircraftState[], zones?: Zone[], clock_speed}` | once per second. `clock_speed` is the speed the clock is really running at: with voice on it drops to 1 whenever a card needs saying or an exchange is in progress, and returns to `state.speed` after. `zones` is present while any zone is drifting or swelling and replaces `state.zones`. An intruder's `AircraftState` carries `threat`: fighter, drone, balloon, emergency or unknown |
 | `plan` | `Plan` | after initial planning and every replan |
 | `plan_update` | `{changed: string[], reason, trigger}` | with every replan |
-| `instruction_card` | `InstructionCard` | when created or when its status changes. Status `superseded` means a newer plan replaced a card nobody had spoken: drop it |
+| `instruction_card` | `InstructionCard` | when created or when its status changes. Status `superseded` means a newer plan replaced a card nobody had spoken: drop it. With voice on a heading card that waits is replaced like this as the aircraft moves on, so the one on the screen can always be said now. `origin` is `initial`, `replan`, `followup` (the second card of a spoken reroute, "proceed direct <exit>", sent only once going direct is clear from where the aircraft is) or `release` |
 | `transcript` | `Transmission` | after every utterance is transcribed |
 | `clearance_opened` | `OpenClearance` | controller transmission with mandatory items |
 | `clearance_updated` | `OpenClearance` | status change |

@@ -255,7 +255,8 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
       const t = Array.isArray(ev.payload) ? (list[0]?.t ?? state.sim?.t ?? 0) : (ev.payload.t ?? state.sim?.t ?? 0);
       const simClock = { t, at: now };
       const zones = Array.isArray(ev.payload) ? undefined : ev.payload.zones; // drifting storms
-      const sim = state.sim ? { ...state.sim, t, ...(zones ? { zones } : {}) } : state.sim;
+      const clock = Array.isArray(ev.payload) ? undefined : ev.payload.clock_speed;
+      const sim = state.sim ? { ...state.sim, t, ...(zones ? { zones } : {}), ...(clock !== undefined ? { clock_speed: clock } : {}) } : state.sim;
       const watching = Array.isArray(ev.payload) ? state.watching : (ev.payload.watching ?? state.watching);
       return { ...state, aircraft, tracks, sim, watching, simClock };
     }

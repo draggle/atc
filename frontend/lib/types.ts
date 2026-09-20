@@ -370,6 +370,8 @@ export interface SimState {
   auto_voice?: boolean;
   /** The one switch. On: you say the cards. Off: Tower sends them by data link. (voice === !auto_speak) */
   voice?: boolean;
+  /** How fast the clock is really running. With voice on it drops to 1 whenever there is something to say. */
+  clock_speed?: number;
   /** How the next pilot will answer. One shot, then back to "random". */
   next_readback?: NextReadback;
   lifecycle?: Lifecycle;
@@ -407,7 +409,7 @@ export type EventMap = {
   resolver_step: ResolverStep;
   stats: Stats;
   /** `zones` is present while any zone is drifting or swelling: it replaces `state.zones`. */
-  radar: AircraftState[] | { aircraft: AircraftState[]; t?: number; watching?: string[]; zones?: Zone[] };
+  radar: AircraftState[] | { aircraft: AircraftState[]; t?: number; watching?: string[]; zones?: Zone[]; clock_speed?: number };
   plan: Plan;
   plan_update: PlanUpdate;
   instruction_card: InstructionCard;
