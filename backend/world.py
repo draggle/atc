@@ -1464,6 +1464,10 @@ class World:
         # must not turn a clearly different fix into the expected one.
         hint_first = speaker != "pilot"
         norm = snap_waypoints(norm0, wps, pref, trust_hint=hint_first)
+        # An airline word that speech recognition garbled ("chanex 44 GB" for Channex 44GB): if the
+        # flight number is exactly one aircraft's on the frequency, that is who was meant.
+        from tower.callsign import snap_spoken
+        norm = snap_spoken(norm, list(self.sim.active), speaker)
         return Transmission(id=f"tx-{uuid.uuid4().hex[:8]}", t_start=self.sim.t - duration_s,
                             t_end=self.sim.t, audio_ref=audio_ref, text_raw=text_raw,
                             text_norm=norm, asr_confidence=conf, speaker=speaker,

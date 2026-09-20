@@ -223,3 +223,20 @@ def test_standard_phraseology_never_waits_for_the_agent():
     say(w, f"{C.say_callsign(cs)}, turn left heading two seven zero")
     say(w, f"{C.say_callsign(cs)}, turn around")
     assert model.seen == []  # grammar and patterns answered: no model call, no wait
+
+
+# --------------------------------------------------------------------------- a garbled airline word
+
+def test_a_garbled_airline_word_still_reaches_the_aircraft_with_that_flight_number():
+    """Said on Sunday at 4 am with the stock model listening: "Channex four four golf bravo, turn
+    right heading one nine eight" came out "chanex 44 GB ..." and "janix 44 GB ...". No callsign was
+    found, so the instruction went to nobody and nothing happened."""
+    from tower.callsign import snap_spoken
+    active = ["EXS44GB", "AFR75VN", "KLM1970", "EXS92K"]
+    assert snap_spoken("chanex 44 GB turn right heading 198", active) == "EXS44GB turn right heading 198"
+    assert snap_spoken("janix 44 GB turn right heading 198", active) == "EXS44GB turn right heading 198"
+    assert snap_spoken("turn right heading 198 janix 44 GB", active, "pilot") == "turn right heading 198 EXS44GB"
+    # untouched: already names someone, names nobody, or could be two aircraft
+    assert snap_spoken("AFR75VN turn right heading 267", active) == "AFR75VN turn right heading 267"
+    assert snap_spoken("turn right heading 198", active) == "turn right heading 198"
+    assert snap_spoken("janix 44 GB turn right", ["EXS44GB", "TOM44GB"]) == "janix 44 GB turn right"
