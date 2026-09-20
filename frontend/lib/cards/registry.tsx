@@ -13,7 +13,6 @@ import type {
   AircraftCard as AircraftCardT,
   CardDescriptor,
   CardIssue,
-  ChartCard as ChartCardT,
   ComparisonCard as ComparisonCardT,
   ListCard as ListCardT,
   StepsCard as StepsCardT,
@@ -26,7 +25,6 @@ export const MONO = { fontFamily: "var(--font-mono)" } as const;
 const LINK = "text-xs text-muted hover:text-fg underline decoration-dotted underline-offset-4";
 const TONE_TEXT: Record<Tone, string> = { ok: "text-ok", warn: "text-warn", bad: "text-bad" };
 const TONE_DOT: Record<Tone, string> = { ok: "dot-ok", warn: "dot-warn", bad: "dot-bad" };
-const TONE_BAR: Record<Tone, string> = { ok: "var(--ok)", warn: "var(--warn)", bad: "var(--bad)" };
 
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const fmtCell = (v: string | number) => (isNum(v) ? (Number.isInteger(v) ? String(v) : v.toFixed(Math.abs(v) < 10 ? 2 : 1)) : String(v));
@@ -81,6 +79,7 @@ export function TableCard({ card }: { card: TableCardT }) {
           ))}
         </tbody>
       </table>
+      {card.caption && <p className="mt-2 px-1 text-[11px] text-muted leading-snug">{card.caption}</p>}
     </div>
   );
 }
@@ -212,151 +211,6 @@ export function ComparisonCard({ card }: { card: ComparisonCardT }) {
   );
 }
 
-// ---------------------------------------------------------------- chart
-/** Ink on the ground, tones only when a series carries meaning. */
-const SERIES_INK = (t?: string) => (t ? TONE_BAR[t as keyof typeof TONE_BAR] ?? "var(--fg)" : "var(--fg)");
-
-/** A number a person would read: 4 significant-ish digits, no trailing zeros. */
-function tick(n: number): string {
-  const a = Math.abs(n);
-  if (a >= 1000) return Math.round(n).toLocaleString();
-  if (a >= 10) return String(Math.round(n));
-  if (a >= 1) return n.toFixed(1).replace(/\.0$/, "");
-  return n.toFixed(2).replace(/0$/, "");
-}
-
-/** Four or five ticks that land on round numbers, and the scale they imply. */
-function scale(lo: number, hi: number): { lo: number; hi: number; ticks: number[] } {
-  if (!isFinite(lo) || !isFinite(hi)) return { lo: 0, hi: 1, ticks: [0, 1] };
-  if (hi - lo < 1e-9) { const pad = Math.abs(hi) * 0.2 || 1; lo -= pad; hi += pad; }
-  const raw = (hi - lo) / 4;
-  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
-  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw) ?? mag * 10;
-  const start = Math.floor(lo / step) * step;
-  const end = Math.ceil(hi / step) * step;
-  const ticks: number[] = [];
-  for (let v = start; v <= end + step / 2; v += step) ticks.push(Math.abs(v) < step / 1e6 ? 0 : v);
-  return { lo: start, hi: end, ticks };
-}
-
-const NO_DATA = <p className="text-[12px] text-muted">No data to draw yet.</p>;
-
-/** Line, histogram and scatter share one frame: hairline grid, mono ticks, marks on top. */
-function Plot({ card }: { card: ChartCardT }) {
-  const [hover, setHover] = useState<{ x: number; y: number; label: string } | null>(null);
-  const kind = card.chart ?? "line";
-  const series = (card.series ?? []).filter((s) => Array.isArray(s.points) && s.points.length > 0);
-  if (series.length === 0) return NO_DATA;
-
-  const W = 340, H = 168, L = 38, R = 8, T = 10, B = 22;
-  const xs = series.flatMap((s) => s.points!.map((p) => p[0]));
-  const ys = series.flatMap((s) => s.points!.map((p) => p[1]));
-  const sx = scale(Math.min(...xs), Math.max(...xs));
-  const sy = scale(kind === "hist" ? 0 : Math.min(...ys), Math.max(...ys));
-  const px = (v: number) => L + ((v - sx.lo) / (sx.hi - sx.lo || 1)) * (W - L - R);
-  const py = (v: number) => H - B - ((v - sy.lo) / (sy.hi - sy.lo || 1)) * (H - T - B);
-
-  // A histogram's bars touch: width comes from the gap between bin starts.
-  const binW = kind === "hist" && series[0].points!.length > 1
-    ? Math.max(2, px(series[0].points![1][0]) - px(series[0].points![0][0]) - 1)
-    : 10;
-
-  return (
-    <div className="relative">
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img"
-           aria-label={card.title ?? "chart"} style={{ display: "block", overflow: "visible" }}>
-        {sy.ticks.map((t, i) => (
-          <g key={`y${i}`}>
-            <line x1={L} x2={W - R} y1={py(t)} y2={py(t)} stroke="var(--line)" strokeWidth="1" />
-            <text x={L - 5} y={py(t) + 3} textAnchor="end" fill="var(--muted)" fontSize="9" style={MONO}>{tick(t)}</text>
-          </g>
-        ))}
-        {sx.ticks.map((t, i) => (
-          <text key={`x${i}`} x={px(t)} y={H - B + 12} textAnchor="middle" fill="var(--muted)" fontSize="9" style={MONO}>{tick(t)}</text>
-        ))}
-        {card.y_label && <text x={L - 30} y={T + 4} fill="var(--muted)" fontSize="9">{card.y_label}</text>}
-        {card.x_label && <text x={W - R} y={H - 2} textAnchor="end" fill="var(--muted)" fontSize="9">{card.x_label}</text>}
-
-        {series.map((s, si) => {
-          const ink = SERIES_INK(s.tone);
-          const pts = s.points!;
-          if (kind === "hist") {
-            return pts.map((p, i) => (
-              <rect key={`${si}-${i}`} x={px(p[0])} y={py(p[1])} width={binW} height={Math.max(0, py(sy.lo) - py(p[1]))}
-                    fill={ink} opacity={0.75}
-                    onMouseEnter={() => setHover({ x: px(p[0]) + binW / 2, y: py(p[1]), label: `${tick(p[0])}: ${tick(p[1])}` })}
-                    onMouseLeave={() => setHover(null)} />
-            ));
-          }
-          if (kind === "scatter") {
-            return pts.map((p, i) => (
-              <circle key={`${si}-${i}`} cx={px(p[0])} cy={py(p[1])} r="3" fill={ink} opacity={0.85}
-                      onMouseEnter={() => setHover({ x: px(p[0]), y: py(p[1]), label: `${s.label}: ${tick(p[0])}, ${tick(p[1])}` })}
-                      onMouseLeave={() => setHover(null)} />
-            ));
-          }
-          const d = pts.map((p, i) => `${i ? "L" : "M"}${px(p[0])} ${py(p[1])}`).join(" ");
-          const last = pts[pts.length - 1];
-          return (
-            <g key={si}>
-              {pts.length === 1
-                ? <circle cx={px(last[0])} cy={py(last[1])} r="3.5" fill={ink} />
-                : <path d={d} fill="none" stroke={ink} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" opacity={0.9} />}
-              <circle cx={px(last[0])} cy={py(last[1])} r="2.5" fill={ink} />
-              <text x={px(last[0]) - 4} y={py(last[1]) - 6} textAnchor="end" fill={ink} fontSize="9" style={MONO}>{tick(last[1])}</text>
-            </g>
-          );
-        })}
-      </svg>
-      {series.length > 1 && (
-        <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
-          {series.map((s, i) => (
-            <span key={i} className="inline-flex items-center gap-1.5 text-[11px] text-muted">
-              <span style={{ width: 8, height: 2, background: SERIES_INK(s.tone), display: "inline-block" }} />{s.label}
-            </span>
-          ))}
-        </div>
-      )}
-      {hover && (
-        <span className="pointer-events-none absolute px-1.5 py-0.5 rounded bg-panel-2 border border-line text-[10px] text-fg whitespace-nowrap"
-              style={{ left: `${(hover.x / 340) * 100}%`, top: `${(hover.y / 168) * 100}%`, transform: "translate(-50%,-140%)", ...MONO }}>
-          {hover.label}
-        </span>
-      )}
-    </div>
-  );
-}
-
-/** Horizontal bars, plain divs. White unless a bar carries a tone. */
-function Bars({ card }: { card: ChartCardT }) {
-  const series = (card.series ?? []).filter((s) => typeof s.value === "number");
-  if (series.length === 0) return NO_DATA;
-  const max = Math.max(1e-9, ...series.map((s) => Math.abs(s.value!)));
-  return (
-    <div className="space-y-1.5">
-      {series.map((s, i) => (
-        <div key={i} className="grid grid-cols-[minmax(0,9rem)_1fr_auto] items-center gap-2 text-[12px]">
-          <span className="truncate text-fg/90" title={s.label}>{s.label}</span>
-          <div className="h-2 rounded-sm bg-line/60 overflow-hidden">
-            <div className="h-full rounded-sm" style={{ width: `${Math.max(1, (Math.abs(s.value!) / max) * 100)}%`, background: SERIES_INK(s.tone), opacity: s.tone ? 0.9 : 0.85 }} />
-          </div>
-          <span className={`tabular-nums ${s.tone ? TONE_TEXT[s.tone] : "text-fg"}`} style={MONO}>{fmtCell(s.value!)}{card.unit ? ` ${card.unit}` : ""}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-export function ChartCard({ card }: { card: ChartCardT }) {
-  const kind = card.chart ?? "bars";
-  return (
-    <div>
-      {kind === "bars" ? <Bars card={card} /> : <Plot card={card} />}
-      {card.caption && <p className="mt-2 text-[11px] text-muted leading-snug">{card.caption}</p>}
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------- steps
 export function StepsCard({ card, open: openInitial = true }: { card: StepsCardT; open?: boolean }) {
   const [open, setOpen] = useState(openInitial);
@@ -413,7 +267,6 @@ export function renderBody(card: CardDescriptor): ReactNode {
     case "list": return <ListCard card={card} />;
     case "aircraft": return <AircraftCard card={card} />;
     case "comparison": return <ComparisonCard card={card} />;
-    case "chart": return <ChartCard card={card} />;
     case "steps": return <StepsCard card={card} />;
     default: {
       // An unknown kind renders as text with the JSON folded away, never as nothing.

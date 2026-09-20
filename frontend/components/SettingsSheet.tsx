@@ -86,7 +86,6 @@ export default function SettingsSheet() {
   const open = settingsOpen;
   const close = () => dispatch({ type: "set_settings_open", open: false });
 
-  const lifecycle = sim?.lifecycle ?? (sim?.scenario ? "running" : "idle");
   const towerOn = sim?.tower_enabled ?? true;
   const speakReplies = sim?.speak_replies ?? true;
   const nextReadback = sim?.next_readback ?? "random";
@@ -138,20 +137,21 @@ export default function SettingsSheet() {
           <Group title="Sky">
             <Row label={scenarioLabel(sim, connection)}>
               <button
-                className="text-xs text-muted underline decoration-dotted underline-offset-4 hover:text-fg"
+                className="btn btn-round"
+                title="Change the sky"
+                aria-label="Change the sky"
                 onClick={() => { close(); dispatch({ type: "set_setup_open", open: true }); }}
               >
-                Change
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M12 20h9" />
+                  <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                </svg>
               </button>
             </Row>
-            <Row label="Back to the world as it was loaded">
-              <button onClick={() => send({ type: "reset" })} disabled={lifecycle === "idle"} className="btn">Reset</button>
-            </Row>
-            <p className="text-xs text-muted">Nothing moves until you press Start.</p>
           </Group>
 
           <Group title="Radio">
-            <Row label="Voice" hint="Off: squack sends every instruction by data link the instant the plan changes. On: you say each instruction, the pilot reads it back, and our Whisper model checks both.">
+            <Row label="Action mode" hint="Manual: you say each instruction and the pilot reads it back. Autonomous: squack issues every instruction itself, the moment the plan changes.">
               <VoiceToggle />
             </Row>
             <Row label="squack checks readbacks">
@@ -268,7 +268,7 @@ export default function SettingsSheet() {
         </div>
 
         <p className="px-5 py-3 border-t border-line text-[11px] text-muted leading-relaxed">
-          Every row here can be said instead: &ldquo;voice off&rdquo;, &ldquo;top down&rdquo;, &ldquo;error rate twenty percent&rdquo;.
+          Every row here can be said instead: &ldquo;autonomous&rdquo;, &ldquo;top down&rdquo;, &ldquo;error rate twenty percent&rdquo;.
         </p>
       </aside>
     </div>

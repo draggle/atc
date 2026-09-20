@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from schemas import AircraftState, InstructionCard, PlannedPath
 
-CardKind = Literal["text", "table", "list", "aircraft", "comparison", "chart", "steps"]
+CardKind = Literal["text", "table", "list", "aircraft", "comparison", "steps"]
 
 
 class Live(BaseModel):
@@ -38,6 +38,7 @@ class TableCard(Card):
     columns: list[str]
     rows: list[list[Any]]
     focus_column: int | None = None  # cells in this column are callsign buttons that focus the map
+    caption: str = ""  # a muted line under the table: run parameters, units, what was held fixed
 
 
 class ListItem(BaseModel):
@@ -85,19 +86,6 @@ class ComparisonCard(Card):
     highlight_row: int | None = None
 
 
-class Series(BaseModel):
-    name: str
-    points: list[list[float]]
-
-
-class ChartCard(Card):
-    kind: Literal["chart"] = "chart"
-    x_label: str = ""
-    y_label: str = ""
-    series: list[Series]
-    caption: str = ""
-
-
 class Step(BaseModel):
     n: int
     tool: str
@@ -111,10 +99,10 @@ class StepsCard(Card):
     steps: list[Step]
 
 
-AnyCard = TextCard | TableCard | ListCard | AircraftCard | ComparisonCard | ChartCard | StepsCard
+AnyCard = TextCard | TableCard | ListCard | AircraftCard | ComparisonCard | StepsCard
 
 #: Every kind the screen can draw. `loop._is_descriptor` checks against this.
-KINDS = frozenset({"text", "table", "list", "aircraft", "comparison", "chart", "steps"})
+KINDS = frozenset({"text", "table", "list", "aircraft", "comparison", "steps"})
 
 
 def dump(card: Card) -> dict[str, Any]:
@@ -175,17 +163,17 @@ ARM_LABEL = {"fixed": "fixed routes", "tower_off": "squack off", "tower_on": "sq
 
 
 def sim_result_card(kind: str, result: dict[str, Any], params: dict[str, Any]) -> Card:
-    """A finished sim job as a card: a comparison of arms for a Monte Carlo, a line chart of LoS
-    per flight hour against density for a sweep. Rows come from tools/simjobs.py."""
+    """A finished sim job as a table: one row per arm for a Monte Carlo, one row per density and
+    arm for a sweep. Rows come from tools/simjobs.py. There is no chart card; the numbers read
+    better as a table and the sentence carries the point."""
     rows = list(result.get("rows") or [])
     caption = str(result.get("caption") or "")
     if kind == "sweep" and rows:
-        by_arm: dict[str, list[list[float]]] = {}
-        for r in rows:
-            by_arm.setdefault(str(r.get("arm")), []).append([float(r.get("density") or 0.0), float(r.get("los_per_h") or 0.0)])
-        series = [Series(name=ARM_LABEL.get(arm, arm), points=sorted(pts)) for arm, pts in by_arm.items()]
-        return ChartCard(title="LoS per flight hour by density", x_label="traffic density (x)",
-                         y_label="LoS per flight hour", series=series, caption=caption)
+        table = [[f"{float(r.get('density') or 0.0):g}x", ARM_LABEL.get(str(r.get("arm")), str(r.get("arm"))),
+                  r.get("los_per_h"), r.get("closest_p5_nm")] for r in
+                 sorted(rows, key=lambda r: (float(r.get("density") or 0.0), str(r.get("arm"))))]
+        return TableCard(title="Losses of separation per flight hour by density",
+                         columns=["density", "arm", "LoS / h", "closest p5 NM"], rows=table, caption=caption)
     cols = ["arm", "LoS / h", "closest p5 NM", "miles vs fixed %", "caught / injected"]
     table = [[ARM_LABEL.get(str(r.get("arm")), str(r.get("arm"))), r.get("los_per_h"), r.get("closest_p5_nm"),
               r.get("miles_vs_fixed_pct"), f"{r.get('errors_caught', 0)} / {r.get('errors_injected', 0)}"] for r in rows]

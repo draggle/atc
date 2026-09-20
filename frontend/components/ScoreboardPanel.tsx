@@ -1,6 +1,59 @@
 "use client";
 
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useTowerState } from "@/lib/store";
+
+/** A single ⌄, turned over when the panel is open. */
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden
+      className="transition-transform duration-[220ms] motion-reduce:transition-none"
+      style={{ transform: open ? "rotate(180deg)" : "none" }}
+    >
+      <path d="M6 9l6 6 6-6" />
+    </svg>
+  );
+}
+
+const OPEN_MS = 220;
+const CLOSE_MS = 200;
+const EASE = "cubic-bezier(.22,1,.36,1)";
+const snap = () => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+
+/**
+ * Height animation over unknown content: measure the body, drive `max-height` to it, then clear the
+ * cap once open so the body scrolls normally afterwards. Reduced motion snaps.
+ */
+function useReveal(open: boolean) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [style, setStyle] = useState<React.CSSProperties>({ maxHeight: 0, opacity: 0, overflow: "hidden" });
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (snap()) {
+      setStyle(open ? { opacity: 1 } : { maxHeight: 0, opacity: 0, overflow: "hidden" });
+      return;
+    }
+    const ms = open ? OPEN_MS : CLOSE_MS;
+    setStyle({
+      maxHeight: open ? el.scrollHeight + 8 : 0,
+      opacity: open ? 1 : 0,
+      overflow: "hidden",
+      transition: `max-height ${ms}ms ${EASE}, opacity ${ms}ms ${EASE}`,
+    });
+    if (!open) return;
+    const t = setTimeout(() => setStyle({ opacity: 1 }), ms);
+    return () => clearTimeout(t);
+  }, [open]);
+  return { ref, style };
+}
+
+/** The command bar owns ⌘K; there is no store action for "focus the bar", so the row reaches for
+ *  the input the bar renders. One DOM query beats a new reducer case for a hint. */
+const focusCommandBar = () =>
+  document.querySelector<HTMLInputElement>('input[aria-label*="squack"]')?.focus();
 
 /** One row of the list: a muted label, a white number. Colour only when the number means something. */
 function Stat({ label, value, tone = "fg" }: { label: string; value: string; tone?: "fg" | "ok" | "bad" | "warn" }) {
@@ -17,16 +70,45 @@ const fmt = (n: number | null | undefined, d = 1, suffix = "") => (n === null ||
 /** 850, 3.2k, 312k: a rate that is read at a glance and never rounds a hundred up to a thousand. */
 const fmtRate = (n: number | null | undefined) => (n === null || n === undefined ? "—" : n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n)));
 
+/** ⌘K on a Mac, Ctrl K elsewhere. Decided after mount: reading navigator during render would not
+ *  match what the server wrote and React would throw a hydration mismatch. */
+function useAskKey(): string {
+  const [key, setKey] = useState("\u2318K");
+  useEffect(() => {
+    if (!/Mac/i.test(navigator.userAgent)) setKey("Ctrl K");
+  }, []);
+  return key;
+}
+
 export default function ScoreboardPanel() {
   const { scoreboard: s, stats, sim } = useTowerState();
+  const [open, setOpen] = useState(false);
+  const askKey = useAskKey();
+  const bodyId = useId();
+  const reveal = useReveal(open);
   // Live snapshot: the standard line is each flight's projected track, so there is nothing to save.
   const projected = sim?.meta?.live === true;
+  const losses = s?.losses_of_separation ?? 0;
+  const predicted = s?.conflicts_predicted ?? 0;
+
   return (
     <section className="panel px-3 py-2.5 shrink-0">
-      <div className="flex items-baseline justify-between mb-1">
-        <h2 className="text-sm font-semibold text-fg">Scoreboard</h2>
-        <span className="text-xs text-muted">measured this session</span>
-      </div>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-controls={bodyId}
+        className="w-full flex items-baseline gap-3 text-left"
+      >
+        <h2 className="text-sm font-semibold text-fg">Analytics</h2>
+        <span className="ml-auto text-xs text-muted tabular-nums whitespace-nowrap">
+          <span className={losses > 0 ? "text-bad" : "text-ok"}>{losses} {losses === 1 ? "loss" : "losses"}</span>
+          {" · "}
+          <span className={predicted > (s?.conflicts_resolved ?? 0) ? "text-warn" : ""}>{predicted} predicted</span>
+        </span>
+        <span className="text-muted shrink-0 self-center"><Chevron open={open} /></span>
+      </button>
+      <div id={bodyId} ref={reveal.ref} style={reveal.style} className="mt-1 scroll-thin">
       {!s ? (
         <p className="text-xs text-muted py-2">No numbers yet.</p>
       ) : (
@@ -51,6 +133,15 @@ export default function ScoreboardPanel() {
           <Stat label="by data link" value={String(s.datalink_sent ?? 0)} />
         </div>
       )}
+      <button
+        type="button"
+        onClick={focusCommandBar}
+        className="mt-2 w-full border-t border-line pt-2 flex items-center gap-2 text-left text-[11px] text-muted hover:text-fg"
+      >
+        <span style={{ fontFamily: "var(--font-mono)" }}>{askKey}</span>
+        <span>to ask squack about any of this.</span>
+      </button>
+      </div>
     </section>
   );
 }

@@ -2,7 +2,7 @@
 
 /**
  * One card: title, body by kind, the live scoreboard strip when asked for, the actions row, and a
- * fade in its last seconds when it has a ttl. Everything squack shows on the stage or in the dock
+ * fade in its last seconds when it has a ttl. Everything squack shows in the dock
  * goes through here.
  */
 import { LiveScoreboard, renderBody } from "./registry";
@@ -20,7 +20,7 @@ export default function Card({
   card: CardDescriptor;
   /** ms wall clock when the card leaves; the fade starts a few seconds before */
   expiresAt?: number;
-  /** the parent's clock, so every card on a stage fades on the same tick */
+  /** the parent's clock, so cards in one answer fade on the same tick */
   now?: number;
   className?: string;
 }) {

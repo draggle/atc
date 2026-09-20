@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { snapshotClock, useTowerDispatch, useTowerState, type Connection } from "@/lib/store";
 import { useClient } from "./TowerApp";
 import type { Lifecycle, SimState } from "@/lib/types";
-import UiModeToggle from "./UiModeToggle";
+import DisruptMenu from "./DisruptMenu";
 
 const SPEEDS = [1, 5, 20, 60] as const;
 
@@ -38,10 +38,9 @@ const Restart = () => (
     <path d="M3 3v5h5" />
   </svg>
 );
-const Gear = () => (
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-    <circle cx="8" cy="8" r="2.2" />
-    <path d="M8 1.6v1.8M8 12.6v1.8M1.6 8h1.8M12.6 8h1.8M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M3.5 12.5l1.3-1.3M11.2 4.8l1.3-1.3" />
+const Menu = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+    <path d="M4 7h16M4 12h16M4 17h16" />
   </svg>
 );
 
@@ -54,7 +53,6 @@ export default function TopBar() {
   const lifecycle: Lifecycle = sim?.lifecycle ?? (sim?.scenario ? "running" : "idle");
   const speed = sim?.speed ?? 1;
   const canStart = lifecycle === "ready" || lifecycle === "paused";
-  const towerOn = sim?.tower_enabled ?? true;
   const voiceOn = sim?.voice ?? !(sim?.auto_speak ?? false);
   // Voice on at a fast clock: it slows itself to 1x while there is something to say.
   const slowedForVoice = voiceOn && speed > 1 && lifecycle === "running" && (sim?.clock_speed ?? 1) <= 1;
@@ -136,7 +134,7 @@ export default function TopBar() {
             aria-expanded={speedOpen}
             aria-haspopup="menu"
             className="btn !border-transparent tabular-nums"
-            title={slowedForVoice ? "Voice on: the clock is at 1x while there is something to say, and back to your speed between instructions." : "Clock speed. Voice only keeps up at 1x."}
+            title={slowedForVoice ? "Manual: the clock is at 1x while there is something to say, and back to your speed between instructions." : "Clock speed. Manual only keeps up at 1x."}
           >
             {speed}x{slowedForVoice && <span className="opacity-60">· 1x now</span>}
             <span className="opacity-60">▾</span>
@@ -157,18 +155,21 @@ export default function TopBar() {
             </div>
           )}
         </div>
+        <DisruptMenu />
       </div>
 
-      {/* right: one status line, the mode toggle, the gear */}
+      {/* right: one status line, then the menu */}
       <div className="flex items-center justify-end gap-3 min-w-0">
         <span className="text-xs text-muted whitespace-nowrap truncate">
-          {nAircraft} aircraft · <span className={conflicts > 0 ? "text-bad" : ""}>{conflicts} {conflicts === 1 ? "conflict" : "conflicts"}</span>
+          <span className="text-fg font-semibold">{nAircraft}</span> aircraft
+          {" · "}
+          <span title="Pairs of flights the plan could not keep apart. Zero means every flight has a clear path.">
+            <span className={conflicts > 0 ? "text-bad font-semibold" : "text-fg font-semibold"}>{conflicts}</span>
+            <span className={conflicts > 0 ? "text-bad" : ""}> {conflicts === 1 ? "conflict" : "conflicts"}</span>
+          </span>
           {wrong > 0 && <> · <span className="text-bad">{wrong} wrong {wrong === 1 ? "readback" : "readbacks"}</span></>}
-          {" · "}{towerOn ? "squack on" : "squack off"}
           {connection !== "live" && ` · ${connection === "closed" ? "reconnecting" : connection}`}
         </span>
-        <div className="h-5 w-px bg-line" />
-        <UiModeToggle />
         <button
           onClick={() => dispatch({ type: "set_settings_open", open: true })}
           aria-expanded={settingsOpen}
@@ -177,7 +178,7 @@ export default function TopBar() {
           title="Settings"
           aria-label="Settings"
         >
-          <Gear />
+          <Menu />
         </button>
       </div>
     </header>

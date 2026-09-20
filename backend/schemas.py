@@ -341,8 +341,6 @@ EventType = Literal[
     "agent_step",  # one tool call of the agent: {turn_id, step, tool, args, result_summary, elapsed_ms}
     "answer",  # the agent's one-sentence reply and its cards: {turn_id, text, cards, for}
     "ui_command",  # a ui.* tool ran: {command, args}. The screen applies it; the backend does nothing
-    "stage",  # agent mode: the cards on the stage: {slots, ttl_s, by: "director" | "agent"}
-    "sim_job",  # a background Monte Carlo or sweep: {job_id, kind, status, progress, rows?}
 ]
 
 

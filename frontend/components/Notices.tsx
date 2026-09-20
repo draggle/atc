@@ -5,17 +5,15 @@ import { useTowerDispatch, useTowerState } from "@/lib/store";
 
 const LIFE_MS = 6000;
 
-/** A flat panel with a 2px rule on the left in the level's colour. Nothing else is coloured. */
-const RULE = {
-  info: "border-l-fg/60",
-  warn: "border-l-warn",
-  error: "border-l-bad",
-} as const;
-
-/** Short messages from the backend: why an action was refused, or what failed. */
+/**
+ * Only failures reach the screen, and only in the dock above the command bar. Nothing floats in
+ * the middle of the map: info and warn notices stay in the store (the stale-backend warning reads
+ * them) but are never drawn.
+ */
 export default function Notices() {
   const { notices } = useTowerState();
   const dispatch = useTowerDispatch();
+  const shown = notices.filter((n) => n.level === "error");
 
   useEffect(() => {
     if (notices.length === 0) return;
@@ -25,14 +23,14 @@ export default function Notices() {
     return () => clearTimeout(h);
   }, [notices, dispatch]);
 
-  if (notices.length === 0) return null;
+  if (shown.length === 0) return null;
   return (
-    <div className="absolute top-16 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-2 w-[min(90vw,32rem)]" role="status" aria-live="polite">
-      {notices.map((n) => (
+    <div className="absolute left-1/2 bottom-[108px] -translate-x-1/2 z-40 flex flex-col gap-2 w-[min(680px,calc(100vw-32px))]" role="status" aria-live="polite">
+      {shown.map((n) => (
         <button
           key={n.id}
           onClick={() => dispatch({ type: "dismiss_notice", id: n.id })}
-          className={`text-left text-sm text-fg bg-panel border border-line rounded-[var(--radius)] px-3 py-2 border-l-2 ${RULE[n.level] ?? RULE.info}`}
+          className="text-left text-sm text-fg bg-panel border border-line rounded-[var(--radius)] px-3 py-2 border-l-2 border-l-bad"
         >
           {n.text}
         </button>

@@ -91,29 +91,30 @@ function Card({ card, arrivedT, simT, auto, onFrequency, running, held, tag, top
         </div>
       )}
 
-      {/* Bottom row: confidence, urgency, action. */}
+      {/* Bottom row: confidence and urgency on the left, one accept button on the right.
+          Approve is auto-accept: squack says the card for you. Holding space still works; the hint
+          line under the command bar carries that, so it is not written on every card. */}
       <div className="mt-2.5 flex items-center gap-3 text-[11px] text-muted">
-        <Confidence value={card.confidence} className="shrink-0" />
-        <span className={`tabular-nums whitespace-nowrap ${overdue ? "text-bad font-medium" : urgent ? "text-fg/80" : ""}`} style={MONO} title="How long until the aircraft has to be doing this">
-          {card.status === "pending" ? (overdue ? "overdue" : `${Math.ceil(remaining)} s`) : card.status === "spoken" ? "awaiting readback" : ""}
-        </span>
-        {card.status === "pending" && !auto && !onFrequency && <span className="ml-auto">Not on frequency yet</span>}
-        {card.status === "pending" && !auto && onFrequency && (
-          <span className="ml-auto flex items-center gap-2 whitespace-nowrap">
-            <span className="text-fg/90">Hold Space to say it</span>
-            <span className="text-muted/50">or</span>
-            <button
-              disabled={saying || !running || !onFrequency}
-              title={!running ? "Press Start first. The radio only works while the simulation is running." : !onFrequency ? `${card.callsign} is not on frequency yet.` : "squack says it for you in its own voice"}
-              onClick={() => {
-                setSaying(true);
-                send({ type: "speak_card", id: card.id });
-              }}
-              className="text-muted hover:text-fg underline decoration-dotted underline-offset-4 disabled:opacity-50 disabled:cursor-default disabled:no-underline"
-            >
-              {saying ? "Saying it…" : "let squack say it"}
-            </button>
+        <span className="flex items-center gap-3 min-w-0 truncate">
+          <Confidence value={card.confidence} className="shrink-0" />
+          <span className={`tabular-nums whitespace-nowrap ${overdue ? "text-bad font-medium" : urgent ? "text-fg/80" : ""}`} style={MONO} title="How long until the aircraft has to be doing this">
+            {card.status === "pending" ? (overdue ? "overdue" : `${Math.ceil(remaining)} s`) : card.status === "spoken" ? "awaiting readback" : ""}
           </span>
+          {card.status === "pending" && !auto && !onFrequency && <span className="truncate">Not on frequency yet</span>}
+        </span>
+        {card.status === "pending" && !auto && onFrequency && (
+          <button
+            disabled={saying || !running}
+            title={!running ? "Press Start first: the radio is closed." : "squack says it for you in its own voice"}
+            onClick={() => {
+              setSaying(true);
+              send({ type: "speak_card", id: card.id });
+            }}
+            // Only the card the panel rings gets the filled treatment: the eye lands on what is next.
+            className={`ml-auto shrink-0 btn ${top ? "btn-primary" : ""}`}
+          >
+            {saying ? "Saying it…" : "Approve"}
+          </button>
         )}
         {card.status === "pending" && auto && (
           <span className="ml-auto text-warn">{onFrequency ? "Going out by data link" : "Waits until the flight checks in"}</span>
@@ -183,19 +184,25 @@ export default function InstructionCards() {
   const done = cards.filter((c) => c.status !== "pending" && c.status !== "error").sort(newestFirst);
 
   return (
-    <section className="panel p-3 shrink-0 select-none">
-      <div className="flex items-baseline justify-between mb-1">
-        <h2 className="text-[13px] font-semibold text-fg">{auto ? "Sent by squack" : "Say these"}</h2>
-        <span className="text-[11px] text-muted tabular-nums">
-          {auto ? `${done.length} sent` : `${now.length} to say · ${done.length} done`}
+    <section className="panel h-full flex flex-col p-3 select-none">
+      <div className="flex items-baseline justify-between mb-1 shrink-0">
+        <h2 className="text-[13px] font-semibold text-fg">Command Backlog</h2>
+        <span className="flex items-center gap-1.5">
+          {/* Outstanding, then done. Zero outstanding is good news, so it goes quiet instead of red. */}
+          <span className={`badge ${now.length > 0 ? "badge-bad" : ""}`}
+                title={`${now.length} still to ${auto ? "go out" : "say"}`}
+                aria-label={`${now.length} still to ${auto ? "go out" : "say"}`}>
+            {now.length}
+          </span>
+          <span className="badge badge-ok" title={`${done.length} done`} aria-label={`${done.length} done`}>
+            {done.length}
+          </span>
         </span>
       </div>
-      <p className="mb-2.5 text-[11px] leading-snug text-muted">
-        {auto
-          ? "Voice is off: squack sends each instruction by data link the instant the plan changes, and the aircraft turns. Nothing here needs you."
-          : "Voice is on: hold Space and say the top card. The pilot reads it back, squack checks it, and only then does the aircraft turn."}
-      </p>
+      <p className="mb-2 text-[11px] leading-snug text-muted shrink-0">Hold space for microphone</p>
 
+      {/* Fixed box, scrolling interior: the row along the bottom never changes height. */}
+      <div className="flex-1 min-h-0 overflow-y-auto scroll-thin pr-0.5">
       {/* Voice on: the to-do list, most urgent first. */}
       {!auto && (
         <div className="flex flex-col gap-2">
@@ -254,7 +261,8 @@ export default function InstructionCards() {
           {done.length > (auto ? 6 : 3) && <p className="text-[11px] text-muted text-right">{done.length - (auto ? 6 : 3)} earlier</p>}
         </div>
       )}
-      {cards.length === 0 && <p className="text-xs text-muted text-center py-3">Nothing to say. squack is quiet.</p>}
+      {auto && cards.length === 0 && <p className="text-xs text-muted text-center py-3">Nothing sent yet.</p>}
+      </div>
     </section>
   );
 }

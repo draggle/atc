@@ -8,6 +8,7 @@ import type {
   AlertPayload,
   Dictation,
   Disruption,
+  DisruptionKind,
   InstructionCard,
   Notice,
   OpenClearance,
@@ -22,7 +23,7 @@ import type {
   Transmission,
   LonLatAlt,
 } from "./types";
-import type { AgentStep, Answer, CardDescriptor, SimJob, UiCommand, UiMode } from "./cards/types";
+import type { AgentStep, Answer, UiCommand } from "./cards/types";
 
 export type Connection = "connecting" | "live" | "mock" | "closed";
 
@@ -73,13 +74,6 @@ export interface StoredAnswer extends Answer {
   dismissed?: boolean;
 }
 
-/** Agent mode's panel layer: the last `stage` event and when it arrived, so ttls count from there. */
-export interface StageState {
-  slots: CardDescriptor[];
-  by: "director" | "agent";
-  at: number; // ms wall clock
-  ttl_s: number;
-}
 
 /** One camera move squack asked for. MapView applies it once, then reports it consumed. */
 export interface CameraRequest {
@@ -113,6 +107,8 @@ export interface TowerState {
   scoreboard: Scoreboard | null;
   stats: Stats | null;
   disruptions: Record<string, Disruption>;
+  /** A kind armed for placement: the next map click drops it. null: the map behaves normally. */
+  dropMode: DisruptionKind | null;
   chat: ChatLine[];
   notices: ActiveNotice[];
   /** the setup panel is open */
@@ -140,7 +136,6 @@ export interface TowerState {
   onAir: { speaker: "pilot" | "controller" | "squack"; callsign: string | null } | null;
   /** callsign -> what Tower just understood for it ("H270 ↑FL360"), shown on the aircraft for a few seconds */
   acks: Record<string, { text: string; at: number }>;
-  showStock: boolean;
   /** The latest Monte Carlo report (TRD 07): every pair with p_max >= 0.05. */
   risk: RiskReport | null;
   /** "A|B" -> that pair's latest numbers and timing, so a cone fades in and outlasts a one-report dip. */
@@ -154,11 +149,7 @@ export interface TowerState {
   agentSteps: Record<string, AgentStep[]>;
   /** The agent turn in progress or just finished: steps stream for it, the answer closes it. */
   turn: { id: string; at: number; done: boolean } | null;
-  /** Agent mode's stage. Rendered only when uiMode is "agent"; the director sends it in both. */
-  stage: StageState | null;
   /** job_id -> the background simulation, running or done */
-  simJobs: Record<string, SimJob>;
-  uiMode: UiMode;
   /** A camera move asked for by a ui_command; MapView consumes it once. */
   cameraRequest: CameraRequest | null;
   /** Which floating panel squack asked to open ("disrupt", "view", "scoreboard", ...). null: none in particular. */
@@ -198,6 +189,7 @@ export const initialState: TowerState = {
   scoreboard: null,
   stats: null,
   disruptions: {},
+  dropMode: null,
   chat: [],
   notices: [],
   setupOpen: false,
@@ -213,16 +205,12 @@ export const initialState: TowerState = {
   held: {},
   onAir: null,
   acks: {},
-  showStock: false,
   risk: null,
   riskPairs: {},
   dictation: null,
   answers: [],
   agentSteps: {},
   turn: null,
-  stage: null,
-  simJobs: {},
-  uiMode: "normal",
   cameraRequest: null,
   panel: null,
 };
@@ -237,11 +225,12 @@ export type Action =
   | { type: "set_sliders"; sliders: Sliders }
   | { type: "set_plan_view"; view: PlanView }
   | { type: "on_air"; clip: { speaker: "pilot" | "controller" | "squack"; callsign: string | null } | null }
-  | { type: "toggle_stock" }
   | { type: "local_toggle"; key: "tower_enabled" | "auto_speak"; value: boolean }
   | { type: "dismiss_notice"; id: number }
   | { type: "set_setup_open"; open: boolean }
   | { type: "set_settings_open"; open: boolean }
+  /** arm (or disarm) a disruption kind for the next map click */
+  | { type: "set_drop_mode"; kind: DisruptionKind | null }
   /** a partial patch: `{ topDown: true }` or `{ exaggeration: 8 }` */
   | { type: "set_view"; view: Partial<ViewSettings> }
   | { type: "select"; callsign: string | null }
@@ -252,7 +241,6 @@ export type Action =
   | { type: "dictation_clear" }
   | { type: "reset" }
   // ---- the squack agent (TRD 08)
-  | { type: "set_ui_mode"; mode: UiMode }
   /** apply a ui.* command on the screen, whether it came as an event or from a card's button */
   | { type: "ui_command"; command: UiCommand["command"]; args: Record<string, unknown> }
   | { type: "dismiss_answer"; turn_id: string }
@@ -327,7 +315,6 @@ function clearWorld(state: TowerState): TowerState {
     follow: false,
     risk: null,
     riskPairs: {},
-    stage: null,
   };
 }
 
@@ -366,10 +353,6 @@ export function applyUiCommand(state: TowerState, command: UiCommand["command"],
       const open = args.open !== false;
       if (name === "setup") return { ...state, setupOpen: open };
       return { ...state, panel: open ? name : null };
-    }
-    case "mode": {
-      const mode = args.mode === "agent" || args.mode === "normal" ? args.mode : null;
-      return mode ? { ...state, uiMode: mode } : state;
     }
     default:
       return state;
@@ -623,14 +606,6 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
     case "ui_command":
       return applyUiCommand(state, ev.payload.command, ev.payload.args ?? {});
 
-    case "stage": {
-      const slots = (ev.payload.slots ?? []).slice(0, 3);
-      return { ...state, stage: { slots, by: ev.payload.by, at: Date.now(), ttl_s: ev.payload.ttl_s } };
-    }
-
-    case "sim_job":
-      return { ...state, simJobs: { ...state.simJobs, [ev.payload.job_id]: ev.payload } };
-
     default:
       return state;
   }
@@ -654,8 +629,6 @@ export function reducer(state: TowerState, action: Action): TowerState {
       return { ...state, onAir: action.clip };
     case "set_plan_view":
       return { ...state, planView: action.view };
-    case "toggle_stock":
-      return { ...state, showStock: !state.showStock };
     case "local_toggle":
       return state.sim ? { ...state, sim: { ...state.sim, [action.key]: action.value } } : state;
     case "dismiss_notice":
@@ -664,6 +637,8 @@ export function reducer(state: TowerState, action: Action): TowerState {
       return { ...state, setupOpen: action.open };
     case "set_settings_open":
       return { ...state, settingsOpen: action.open };
+    case "set_drop_mode":
+      return { ...state, dropMode: action.kind };
     case "set_view":
       return { ...state, view: { ...state.view, ...action.view } };
     case "select":
@@ -676,10 +651,6 @@ export function reducer(state: TowerState, action: Action): TowerState {
       return state.dictation?.final && Date.now() - state.dictation.at >= DICTATION_HOLD_MS ? { ...state, dictation: null } : state;
     case "reset":
       return { ...initialState, connection: state.connection, view: state.view };
-      // The mode is a screen preference, like the connection: it survives a new world.
-      return { ...initialState, connection: state.connection, uiMode: state.uiMode };
-    case "set_ui_mode":
-      return { ...state, uiMode: action.mode };
     case "ui_command":
       return applyUiCommand(state, action.command, action.args);
     case "dismiss_answer":
