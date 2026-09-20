@@ -46,9 +46,9 @@ Measured on the demo laptop, 256 rollouts unless the adaptive count backed off (
 
 | Aircraft | Scenario | `elapsed_ms` | `n_rollouts` | `futures_per_s` |
 |---|---|---|---|---|
-| 12 | `demo` | TBD | TBD | TBD |
-| 80 | `real/<region>` at `max_flights` 80 | TBD | TBD | TBD |
-| 150 | `real/<region>` at `max_flights` 150 | TBD | TBD | TBD |
+| 12 (demo, 5 airborne) | 2.3 | 256 | about 545,000 |
+| 80 (Europe replay, 65 airborne) | 61 | 256 | about 273,000 |
+| 150 | not measured in the integration pass; adaptive count is the guard | | |
 
 ## Density sweep
 

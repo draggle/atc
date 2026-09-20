@@ -275,13 +275,13 @@ The planner's conflict test is exact and blind: it asks whether the plan, flown 
 
 **What the judge sees.** A translucent red wedge between two aircraft before anything is wrong, labelled "LoS 42% · 71 s", its width the p5 to p95 lateral spread of the rollouts at the closest approach, brightening as the probability rises and gone when the replan clears it. A confidence on every card and strip. Three new scoreboard tiles: conflicts predicted, resolved before they happened, and futures simulated per second, the last one measured from `n_rollouts × aircraft / elapsed` that tick. The slide says "a few hundred futures a tick", never "thousands" unless the counter does.
 
-Measured: futures per second at 12 / 80 / 150 aircraft: TBD (integration pass fills this in).
+Measured Sunday 00:40 on the demo laptop: 2.3 ms and about 545,000 futures per second with 5 airborne (demo), 61 ms and about 273,000 with 65 airborne (Europe replay), n=256. Live scoreboard during a run: 200,000 to 450,000. In a head-on test with Voice off the periodic replan vectored the pair apart before risk reached 0.30, which is the planner working; the risk trigger earns its keep when a hazard develops faster than the 15 s check, and that case has not been watched live yet..
 
 - [ ] Drop a storm on `demo`: the cone appears before the replan fires, and clears after it
 - [ ] Force a wrong heading toward another aircraft: the risk replan fires earlier than the periodic check would have
-- [ ] Confidence shown on every card and strip, in [0.05, 0.99]
-- [ ] Futures per second on the scoreboard is the measured number for this laptop, not a constant
-- [ ] 396 tests plus the new `test_risk.py` and `test_world_risk.py` pass
+- [x] Confidence shown on every card and strip, in [0.05, 0.99] (seen live: 0.99 on directs, 0.5 on a tied candidate)
+- [x] Futures per second on the scoreboard is the measured number for this laptop, not a constant
+- [x] 437 tests pass, including `test_risk.py` and `test_world_risk.py`
 
 **Integration pass after merging main (Sunday, early).** Main merged into this branch with no conflicts; 438 backend tests, production build clean. What the PR had not measured:
 - **Scale.** Tick cost with the prediction on, real Europe hour: 33 aircraft 23 ms at 1x and 65 ms at 20x; about 60 aircraft 57 ms at 1x, and at 20x a median of 141 ms with 318 ms at the 95th percentile, over the 250 ms a tick has above 1x, so the clock fell behind. The prediction's budget above 1x is now 40 ms (it was 150 ms whatever the clock was doing); it settles at 64 to 128 rollouts there and the same run is 69 ms median, 248 ms at the 95th percentile, which is the periodic replan, not the prediction.
