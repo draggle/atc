@@ -31,6 +31,13 @@ export function scenarioLabel(sim: SimState | null, connection: Connection): str
 
 const Play = () => <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M4 2.5v11l9-5.5z" /></svg>;
 const Pause = () => <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M3.5 2.5h3v11h-3zM9.5 2.5h3v11h-3z" /></svg>;
+/** A circular arrow, anticlockwise: restart. Drawn here, no icon library. */
+const Restart = () => (
+  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M3 12a9 9 0 1 0 2.64-6.36L3 8" />
+    <path d="M3 3v5h5" />
+  </svg>
+);
 const Gear = () => (
   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
     <circle cx="8" cy="8" r="2.2" />
@@ -98,6 +105,15 @@ export default function TopBar() {
 
       {/* centre: the clock */}
       <div className="flex items-center gap-3">
+        <button
+          onClick={() => send({ type: "reset" })}
+          disabled={lifecycle === "idle"}
+          className="btn btn-round"
+          title="Restart the scenario"
+          aria-label="Restart"
+        >
+          <Restart />
+        </button>
         {lifecycle === "running" ? (
           <button onClick={() => send({ type: "pause" })} className="btn btn-round" title="Pause the clock" aria-label="Pause">
             <Pause />

@@ -102,10 +102,9 @@ function Screen() {
         <Transcript />
       </div>
 
-      {(lifecycle === "ready" || lifecycle === "paused" || lifecycle === "ended") && (
+      {(lifecycle === "ready" || lifecycle === "ended") && (
         <div className="pointer-events-none absolute top-[60px] left-1/2 -translate-x-1/2 z-10 hint">
           {lifecycle === "ready" && <>World loaded. Look over the plan, then press <span className="text-fg font-medium">Start</span>.</>}
-          {lifecycle === "paused" && <>Paused. Press <span className="text-fg font-medium">Resume</span> to continue.</>}
           {lifecycle === "ended" && <>Every flight has left the sector. <span className="text-fg font-medium">Reset</span> from Settings to run it again.</>}
         </div>
       )}
