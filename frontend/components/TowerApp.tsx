@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { DICTATION_HOLD_MS, TowerStoreProvider, useTowerDispatch, useTowerState } from "@/lib/store";
 import { connectTower, type TowerClient } from "@/lib/ws";
+import { BOTTOM_ROW_H, EDGE, ROW_TOP, SIDE_W } from "@/lib/layout";
 import { radio } from "@/lib/radio";
 import type { ClientMessage } from "@/lib/types";
 import TopBar from "./TopBar";
@@ -18,7 +19,6 @@ import Notices from "./Notices";
 import BootScreen from "./BootScreen";
 import CommandBar from "./CommandBar";
 import AnswerDock from "./AnswerDock";
-import Stage from "./Stage";
 
 // MapLibre and deck.gl need a browser: no server rendering for the map.
 const MapView = dynamic(() => import("./MapView"), {
@@ -76,9 +76,7 @@ function ClientProvider({ children }: { children: ReactNode }) {
 }
 
 function Screen() {
-  const { alerts, resolving, sim } = useTowerState();
-  const { uiMode } = useTowerState(); // "agent": squack composes the panel layer (TRD 08, rung j)
-  const lifecycle = sim?.lifecycle ?? (sim?.scenario ? "running" : "idle");
+  const { alerts, resolving } = useTowerState();
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-bg text-fg">
       {/* The map is the screen. Everything else floats over it. */}
@@ -90,24 +88,22 @@ function Screen() {
         <TopBar />
       </div>
 
-      {uiMode === "agent" ? <Stage /> : (
-      <div className="absolute top-[52px] right-2 bottom-2 z-10 w-[380px] flex flex-col gap-2 overflow-y-auto scroll-thin pr-0.5">
+      {/* The right rail: the alert on top, then analytics. It stops where the bottom row starts. */}
+      <div
+        className="absolute top-[52px] right-2 z-10 flex flex-col gap-2 overflow-y-auto scroll-thin pr-0.5"
+        style={{ bottom: ROW_TOP + EDGE, width: SIDE_W }}
+      >
         {(alerts.length > 0 || resolving.length > 0) && <AlertCard />}
-        <InstructionCards />
         <ScoreboardPanel />
       </div>
-      )}
 
-      <div className="absolute left-2 bottom-2 z-10 h-[180px] w-[min(calc(50vw-372px),420px)]">
+      {/* The bottom row, left to right: Frequency, the chat bar and its dock, Sent by squack. */}
+      <div className="absolute left-2 z-10" style={{ bottom: EDGE, height: BOTTOM_ROW_H, width: SIDE_W }}>
         <Transcript />
       </div>
-
-      {(lifecycle === "ready" || lifecycle === "ended") && (
-        <div className="pointer-events-none absolute top-[60px] left-1/2 -translate-x-1/2 z-10 hint">
-          {lifecycle === "ready" && <>World loaded. Look over the plan, then press <span className="text-fg font-medium">Start</span>.</>}
-          {lifecycle === "ended" && <>Every flight has left the sector. <span className="text-fg font-medium">Reset</span> from Settings to run it again.</>}
-        </div>
-      )}
+      <div className="absolute right-2 z-10" style={{ bottom: EDGE, height: BOTTOM_ROW_H, width: SIDE_W }}>
+        <InstructionCards />
+      </div>
 
       <AnswerDock />
       <CommandBar />

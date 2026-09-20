@@ -152,16 +152,26 @@ Interfaces fixed before anyone starts: the card descriptor in section 5, the fou
 
 **Integrator checks at the end:** full suite green (`pytest -q`, currently 437); `NEXT_DIST_DIR=.next-verify npm run build` clean; the nine demo lines in section 6 run against a live backend with a key and, separately, lines 1, 2, 3, 6 with no key; the clock never drops below the chosen speed while a sim job runs (watch `radar.clock_speed`); every `answer` arrives within 8 s or says why; `agent_reply` still reaches the old headset path; README status row and `docs/10-roadmap.md` get a phase 6h entry with the measured p50 latency of one tool call on the demo laptop.
 
-## 10. Rung (j): agent mode, the screen squack composes. Added Sunday afternoon
+## 10. Rung (j): agent mode and the stage. **Cut, Sunday evening**
 
-A second mode behind a toggle at the top right: **normal** and **squack decides**. Same backend, same events. The map, the bar, and the top strip are pinned in both. In normal mode the panel layer is the hand-laid-out UI and squack's answers dock above the bar. In agent mode the panel layer is a **stage** of at most three slots that squack fills with cards from the registry (section 5), and nothing else is on screen until squack puts it there.
+Rung (j) was a second mode behind a toggle ("normal" and "squack decides") in which a wake policy
+woke the agent on alerts, risks, replans and disruptions, and a deterministic director composed a
+**stage** of at most three cards that replaced the right rail.
 
-**Inputs to the agent.** Two kinds, handled by the same loop: a user message from the bar, and an environment event chosen by a **wake policy**: alert, risk over `REPLAN_P`, a `plan_update` with changed flights, a disruption, a lifecycle change, an escalation. Everything else never wakes the agent. Debounce 5 s, batch what arrived, hard cap one agent turn per 5 s.
+**Cut in full**, along with the wake policy, the director, the `stage` event, the `set_ui_mode`
+message and the `ui.mode` tool: the unprompted narration was noise ("the sim is loading", "the sim
+is paused") and a fixed screen is easier to read than one that rearranges itself. squack is a
+chatbot now, and it keeps every tool: it still acts on the world, moves the camera, opens panels,
+nudges a flight, explains a card and runs a Monte Carlo. It just speaks only when spoken to.
 
-**Outputs.** A `stage` event: `{slots: [CardDescriptor, ...], ttl_s}`; optional `ui_command`s; a one-sentence `answer`. A card may carry `live: {aircraft: "DAL789"}` or `live: {scoreboard: true}` so the frontend keeps its numbers current from the store without another agent turn.
+Everything else in this document stands. The data-viz chart card went with it: the numbers read
+better as a table and the sentence carries the point.
 
-**Director fallback.** Without a Baseten key, or when the model is over budget, a deterministic director produces the stage from the same wake policy: an alert places the alert card, a disruption places a comparison card and the worst flight's aircraft card, a replan places the changed list. The director also runs first on the alert path in every case, so the alert card is on screen within one tick and the agent's turn only adds the why.
+## 11. Scope cut, Sunday evening: no simulations, no planner
 
-**Rules.** The agent never writes markup; it composes from the registry. Cards leave only when replaced or after their ttl. The reply is one sentence; the cards carry the content. Agent mode is never the default at open: the demo opens in normal, and the judge flips the toggle.
-
-**Effort.** Wake policy, stage event, director: 3 h backend. Stage renderer, live bindings, toggle: 3 h frontend. Tuning: an afternoon. Built on rungs b to e and the registry.
+`sim.montecarlo`, `sim.sweep`, `sim.status`, `sim.cancel` and `world.nudge` are cut from the
+registry, and the `sim_job` event with them. squack is conversational: it reads the world, explains
+the planner's reasons, changes the world and moves the screen. It does not run evaluations and it
+does not re-plan. `backend/tools/simjobs.py` and `eval/` are untouched and still drive the Monte
+Carlo table in the README; the agent simply cannot call them. With `world.nudge` gone no tool
+acts on traffic, so the `acts_on_traffic` flag and its guard are gone too.

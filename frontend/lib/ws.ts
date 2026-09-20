@@ -29,7 +29,7 @@ const EVENT_TYPES = new Set<string>([
   // in EventMap (lib/types.ts), and in the reducer (lib/store.tsx).
   "radio_audio", "said_check", "alert_resolved", "risk", "dictation",
   // the squack agent (TRD 08)
-  "agent_step", "answer", "ui_command", "stage", "sim_job",
+  "agent_step", "answer", "ui_command",
 ]);
 
 function parseEvent(raw: string): TowerEvent | null {

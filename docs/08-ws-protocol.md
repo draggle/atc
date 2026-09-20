@@ -29,10 +29,8 @@ Every message is one JSON object `{"type": ..., "payload": {...}, "t": <sim seco
 | `stats` | `{tier1_latency_s, transmissions, matches, alerts}` | rolling |
 | `agent_reply` | `{text, actions: string[]}` | after the agent handles a request. Kept for the headset path; the bar reads `answer`. `actions` is `"tool: summary"` per call |
 | `agent_step` | `{turn_id, step, tool, args, result_summary, elapsed_ms, status: "done"\|"error"}` | one per tool call of the squack agent, as it happens. `tool` is `group.verb` (`ui.focus`, `query.pairs`). See The squack agent below |
-| `answer` | `{turn_id, text, cards: CardDescriptor[], for: "message"\|"event", steps: [{n, tool, summary, ms, status}]}` | exactly once per agent turn, always, even on a cap or an error. `text` is one sentence; the cards carry the content. `for: "event"` when the turn was woken by the world (agent mode) or a sim job finished |
-| `ui_command` | `{command, args}` | a `ui.*` tool ran. The backend does nothing; the screen applies it. `focus {callsign}`, `follow {callsign\|null}`, `camera {pitch?, bearing?, exaggeration?, top_down?}`, `line_view {view}`, `panel {panel}`, `mode {mode}` |
-| `stage` | `{slots: CardDescriptor[], ttl_s, by: "director"\|"agent", text}` | agent mode only (`state.ui_mode == "agent"`): the cards on the stage, at most 3. `by: "director"` is the deterministic fallback, on screen within one tick of the wake; `by: "agent"` may follow and replaces it. Empty `slots` after 60 s idle: clear the stage |
-| `sim_job` | `{job_id, kind: "montecarlo"\|"sweep", status: running\|done\|failed\|cancelled, progress: 0..1, eta_s, params, result?: {rows, caption, file}, error?, notice?}` | progress of a background sim job started by `sim.montecarlo` or `sim.sweep` (`backend/tools/simjobs.py`). When it finishes an `answer` with `for: "event"` carries the result as a comparison or chart card |
+| `answer` | `{turn_id, text, cards: CardDescriptor[], for: "message", steps: [{n, tool, summary, ms, status}]}` | exactly once per agent turn, always, even on a cap or an error. **Only ever a reply to an `agent_text`**: squack speaks when spoken to and nothing in the world makes it talk. `text` is one sentence, two at most; the cards carry the content. `for` is always `"message"`, kept on the wire for compatibility |
+| `ui_command` | `{command, args}` | a `ui.*` tool ran. The backend does nothing; the screen applies it. `focus {callsign}`, `follow {callsign\|null}`, `camera {pitch?, bearing?, exaggeration?, top_down?}`, `line_view {view}`, `panel {panel}` |
 | `notice` | `{text, level: "info"\|"warn"\|"error"}` | an action was refused or something failed, for example the radio keyed before Start |
 | `dictation` | `{channel: "radio"\|"agent", text, final: bool, t_audio_s}` | what the mic is hearing while push-to-talk is held. A non-final partial about every 1.2 s of audio (one beam, the whole clip so far; each replaces the last; none past 20 s of audio). On `ptt_stop` exactly one `final: true` with the transcript that is about to go on air or to squack, sent **before** its `transcript` or `agent_reply`. The final is always the last dictation event for its channel: a partial that would land after it is dropped. The screen shows the partial in the command bar and holds the final for 1.5 s |
 
@@ -43,7 +41,6 @@ Every message is one JSON object `{"type": ..., "payload": {...}, "t": <sim seco
 | `{"type":"ptt_start","channel":"radio"\|"agent"}` | start of push-to-talk. Binary PCM frames follow |
 | `{"type":"ptt_stop"}` | end of push-to-talk. The utterance is transcribed and routed to the channel |
 | `{"type":"agent_text","text","ui_state"?}` | a request to the squack agent (the command bar, or the headset's text twin). `ui_state: {selected, planView, speed, voice}` lets "follow it" resolve. The connection keeps the last 10 turns as history |
-| `{"type":"set_ui_mode","mode":"normal"\|"agent"}` | normal: the hand-laid-out panels; agent: the stage squack composes. Reported in `state.ui_mode`. Never the default at open. (`set_mode` is the older manual/auto switch, unrelated) |
 | `{"type":"radio_text","text"}` | typed controller transmission, fallback when there is no mic |
 | `{"type":"configure","source":"sim","scenario","density"}` | build a world and its plan. Lifecycle becomes `ready`. **The clock does not start.** `load_scenario` with `name` still works as an alias |
 | `{"type":"configure","source":"real","scenario":"real/<region>_<date>_<hhmm>","max_flights"}` | load recorded traffic, thinned evenly over the hour to at most `max_flights`. `state` then carries `source: "real"`, `meta` (region, label, date, hour_utc, gates, attribution, caveats), `geo.shape: "circle"`, and waypoints with `kind: "gate"`. Hidden track vertices are never sent |
@@ -209,18 +206,17 @@ TRD 07. Every tick after `sim.step`, the backend rolls the whole sky forward 120
 
 `docs/trd/08-squack-agent-prd.md`, `backend/agent/`. One loop on the resolver model (Baseten) with a registry of tools named `group.verb`; without `BASETEN_API_KEY` a keyword router reaches the same tools for the simple phrases and answers "I need a model for that." otherwise. Caps: 4 tool calls, 8 s, 600 output tokens; every turn ends in one `answer`.
 
-Tools: `world.set_speed`, `world.set_voice`, `world.set_sliders`, `world.load`, `world.disrupt`, `world.remove_disruption`, `world.lifecycle`, `world.multiply_traffic`, `world.spawn_flight`, `world.nudge` (re-plan one flight with +2 NM, a card, never a clearance); `ui.focus`, `ui.follow`, `ui.camera`, `ui.line_view`, `ui.panel`, `ui.mode`; `query.aircraft`, `query.pairs`, `query.cards`, `query.log`, `query.scoreboard`, `query.timeline`; `explain.card`, `explain.flight`, `explain.disruption`, `explain.replan`; `sim.montecarlo`, `sim.sweep`, `sim.status`, `sim.cancel`. No tool opens a clearance.
+Tools: `world.set_speed`, `world.set_voice`, `world.set_sliders`, `world.load`, `world.disrupt`, `world.remove_disruption`, `world.lifecycle`, `world.multiply_traffic`, `world.spawn_flight`; `ui.focus`, `ui.follow`, `ui.camera`, `ui.line_view`, `ui.panel`; `query.aircraft`, `query.pairs`, `query.cards`, `query.log`, `query.scoreboard`, `query.timeline`; `explain.card`, `explain.flight`, `explain.disruption`, `explain.replan`. No tool opens a clearance, reaches into the planner or starts a simulation: the Monte Carlo and the sweep are the eval harness (`backend/tools/simjobs.py`, `eval/`), which the agent cannot call.
 
 Card descriptors (`backend/agent/cards.py`, mirrored in `frontend/lib/cards/`): every card has `kind`, `title` and an optional `live` binding (`{aircraft: "DAL789"}` or `{scoreboard: true}`) so the screen keeps its numbers current from the store.
 
 | kind | fields |
 |---|---|
 | `text` | `text` |
-| `table` | `columns[], rows[][], focus_column?` (cells in that column are callsign buttons) |
+| `table` | `columns[], rows[][], focus_column?` (cells in that column are callsign buttons), `caption?` |
 | `list` | `items[{t, text, kind?}]` |
 | `aircraft` | `callsign, level_ft, hdg, gs_kt, card?{id, phrase, reason, cause, origin, status, confidence, risk_after, margin}, changes[], cost, runner_up_cost, extra_nm, issue?` |
 | `comparison` | `columns[], rows[][], highlight_row?` |
-| `chart` | `x_label, y_label, series[{name, points[[x, y]]}], caption` |
 | `steps` | `steps[{n, tool, summary, ms, status}]` |
 
-Agent mode (`set_ui_mode`): a wake policy watches every event and wakes the agent on an `alert`, a `said_check`, a `disruption`, a `plan_update` with changed flights, a `risk` pair crossing 0.30 for the first time, or a lifecycle change; at most one batch per 5 s. The director emits a `stage` at once (alert card first, then the disruption comparison and the worst flight, the risk pair, the change list); with a key the agent's turn may replace it with `by: "agent"`. In normal mode nothing wakes the agent and no `stage` is sent.
+squack speaks only when spoken to. There is no wake policy, no `stage` event and no agent mode: every `answer` is the reply to an `agent_text` the controller sent. The screen is fixed; the agent changes it only through `ui_command`.

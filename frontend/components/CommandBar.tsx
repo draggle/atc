@@ -9,11 +9,15 @@ import { useClient } from "./TowerApp";
 /**
  * The one place you talk. Bottom centre, always there.
  *
- * Two audiences, one bar. Hold Space (or the mic) to talk on the radio; hold Shift+Space to talk to
- * squack. Typed text is routed by what it looks like: phraseology addressed to an aircraft goes out
+ * Two audiences, one bar. Hold space (or the mic) to talk on the radio; hold Fn to talk to squack.
+ * macOS usually swallows Fn before the browser sees it, so Option+space is bound to the same
+ * channel and always works; the first Fn keydown, if one ever arrives, logs a console.debug line. Typed text is routed by what it looks like: phraseology addressed to an aircraft goes out
  * on the radio, everything else goes to squack. squack's reply lands as a card above the bar and
  * fades on its own. Cmd/Ctrl+K focuses the input from anywhere.
  */
+
+/** Fn reports inconsistently: some browsers give `key`, some `code`, most of macOS gives neither. */
+const isFn = (e: KeyboardEvent) => e.key === "Fn" || e.code === "Fn";
 
 function isTyping(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement)) return false;
@@ -171,6 +175,7 @@ export default function CommandBar() {
   // empty and unfocused again.
   const [paused, setPaused] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const fnSeen = useRef(false); // logs once, so the founder can see on their own machine whether Fn fires
   const captureRef = useRef<Capture | null>(null);
   const activeRef = useRef<PttChannel | null>(null);
 
@@ -248,12 +253,24 @@ export default function CommandBar() {
         (e.target as HTMLElement).blur();
         return;
       }
+      // squack's channel: Fn, with Option+Space in parallel because macOS usually eats Fn before
+      // the browser ever sees a keydown. Plain Space stays the radio.
+      if (isFn(e)) {
+        if (!fnSeen.current) {
+          fnSeen.current = true;
+          console.debug("squack: Fn key fires in this browser");
+        }
+        if (e.repeat || isTyping(e.target)) return;
+        e.preventDefault();
+        void start("agent");
+        return;
+      }
       if (e.code !== "Space" || e.repeat || isTyping(e.target)) return;
       e.preventDefault();
-      void start(e.shiftKey ? "agent" : "radio");
+      void start(e.altKey ? "agent" : "radio");
     };
     const up = (e: KeyboardEvent) => {
-      if (e.code !== "Space") return;
+      if (!isFn(e) && e.code !== "Space") return;
       if (activeRef.current) e.preventDefault();
       stop();
     };
@@ -302,7 +319,7 @@ export default function CommandBar() {
     : reduced
       ? `Try: ${EXAMPLES[0]}`
       : sim?.lifecycle === "running"
-        ? "Hold Space to talk, or type. Aircraft hear phraseology; squack hears everything else."
+        ? "Hold space to talk, or type. Aircraft hear phraseology; squack hears everything else."
         : "Ask squack to load a sky, or press Start";
   // Derived from focus and emptiness alone, so a keystroke never restarts the lift transition.
   const lifted = focused || text.length > 0 || dictation !== null;
@@ -380,6 +397,17 @@ export default function CommandBar() {
           )}
         </form>
       </div>
+
+      {/* One quiet line where the example pills used to be: which key opens which channel. */}
+      {!text.trim() && !active && !dictation && !showReply && (
+        <div className="text-[11px] text-muted flex items-center gap-2" aria-hidden>
+          <span style={{ fontFamily: "var(--font-mono)" }}>space</span>
+          <span>radio</span>
+          <span className="text-muted/50">·</span>
+          <span style={{ fontFamily: "var(--font-mono)" }}>fn</span>
+          <span>squack</span>
+        </div>
+      )}
 
       {micError && <div className="pointer-events-auto text-[11px] text-warn">No mic: {micError}. Typing works.</div>}
       {connection === "mock" && active && <div className="text-[11px] text-muted">mock mode: audio is captured but not sent anywhere</div>}

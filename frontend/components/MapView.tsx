@@ -21,23 +21,10 @@ import { alertFor, highlightMap, useTowerDispatch, useTowerState, visibleRisk } 
 import { DEFAULT_FRAME, destinationPoint, latLonToNm, nmToLatLon, type FrameLike } from "@/lib/geo";
 import { latLonOf, shown, type Shown } from "@/lib/interp";
 import { describeIssue, flightLevel, type IssueFix } from "@/lib/issue";
-import type { Disruption, DisruptionKind, DisruptionKindInfo, PlannedPath, RiskPair, Zone } from "@/lib/types";
+import type { Disruption, PlannedPath, RiskPair, Zone } from "@/lib/types";
 import FlightStrip from "./FlightStrip";
 import { useClient } from "./TowerApp";
 
-type DropMode = "off" | DisruptionKind;
-
-/** Used until the backend sends its own menu in `state.disruption_kinds` (and by the mock). */
-const KINDS: DisruptionKindInfo[] = [
-  { kind: "fighter", label: "Fighter jet", blurb: "Fast, straight through, not talking to anyone.", shape: "point" },
-  { kind: "drone", label: "Drone", blurb: "Slow and small, loitering at cruise level.", shape: "point", menu: false },
-  { kind: "balloon", label: "Balloon", blurb: "Drifting with the wind.", shape: "point", menu: false },
-  { kind: "emergency", label: "Emergency aircraft", blurb: "One of our flights declares a mayday and descends.", shape: "point" },
-  { kind: "unknown", label: "Unknown target", blurb: "No height, no identity. Blocked at every level.", shape: "point", menu: false },
-  { kind: "storm", label: "Storm cell", blurb: "Drifts and swells.", shape: "circle" },
-  { kind: "closed", label: "Closed airspace", blurb: "A block of levels shut for a while.", shape: "circle", menu: false },
-  { kind: "rocket", label: "Rocket launch", blurb: "A tall column, gone in minutes.", shape: "circle" },
-];
 const ALL_LEVELS_FT = 90000;
 type RGBA = [number, number, number, number];
 
@@ -265,18 +252,11 @@ export default function MapView() {
   const topDown = view.topDown;
   const topDownRef = useRef(topDown);
   topDownRef.current = topDown;
-  const [dropMode, setDropMode] = useState<DropMode>("off");
-  const [menuOpen, setMenuOpen] = useState(false);
   const [fontReady, setFontReady] = useState(false);
-  // Agent mode (TRD 08, rung j): the Disrupt and View panels fold to a "···" until asked for, by a
-  // click or by squack's `ui_command panel`. Normal mode never looks at these.
-  const agentMode = state.uiMode === "agent";
-  const [peek, setPeek] = useState<Record<string, boolean>>({});
-  const folded = (name: string) => agentMode && !peek[name] && state.panel !== name;
-  const fold = (name: string, label: string) => (
-    <button type="button" className="glass pointer-events-auto btn w-fit text-muted" title={`Show ${label}`} aria-label={`Show ${label}`} onClick={() => setPeek((p) => ({ ...p, [name]: true }))}>···</button>
-  );
-  const unfold = (name: string) => { setPeek((p) => ({ ...p, [name]: false })); if (state.panel === name) dispatch({ type: "set_panel", panel: null }); };
+  // The Disrupt control lives in the top bar (components/DisruptMenu.tsx); the map only owns the
+  // placing click, so the armed kind is in the store where both can see it.
+  const dropMode = state.dropMode;
+  const disarm = useCallback(() => dispatch({ type: "set_drop_mode", kind: null }), [dispatch]);
   const trails = useRef(new Map<string, { at: number; pts: [number, number, number][] }>());
 
   const frame: FrameLike = sim?.geo ?? DEFAULT_FRAME;
@@ -1018,7 +998,7 @@ export default function MapView() {
         dispatch({ type: "select", callsign: (info.object as Shown).callsign });
         return true;
       }
-      if (dropMode !== "off" && info.coordinate) {
+      if (dropMode && info.coordinate) {
         // Aircraft and their lines are drawn at height, exaggerated: FL350 at 6x is 64 km up, and
         // in the tilted view that is about 40 NM up the screen from the ground beneath it. A click
         // read as a point on the ground therefore put the zone 40 NM from the line that was
@@ -1032,14 +1012,13 @@ export default function MapView() {
         }
         const [x, y] = latLonToNm(frame, lat, lon);
         send({ type: "add_disruption", kind: dropMode, x_nm: Math.round(x * 10) / 10, y_nm: Math.round(y * 10) / 10 });
-        setDropMode("off");
-        setMenuOpen(false);
+        disarm();
         return true;
       }
       if (selected) dispatch({ type: "select", callsign: null });
       return false;
     },
-    [dispatch, dropMode, frame, send, selected, zOf],
+    [disarm, dispatch, dropMode, frame, send, selected, zOf],
   );
 
   const tooltip = useCallback((info: PickingInfo) => {
@@ -1058,17 +1037,8 @@ export default function MapView() {
       : null;
   }, []);
 
-  const kinds = (sim?.disruption_kinds?.length ? sim.disruption_kinds : KINDS).filter((k) => k.menu !== false);
-  const active = Object.values(disruptions).filter((d) => d.active !== false);
-
-  // Text chips are the shared .btn: a hairline, muted until chosen. .btn is unlayered CSS, so the
-  // chosen state is an inline style rather than a utility class it would override.
-  const ON = { color: "var(--fg)", borderColor: "rgba(236, 236, 236, 0.6)" } as const;
-  /** An active disruption's id: red for a thing in the sky, amber for one of ours in trouble, white for a volume. */
-  const disruptionTone = (d: Disruption) => (d.kind === "emergency" ? "text-warn" : d.shape === "point" ? "text-bad" : "text-fg");
-
   return (
-    <div className={`absolute inset-0 ${dropMode !== "off" ? "cursor-crosshair" : ""}`}>
+    <div className={`absolute inset-0 ${dropMode ? "cursor-crosshair" : ""}`}>
       <MapGL
         ref={mapRef}
         mapStyle={mapStyle}
@@ -1091,71 +1061,11 @@ export default function MapView() {
         }}
         style={{ width: "100%", height: "100%" }}
       >
-        <DeckOverlay layers={layers} onClick={onDeckClick} getTooltip={tooltip} getCursor={({ isHovering }) => (dropMode !== "off" ? "crosshair" : isHovering ? "pointer" : "grab")} />
+        <DeckOverlay layers={layers} onClick={onDeckClick} getTooltip={tooltip} getCursor={({ isHovering }) => (dropMode ? "crosshair" : isHovering ? "pointer" : "grab")} />
       </MapGL>
 
-      {/* Disrupt: one control. Random puts something where it will matter; Choose lets you place a kind. */}
       {/* z-10: the deck.gl overlay canvas paints above unstacked siblings, so traffic drew over these panels */}
-      <div className="pointer-events-none absolute z-10 left-2 top-[52px] bottom-[196px] w-[336px] flex flex-col gap-2 overflow-y-auto scroll-thin">
-      {folded("disrupt") ? fold("disrupt", "the Disrupt control") : (
-      <div className="glass pointer-events-auto px-2.5 py-2 relative">
-        {agentMode && <button type="button" className="absolute top-1.5 right-2 text-[11px] text-muted hover:text-fg" onClick={() => unfold("disrupt")} aria-label="Hide">×</button>}
-        <div className="flex items-center gap-2">
-          <span className="eyebrow">Disrupt</span>
-          <button
-            className="btn"
-            disabled={!sim?.scenario}
-            title="A random kind, dropped on the path of a flight a few minutes ahead. Seeded: the same presses give the same result."
-            onClick={() => { setDropMode("off"); setMenuOpen(false); send({ type: "add_disruption", kind: "random" }); }}
-          >
-            Random
-          </button>
-          <button className="btn" style={menuOpen || dropMode !== "off" ? ON : undefined} aria-pressed={menuOpen || dropMode !== "off"} onClick={() => { setMenuOpen((o) => !o); setDropMode("off"); }}>
-            Choose
-          </button>
-          <span className="ml-auto text-[11px] text-muted">{planes.filter((p) => !p.is_intruder).length} aircraft</span>
-        </div>
-
-        {menuOpen && (
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {kinds.map((k) => (
-              <button
-                key={k.kind}
-                title={k.blurb}
-                className="btn"
-                style={dropMode === k.kind ? ON : undefined}
-                aria-pressed={dropMode === k.kind}
-                onClick={() => setDropMode(dropMode === k.kind ? "off" : k.kind)}
-              >
-                {k.label}
-              </button>
-            ))}
-          </div>
-        )}
-        {dropMode !== "off" && (
-          <p className="mt-2 text-[11px] text-fg">
-            {dropMode === "emergency" ? "Click near the flight that declares the emergency." : "Click the map to place it."}
-            <span className="text-muted"> {kinds.find((k) => k.kind === dropMode)?.blurb}</span>
-          </p>
-        )}
-
-        {active.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1.5 border-t border-line pt-2">
-            {active.map((d) => (
-              <span key={d.id} className="chip font-mono">
-                <button className={disruptionTone(d)} title={d.label} onClick={() => d.shape === "point" && dispatch({ type: "select", callsign: d.id })}>
-                  {d.id}
-                </button>
-                <span className="text-muted">{minutesLeft(d.expires_t, sim?.t ?? 0).replace(" · ", "") || d.label}</span>
-                {d.kind !== "emergency" && (
-                  <button className="text-muted hover:text-fg" title="Remove it" onClick={() => send({ type: "remove_disruption", id: d.id })}>✕</button>
-                )}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-      )}
+      <div className="pointer-events-none absolute z-10 left-2 top-[52px] bottom-[256px] w-[336px] flex flex-col gap-2 overflow-y-auto scroll-thin">
       {/* Everything squack knows about the selected aircraft sits under the control, never over it. */}
       <FlightStrip />
       </div>

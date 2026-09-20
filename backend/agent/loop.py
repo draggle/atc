@@ -1,12 +1,12 @@
 """The squack agent: one sentence in, tool calls over the world and the screen, one sentence and
-cards out. PRD sections 3, 4 and 10.
+cards out. PRD sections 3 and 4.
 
 `SquackAgent(world, llm)` generalises `world_agent._llm_agent`: the same `LLM.chat` with tools on
 the resolver model (Baseten, hard rule 5), the registry in `agent/registry.py` instead of six
-hand-wired tools, and caps like the resolver's: 4 tool calls, 8 s, 600 output tokens. Every tool
+hand-wired tools, and caps like the resolver's: 4 tool calls, 8 s, a short output. Every tool
 call goes out as an `agent_step` and every turn ends in exactly one `answer` (never silent). The
-agent never opens a clearance: no tool here touches the frequency, and the registry refuses
-anything marked `acts_on_traffic` except `world.nudge`.
+agent never opens a clearance, never touches the planner and never starts a simulation: it talks,
+it reads, and it changes the world and the screen the way the controls on screen do.
 
 Without a Baseten key the same tools are reached by a keyword router, so the demo lines that
 matter (focus, follow, why, scoreboard, closest pair, double traffic, load, storm, speed, voice)
@@ -35,30 +35,45 @@ log = logging.getLogger("tower.agent")
 
 MAX_TOOL_CALLS = 4
 BUDGET_S = 8.0
-MAX_TOKENS = 600
+MAX_TOKENS = 160  # one sentence, two at most: the prompt asks for it and this enforces it
 HISTORY_TURNS = 10
 MAX_CARDS = 3
-MAX_TEXT_CHARS = 1500  # 600 tokens is the real cap; this only guards the wire
+MAX_TEXT_CHARS = 1500  # the token cap is the real one; this only guards the wire
 NEEDS_MODEL = "I need a model for that."
+MODEL_DOWN = "I can act on that, but I cannot talk it through right now."
 
 SYSTEM = """You are squack, the controller's colleague on an air traffic control simulator, talking from the \
-command bar. Speak in the first person, calm and specific, no filler and no apologies. Use callsigns the way the \
-radio does (Delta 789, Air Canada 123). You can act and you can talk: turn what the controller says into tool \
-calls over the world (scenarios, disruptions, speed, voice, sliders), the screen (focus, follow, camera, panels), \
-live questions (aircraft, pairs, cards, log, scoreboard, timeline), explanations (the planner's own reasons: the \
-card's reason and cause, cost against the runner-up, confidence, residual risk) and background simulations; then \
-answer in two or three sentences that say what you did and what you saw. Go longer only for an open question \
-("what's going on", "explain the plan", "how are we doing"). The cards the tools produced carry the data, so do \
-not read a table back; give the one number that matters. Name the tool you used only when it matters ("I \
-re-planned Delta 789 with 2 more miles of buffer"). Hold the conversation across turns: earlier turns are in \
-the history.
+command bar. What you can do: change the world (load a scenario, add or remove a disruption, clock speed, \
+voice on or off, the sliders, start/pause/reset, more traffic, spawn a flight); change the screen (focus, \
+follow, camera, which lines are drawn, open a panel); read live state (aircraft, close pairs, instruction \
+cards, the radio log, the scoreboard, the timeline); and explain the planner's own reasons (a card's reason \
+and cause, cost against the runner-up, confidence, residual risk). What you cannot do: talk to aircraft or \
+issue a clearance, re-plan or move a flight yourself, or run a simulation, Monte Carlo or sweep. Asked for \
+one of those, say in one plain sentence that you cannot and what would do it instead; do not apologise and \
+do not improvise numbers.
 
-Rules: you cannot issue clearances or talk to aircraft; if asked, say it has to be said on the radio. "Separate \
-them" or "move X away" means world.nudge(X). Resolve "it", "that flight" and "this one" to the selected aircraft \
-in the screen state. At most 4 tool calls, the fewest that answer; a plain question about the conversation needs \
-none. When an event batch is given instead of a message, say what just happened and why in a sentence or two, and \
-call the explain or query tools that put the right cards up (at most 3). Coordinates are nautical miles, x east, \
-y north, sector centred on 0."""
+How you speak. One sentence. A second only when it says something the first cannot; never a third. Lead with \
+the answer: no preamble, no "I checked", no repeating the question back, no offer of more help unless you were \
+asked a yes/no question that needs one. Plain words a passenger would follow, not jargon: "Delta 789 is \
+climbing to 36,000 feet", never "DAL789 FL360 assigned". Airline name and number as a person says it (Delta \
+789, Air Canada 123), altitudes in thousands of feet, distances in miles. No abbreviations, no lists in the \
+prose, no tables read aloud: the card carries the detail, your sentence carries the point. Never mention tools, \
+steps or what you did to find out; the trace already shows that.
+
+Examples of the register:
+Q: "what's going on out there?" A: "Eleven flights, all on plan, and the closest pair is Delta 789 and \
+WestJet 220 at 14 miles."
+Q: "why did you turn Delta 789?" A: "It was going to come within 4 miles of WestJet 220, so I sent it 12 \
+degrees right and it costs about 3 extra miles."
+Q: "double the traffic" A: "Twenty-two flights now, and the plan is still clean."
+Q: "who is above 35,000 feet?" A: "Three: Air Canada 123, Delta 789 and Lufthansa 470."
+
+Rules: a clearance has to be said on the radio by the controller; "separate them" is the planner's job, not \
+yours. Resolve "it", "that flight" and "this one" to the selected aircraft in the screen state. At most 4 tool calls, the fewest that answer; a plain question about the conversation needs \
+none, but a question about the traffic, a flight, a card or the numbers always goes through a \
+tool so that a card goes up beside your sentence. Hold the conversation across turns: earlier \
+turns are in the history. Coordinates are nautical miles, \
+x east, y north, sector centred on 0."""
 
 
 @dataclass
@@ -76,7 +91,7 @@ class Answer:
     turn_id: str
     text: str
     cards: list[dict[str, Any]] = field(default_factory=list)
-    for_: Literal["message", "event"] = "message"
+    for_: Literal["message"] = "message"  # kept on the wire; squack only ever replies to a message
     steps: list[StepInfo] = field(default_factory=list)
 
     @property
@@ -96,7 +111,7 @@ def picture(world: "World", ui_state: dict[str, Any] | None) -> dict[str, Any]:
     ac = world.sim.aircraft() if sc else []
     return {
         "scenario": sc.name if sc else None, "t_s": round(world.sim.t), "lifecycle": world.lifecycle,
-        "speed": world.speed, "voice": not world.auto_speak, "ui_mode": world.ui_mode,
+        "speed": world.speed, "voice": not world.auto_speak,
         "buffer_nm": world.buffer_nm, "error_rate": world.error_rate,
         "aircraft": [a.callsign for a in ac if not a.is_intruder][:40],
         "intruders": [a.callsign for a in ac if a.is_intruder],
@@ -104,12 +119,14 @@ def picture(world: "World", ui_state: dict[str, Any] | None) -> dict[str, Any]:
         "cards_pending": len([c for c in world.cards.values() if c.status == "pending" and not c.minor]),
         "risk_pairs": [[p.a, p.b, round(float(p.p_max), 2)] for p in world.risk.pairs[:5]],
         "screen": ui_state or {},
-        "sim_jobs": "available" if R.SIM_JOBS else "not available",
     }
 
 
 class SquackAgent:
-    """`handle_message(text, history, ui_state)` and `handle_events(events)`; both end in an Answer."""
+    """`handle_message(text, history, ui_state)`: the controller's turn, ending in one Answer.
+
+    squack speaks only when spoken to. There is no event-driven entry point: nothing in the world
+    makes it talk."""
 
     def __init__(self, world: "World", llm: Any, emit: Callable[[dict[str, Any]], None] | None = None,
                  clock: Callable[[], float] = time.monotonic, max_tool_calls: int = MAX_TOOL_CALLS,
@@ -142,21 +159,10 @@ class SquackAgent:
             del history[:-HISTORY_TURNS]
         return self._finish(ans)
 
-    def handle_events(self, events: list[dict[str, Any]], ui_state: dict[str, Any] | None = None) -> Answer | None:
-        """An environment batch from the wake policy. None without a model: the director already
-        put the stage up, and a keyword router has nothing to say about an event."""
-        if not self.has_model or not events:
-            return None
-        lines = [f"[{ev.get('t', 0):.0f}s] {ev.get('type')}: {R.describe_event(ev) or ''}" for ev in events]
-        content = "Environment events since your last turn:\n" + "\n".join(lines) + \
-            "\nTell the controller what just happened and why, in a sentence or two, with the cards that show it."
-        turn = uuid.uuid4().hex[:8]
-        return self._finish(self._loop(turn, [{"role": "user", "content": content}], None, ui_state, "event"))
-
     # -- the model loop ----------------------------------------------------------------------------
 
     def _loop(self, turn: str, user: list[dict[str, Any]], history: list[dict[str, Any]] | None,
-              ui_state: dict[str, Any] | None, for_: Literal["message", "event"]) -> Answer:
+              ui_state: dict[str, Any] | None, for_: Literal["message"] = "message") -> Answer:
         t0 = self.clock()
         messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM + "\n\nState now: "
                                            + json.dumps(picture(self.world, ui_state), default=str)}]
@@ -174,10 +180,11 @@ class SquackAgent:
                 break
             try:
                 resp = self.llm.chat(messages, tools=R.schemas(), tool_choice="auto", max_tokens=MAX_TOKENS)
-            except Exception as exc:  # noqa: BLE001 - never silent
-                log.exception("agent model call failed")
-                text = f"The model call failed ({type(exc).__name__}); nothing was changed."
-                break
+            except Exception:  # noqa: BLE001 - never silent, never a traceback on the screen
+                # Baseten unreachable or refusing: do the turn with the keyword router instead, so
+                # "double the traffic" still doubles the traffic, and say so in one honest line.
+                log.warning("agent model call failed; falling back to the keyword router", exc_info=True)
+                return self._degraded(turn, user, ui_state, ans)
             if not resp.tool_calls:
                 text = (resp.content or "").strip() or None
                 break
@@ -206,10 +213,23 @@ class SquackAgent:
         ans.cards = _dedupe(cards)[-MAX_CARDS:]
         return ans
 
+    def _degraded(self, turn: str, user: list[dict[str, Any]], ui_state: dict[str, Any] | None,
+                  ans: Answer) -> Answer:
+        """The model is not answering. Anything already done stands; the rest goes to the router."""
+        if ans.steps:
+            ans.text = _tidy(_sentence_from_steps(ans.steps))
+            ans.cards = _dedupe(ans.cards)[-MAX_CARDS:]
+            return ans
+        text = str(user[-1].get("content") or "") if user else ""
+        routed = self._routed(turn, text, ui_state)
+        if routed.text in (NEEDS_MODEL, "Done.") and not routed.steps:
+            routed.text = MODEL_DOWN
+        return routed
+
     # -- the keyword router ------------------------------------------------------------------------
 
     def _routed(self, turn: str, text: str, ui_state: dict[str, Any] | None,
-                for_: Literal["message", "event"]) -> Answer:
+                for_: Literal["message"] = "message") -> Answer:
         plan = route(self.world, text, ui_state)
         ans = Answer(turn, "", for_=for_)
         if plan is None:
@@ -395,8 +415,10 @@ def route(world: "World", text: str, ui_state: dict[str, Any] | None = None) -> 
             plan.append(("world.set_speed", {"speed": float(m.group(1))}))
     elif re.search(r"\b(real ?time|normal speed|1x)\b", t):
         plan.append(("world.set_speed", {"speed": 1.0}))
-    if m := re.search(r"\bvoice (on|off)\b|\b(mute|unmute)\b|\b(data ?link)\b", t):
-        on = (m.group(1) == "on") if m.group(1) else (m.group(2) == "unmute") if m.group(2) else False
+    # "Action mode" on screen: manual is voice on, autonomous is voice off. The wire keeps set_voice.
+    if m := re.search(r"\bvoice (on|off)\b|\b(mute|unmute)\b|\b(data ?link)\b|\b(manual|autonomous)\b", t):
+        on = (m.group(1) == "on") if m.group(1) else (m.group(2) == "unmute") if m.group(2) \
+            else (m.group(4) == "manual") if m.group(4) else False
         plan.append(("world.set_voice", {"on": on}))
     if re.search(r"\b(start|resume|unpause|play)\b", t) and not re.search(r"\b(monte carlo|sim|sweep)\b", t) and not plan:
         plan.append(("world.lifecycle", {"action": "start"}))
@@ -419,14 +441,6 @@ def route(world: "World", text: str, ui_state: dict[str, Any] | None = None) -> 
         alt = _num(t, r"\b(?:fl|flight level|at)\b")
         plan.append(("world.spawn_flight", {"airline": airline, "from_side": side,
                                             **({"alt_ft": alt * 100} if alt and 100 <= alt <= 450 else {})}))
-    if re.search(r"\b(separate|nudge|move .* (away|apart|off)|give .* room)\b", t):
-        who = cs
-        if who is None and re.search(r"\bthem\b|closest pair", t):
-            top = R.pairs_now(world, None)[:1]
-            who = top[0]["a"] if top else None
-        if who:
-            plan.append(("world.nudge", {"callsign": who}))
-
     # ui.* -----------------------------------------------------------------------------------------
     if re.search(r"\b(focus|zoom|fly to|go to|look at|centre|center|select)\b", t) and cs:
         plan.append(("ui.focus", {"callsign": cs}))
@@ -452,10 +466,6 @@ def route(world: "World", text: str, ui_state: dict[str, Any] | None = None) -> 
             plan.append(("ui.line_view", {"view": m.group(1)}))
     if m := re.search(r"\b(?:open|show|bring up)\b.*\b(scoreboard|cards|transcript|setup|alerts|risk|panel|drawer)\b", t):
         plan.append(("ui.panel", {"panel": m.group(1)}))
-    if re.search(r"\b(agent mode|squack decides|you decide|take the screen)\b", t):
-        plan.append(("ui.mode", {"mode": "agent"}))
-    elif re.search(r"\b(normal mode|give me the screen|manual screen)\b", t):
-        plan.append(("ui.mode", {"mode": "normal"}))
 
     # explain.* ------------------------------------------------------------------------------------
     if re.search(r"\b(why|explain|how (sure|confident)|reason)\b", t):
@@ -474,7 +484,7 @@ def route(world: "World", text: str, ui_state: dict[str, Any] | None = None) -> 
     if re.search(r"\b(scoreboard|score|how are we doing|miles saved|numbers)\b", t) and not any(n == "ui.panel" for n, _ in plan):
         plan.append(("query.scoreboard", {}))
     if re.search(r"\b(closest|nearest|within|near each other|close to each other|pairs?)\b", t) \
-            and not re.search(r"\b(separate|nudge)\b", t):
+            and not re.search(r"\bseparate\b", t):
         nm = _num(t, r"\bwithin\b")
         plan.append(("query.pairs", {"max_nm": nm or R.PAIRS_DEFAULT_NM}))
     if re.search(r"\b(pending|cards|instructions)\b", t) and re.search(r"\b(list|show|what|which|how many|still)\b", t) \
@@ -504,17 +514,6 @@ def route(world: "World", text: str, ui_state: dict[str, Any] | None = None) -> 
                 filters.append({"field": "callsign", "op": "contains", "value": code})
                 break
         plan.append(("query.aircraft", {"filters": filters}))
-
-    # sim.* ----------------------------------------------------------------------------------------
-    if re.search(r"\bmonte ?carlo\b|\brun the (sim|eval|evaluation)\b|\b(does|will) it (still )?hold\b", t):
-        runs = _num(t, r"\b(?:runs?)\b") or _num(t, r"\b(\d+)\s*runs?\b")
-        args = {"runs": int(runs)} if runs else {}
-        if re.search(r"\bdouble\b", t) and not any(n == "world.multiply_traffic" for n, _ in plan):
-            args["density"] = 2.0
-        plan.append(("sim.montecarlo", args))
-    elif re.search(r"\bsweep\b", t):
-        nums = [float(n) for n in re.findall(r"\d+(?:\.\d+)?", t)]
-        plan.append(("sim.sweep", {"densities": nums[:2] or [1.0, 2.0]}))
 
     if not plan:
         if re.search(r"\b(describe|status|what is going on|what's going on|where are we|how many)\b", t):

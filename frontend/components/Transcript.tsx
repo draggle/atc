@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { useTowerDispatch, useTowerState } from "@/lib/store";
+import { useTowerState } from "@/lib/store";
 import type { Transmission } from "@/lib/types";
 
 const CALLSIGN_RE = /\b([A-Z]{2,3}\d{1,4}[A-Z]?)\b/;
@@ -15,7 +15,7 @@ function callsignOf(t: Transmission): string {
   return m ? m[1] : "";
 }
 
-function Row({ t, showStock }: { t: Transmission; showStock: boolean }) {
+function Row({ t }: { t: Transmission }) {
   const conf = Math.max(0, Math.min(1, t.asr_confidence));
   const confCls = conf > 0.85 ? "bg-ok" : conf > 0.65 ? "bg-warn" : "bg-bad";
   const callsign = callsignOf(t);
@@ -24,8 +24,8 @@ function Row({ t, showStock }: { t: Transmission; showStock: boolean }) {
       <span className="text-[11px] text-muted truncate">{t.speaker === "datalink" ? "data link" : t.speaker}</span>
       <span className="text-[13px] font-medium text-fg truncate">{callsign}</span>
       <div className="min-w-0">
-        <span className="text-sm text-fg/90">{showStock && t.text_stock ? t.text_stock : t.text_norm}</span>
-        {!showStock && t.text_stock && (
+        <span className="text-sm text-fg/90">{t.text_norm}</span>
+        {t.text_stock && (
           <span className="hidden group-hover:inline ml-2 text-xs text-muted">stock: &ldquo;{t.text_stock}&rdquo;</span>
         )}
       </div>
@@ -40,11 +40,12 @@ function Row({ t, showStock }: { t: Transmission; showStock: boolean }) {
 }
 
 export default function Transcript() {
-  const { transcript, showStock, onAir } = useTowerState();
-  const dispatch = useTowerDispatch();
-  const endRef = useRef<HTMLDivElement | null>(null);
+  const { transcript, onAir } = useTowerState();
+  // Scroll the box itself, never scrollIntoView: that walks up and nudges the whole screen sideways.
+  const boxRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: "end" });
+    const el = boxRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [transcript.length]);
 
   return (
@@ -62,22 +63,14 @@ export default function Transcript() {
                 : onAir.speaker === "squack" ? "squack answering" : "squack transmitting"}
             </span>
           )}
-          <button
-            onClick={() => dispatch({ type: "toggle_stock" })}
-            className={`underline decoration-dotted underline-offset-4 hover:text-fg ${showStock ? "text-warn" : "text-muted"}`}
-            title="Show what stock Whisper heard instead of our fine-tuned model"
-          >
-            {showStock ? "Showing stock Whisper" : "Showing tuned Whisper"}
-          </button>
         </div>
       </div>
-      <div className="flex-1 min-h-0 overflow-y-auto scroll-thin">
+      <div ref={boxRef} className="flex-1 min-h-0 overflow-y-auto scroll-thin">
         {transcript.length === 0 ? (
           <p className="text-xs text-muted py-4 text-center">Frequency is quiet.</p>
         ) : (
-          transcript.map((t) => <Row key={t.id} t={t} showStock={showStock} />)
+          transcript.map((t) => <Row key={t.id} t={t} />)
         )}
-        <div ref={endRef} />
       </div>
     </section>
   );

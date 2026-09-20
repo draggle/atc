@@ -354,8 +354,6 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 _spawn(world.agent_request(str(data.get("text", "")), agent_history,
                                            data.get("ui_state") if isinstance(data.get("ui_state"), dict) else None),
                        "headset request")
-            elif typ == "set_ui_mode":  # squack agent: {"mode": "normal" | "agent"}. set_mode is manual/auto
-                world.set_ui_mode(str(data.get("mode", "normal")))
             elif typ == "radio_text":
                 _spawn(world.controller_text(str(data.get("text", ""))), "transmission")
             elif typ == "configure" and data.get("source") == "live":

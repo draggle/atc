@@ -73,8 +73,19 @@ html, body {
 .maplibregl-ctrl-attrib a { color: var(--muted) !important; }
 .maplibregl-canvas { outline: none; }
 
-.scroll-thin::-webkit-scrollbar { width: 6px; height: 6px; }
-.scroll-thin::-webkit-scrollbar-thumb { background: #2a3442; border-radius: 3px; }
+/* One quiet scrollbar everywhere something scrolls: a 4px pill inset from the edge. */
+.scroll-thin { scrollbar-width: thin; scrollbar-color: rgba(236, 236, 236, 0.18) transparent; }
+.scroll-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+.scroll-thin::-webkit-scrollbar-track { background: transparent; }
+.scroll-thin::-webkit-scrollbar-thumb {
+  background: rgba(236, 236, 236, 0.14);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+.scroll-thin::-webkit-scrollbar-thumb:hover { background: rgba(236, 236, 236, 0.28); background-clip: padding-box; }
+.scroll-thin::-webkit-scrollbar-button { display: none; }
+.scroll-thin::-webkit-scrollbar-corner { background: transparent; }
 
 @keyframes pulse-ring {
   0% { box-shadow: 0 0 0 0 rgba(255, 77, 94, 0.6); }
@@ -155,6 +166,10 @@ input[type="range"] { accent-color: var(--accent); }
 .chip-ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
 .chip-warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
 .chip-bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+/* .badge: a notification pill carrying one number. Tinted when the number matters, quiet when it does not. */
+.badge { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 8px; border-radius: 999px; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1; background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.badge-bad { background: rgba(255, 90, 110, 0.16); color: var(--bad); border-color: rgba(255, 90, 110, 0.35); }
+.badge-ok { background: rgba(61, 220, 132, 0.16); color: var(--ok); border-color: rgba(61, 220, 132, 0.35); }
 /* .dot: 6px status dot, muted by default; .dot-ok / .dot-warn / .dot-bad when the colour means something. */
 .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); flex: none; }
 .dot-ok { background: var(--ok); } .dot-warn { background: var(--warn); } .dot-bad { background: var(--bad); }
@@ -183,3 +198,8 @@ input[type="range"] { accent-color: var(--accent); }
 @keyframes card-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .card-in { animation: card-in 0.25s cubic-bezier(0.22, 1, 0.36, 1) both; }
 @media (prefers-reduced-motion: reduce) { .card-in { animation-duration: 0.01s; } }
+
+/* A popover opening downward from a top-bar button (the Disrupt menu): it grows from its top edge. */
+.pop-down { transform-origin: top center; animation: pop-down 0.18s cubic-bezier(0.22, 1, 0.36, 1) both; }
+@keyframes pop-down { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .pop-down { animation-duration: 0.01s; } }

@@ -17,7 +17,7 @@ export interface CardAction {
 /** What every card may carry on top of its kind's own fields. */
 export interface CardBase {
   title?: string;
-  /** seconds on screen before the card fades, when it is on the stage */
+  /** seconds on screen before the card fades */
   ttl_s?: number;
   /** keep these numbers current from the store without another agent turn */
   live?: { aircraft?: string; scoreboard?: boolean };
@@ -35,6 +35,8 @@ export interface TableCard extends CardBase {
   rows: (string | number)[][];
   /** a cell in this column is a callsign: click to focus */
   focus_col?: number;
+  /** a muted line under the table: the run parameters, the units, what was held fixed */
+  caption?: string;
 }
 
 export interface ListItem {
@@ -76,32 +78,12 @@ export interface ComparisonCard extends CardBase {
   rows: ComparisonRow[];
 }
 
-/** One series. `value` alone draws a bar; `points` draw a line, histogram or scatter. */
-export interface ChartSeries {
-  label: string;
-  value?: number;
-  /** [x, y] pairs. For a histogram, x is the bin start. */
-  points?: [number, number][];
-  tone?: Tone;
-}
-
-export interface ChartCard extends CardBase {
-  kind: "chart";
-  /** How to draw it. Bars is the default and the only kind that needs `value`. */
-  chart?: "bars" | "line" | "hist" | "scatter";
-  series: ChartSeries[];
-  x_label?: string;
-  y_label?: string;
-  caption?: string;
-  unit?: string;
-}
-
 export interface StepsCard extends CardBase {
   kind: "steps";
   steps: { n: number; tool: string; summary: string; done: boolean }[];
 }
 
-export type CardDescriptor = TextCard | TableCard | ListCard | AircraftCard | ComparisonCard | ChartCard | StepsCard;
+export type CardDescriptor = TextCard | TableCard | ListCard | AircraftCard | ComparisonCard | StepsCard;
 
 export type CardKind = CardDescriptor["kind"];
 
@@ -124,10 +106,11 @@ export interface Answer {
   turn_id: string;
   text: string;
   cards: CardDescriptor[];
-  for: "message" | "event";
+  /** Always "message": squack only ever replies to something the controller asked. */
+  for: "message";
 }
 
-export type UiCommandName = "focus" | "follow" | "camera" | "line_view" | "panel" | "mode";
+export type UiCommandName = "focus" | "follow" | "camera" | "line_view" | "panel";
 
 /** A ui.* tool ran: the screen applies it. Nothing in the world changed. */
 export interface UiCommand {
@@ -135,24 +118,4 @@ export interface UiCommand {
   args: Record<string, unknown>;
 }
 
-/** Agent mode's panel layer: what squack (or the director, without a key) put on the stage. */
-export interface StageEvent {
-  slots: CardDescriptor[];
-  ttl_s: number;
-  by: "director" | "agent";
-}
 
-export type SimJobStatus = "running" | "done" | "failed" | "cancelled";
-
-/** A Monte Carlo or sweep running in the background. Progress while it runs, rows when it is done. */
-export interface SimJob {
-  job_id: string;
-  kind: string;
-  status: SimJobStatus;
-  progress: number;
-  eta_s: number | null;
-  params: Record<string, unknown>;
-  result?: { columns?: string[]; rows: (string | number)[][]; caption?: string };
-}
-
-export type UiMode = "normal" | "agent";

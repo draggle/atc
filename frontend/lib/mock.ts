@@ -32,7 +32,7 @@ import type {
   RiskPair,
   Zone,
 } from "./types";
-import type { CardDescriptor, SimJob } from "./cards/types";
+import type { CardDescriptor } from "./cards/types";
 
 export interface MockHandle {
   send(msg: ClientMessage): void;
@@ -348,15 +348,12 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
   const scoreboard = () => send({ type: "scoreboard", payload: score, t: simT });
 
   // ---------------------------------------------------------------- the squack agent (TRD 08)
-  // The director places cards on the stage in both modes; the screen shows them only in agent mode.
+  // squack speaks only when spoken to: every answer below is a reply to an `agent_text`.
   let turnSeq = 0;
-  let uiMode: "normal" | "agent" = "normal";
-  const stage = (slots: CardDescriptor[], by: "director" | "agent" = "director", ttl_s = 90) =>
-    send({ type: "stage", payload: { slots: slots.slice(0, 3), ttl_s, by }, t: simT });
   const step = (turn_id: string, n: number, tool: string, args: Record<string, unknown>, result_summary: string, elapsed_ms: number) =>
     send({ type: "agent_step", payload: { turn_id, step: n, tool, args, result_summary, elapsed_ms }, t: simT });
-  const answer = (turn_id: string, text: string, cards: CardDescriptor[] = [], why: "message" | "event" = "message") =>
-    send({ type: "answer", payload: { turn_id, text, cards, for: why }, t: simT });
+  const answer = (turn_id: string, text: string, cards: CardDescriptor[] = []) =>
+    send({ type: "answer", payload: { turn_id, text, cards, for: "message" }, t: simT });
   const fl = (ft: number) => `FL${String(Math.round(ft / 100)).padStart(3, "0")}`;
   const aircraftRows = (pred: (f: Flight) => boolean) =>
     flights.filter((f) => !f.isIntruder && pred(f)).map((f) => [f.callsign, fl(f.alt), Math.round(f.hdg), Math.round(f.gs), f.route[f.route.length - 1] ?? ""] as (string | number)[]);
@@ -458,19 +455,6 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
     const conflict: [number, number][] = [[1500, 0.1], [2500, 0.22], [3500, 0.38], [4500, 0.52], [5500, 0.6], [6600, 0.58]];
     for (const [ms, p] of conflict) after(ms, () => risk("ACA123", "DAL88", p));
     after(3500, () => { score = { ...score, conflicts_predicted: (score.conflicts_predicted ?? 0) + 1 }; scoreboard(); });
-    // Director: a predicted conflict puts the flight squack is about to move on the stage, with what the card buys.
-    after(3700, () => stage([
-      {
-        kind: "aircraft", title: "Conflict predicted · DAL88", callsign: "ACA123", live: { aircraft: "ACA123" },
-        fields: [{ label: "with", value: "DAL88 at FL350" }, { label: "p(loss of separation)", value: 0.38 }, { label: "closest in", value: "90 s" }, { label: "card", value: "descend FL240" }, { label: "confidence", value: "0.91 · risk after 0.03" }],
-        actions: [{ label: "Why this card", command: "explain", args: { text: "why did you turn ACA123" } }],
-      },
-      {
-        kind: "comparison", title: "Descend ACA123 to FL240",
-        rows: [{ label: "closest approach", before: 4.1, after: 9.8, unit: "NM" }, { label: "p(loss of separation)", before: 0.38, after: 0.03 }, { label: "miles added", before: 0, after: 1.2, unit: "NM" }, { label: "minutes added", before: 0, after: 0.3 }],
-        live: { scoreboard: true },
-      },
-    ], "director", 40));
     after(7600, () => risk("ACA123", "DAL88", 0.12));
     after(8600, () => { risk("ACA123", "DAL88", 0); score = { ...score, conflicts_resolved: (score.conflicts_resolved ?? 0) + 1 }; scoreboard(); });
     after(3000, () =>
@@ -530,23 +514,6 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
       send({ type: "alert", payload: v, t: simT });
       setCard(`c${g}-3`, "error", `cl-c${g}-3`);
       scoreboard();
-      // Director: the alert card goes on the stage within a tick, with the correction to say.
-      stage([
-        {
-          kind: "aircraft", title: "Wrong readback", callsign: "WJA456", live: { aircraft: "WJA456" },
-          issue: { title: "Wrong readback", expected: hdg270, heard: [item("heading", 250, "deg", "turn_left")], reason: "Heading read back as 250, cleared 270. The aircraft will fly what it read back." },
-          fields: [{ label: "say now", value: "WestJet four five six, negative, turn left heading two seven zero" }, { label: "decided by", value: "checker model · 93%" }],
-          actions: [{ label: "Focus", command: "focus", args: { callsign: "WJA456" } }],
-        },
-        {
-          kind: "list", title: "Last minute",
-          items: [
-            { title: "WJA456 read back heading 250 for 270", detail: "checker model, 1.4 s after the readback", callsign: "WJA456", tone: "bad" },
-            { title: "ACA123 descending FL240, verified on radar", callsign: "ACA123", tone: "ok" },
-            { title: "Predicted conflict ACA123 / DAL88 cleared", detail: "p 0.6 to 0.0 in 80 s" },
-          ],
-        },
-      ], "director", 60);
     });
 
     // Ambiguous: garbled readback, resolver wakes, three steps, then a verdict.
@@ -613,14 +580,6 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
       score = { ...score, miles_saved: score.miles_saved + 8.4, time_saved_s: score.time_saved_s + 71 };
       scoreboard();
     });
-    // Director: a disruption puts the cost of going round it on the stage.
-    after(34500, () => stage([
-      {
-        kind: "comparison", title: "Fighter through the middle · VIPER",
-        rows: [{ label: "flights rerouted", before: 0, after: 2 }, { label: "extra miles", before: 0, after: 6.4, unit: "NM" }, { label: "first turn", before: "—", after: 3, unit: "s" }, { label: "closest to intruder", before: 2.1, after: 8.3, unit: "NM" }],
-      },
-      { kind: "list", title: "Rerouted", items: flights.filter((f) => !f.isIntruder).slice(0, 2).map((f) => ({ title: `${f.callsign} turned ${f.callsign === flights[0].callsign ? "left" : "right"} 30°`, detail: "clear of the fighter by 8 NM", callsign: f.callsign, tone: "warn" as const })) },
-    ], "director", 60));
     after(48000, runScript);
   };
 
@@ -754,9 +713,6 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
       case "speak_card":
         if (cards.get(msg.id)?.status === "pending") happyPath(msg.id, 200);
         return;
-      case "set_ui_mode":
-        uiMode = msg.mode;
-        return;
       case "agent_text": {
         // Scripted answers, so the bar and the dock can be built without a backend. The real loop
         // (backend/agent) answers with the same events.
@@ -770,36 +726,22 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
           const above = !/\b(below|under)\b/.test(q);
           const rows = aircraftRows((f) => (above ? f.alt >= level : f.alt < level));
           after(500, () => step(turn, 1, "query.aircraft", { filter: { field: "alt_ft", op: above ? ">=" : "<", value: level } }, `${rows.length} of ${flights.filter((f) => !f.isIntruder).length} aircraft`, 12));
-          after(1100, () => answer(turn, `${rows.length} flight${rows.length === 1 ? " is" : "s are"} ${above ? "at or above" : "below"} ${fl(level)}.`, [
+          after(1100, () => answer(turn, `${rows.length} flight${rows.length === 1 ? " is" : "s are"} ${above ? "at or above" : "below"} ${Math.round(level / 1000)},000 feet.`, [
             { kind: "table", title: `${above ? "At or above" : "Below"} ${fl(level)}`, columns: ["callsign", "level", "hdg", "kt", "to"], rows, focus_col: 0 },
           ]));
           return;
         }
-        // Data viz: the three plot kinds the registry renders, so the dock can be seen without a backend.
-        if (/\b(separation|closest|over time|changed|trend|history)\b/.test(q)) {
-          const pts: [number, number][] = [];
-          for (let i = 0; i <= 12; i++) pts.push([i * 30, 14 - Math.sin(i / 2.2) * 5 - i * 0.18]);
-          after(500, () => step(turn, 1, "viz.timeline", { metric: "closest_nm", since_s: 360 }, "13 samples over 6 minutes", 8));
-          after(1000, () => answer(turn, "Closest approach has tightened from about 14 NM to 9 NM over the last six minutes, mostly as WJA456 and DAL88 converge on SIMCO. Still twice the minimum.", [
-            { kind: "chart", chart: "line", title: "Closest approach", x_label: "seconds", y_label: "NM", series: [{ label: "closest pair", points: pts }], caption: "Sampled every 30 s. 5 NM is the floor." },
+        if (/\b(separation|closest|pairs?|over time|trend|history)\b/.test(q)) {
+          after(500, () => step(turn, 1, "query.pairs", { max_nm: 60 }, "9 pairs within 60 NM", 11));
+          after(1000, () => answer(turn, "The closest pair is Air Canada 123 and Delta 88, about 10 miles apart and 500 feet below.", [
+            { kind: "table", title: "Closest pairs", columns: ["pair", "miles apart", "feet apart"], rows: [["ACA123 / DAL88", 9.8, 500], ["WJA456 / DAL88", 14, 900], ["ACA123 / WJA456", 17, 1200]], focus_col: 0 },
           ]));
           return;
         }
         if (/\b(levels?|altitudes?|how high|distribution)\b/.test(q)) {
-          const bins: [number, number][] = [[200, 1], [240, 2], [280, 1], [320, 3], [360, 2], [400, 1]];
-          after(500, () => step(turn, 1, "viz.levels", {}, "10 aircraft in 6 bands", 5));
-          after(1000, () => answer(turn, "Most of the traffic is stacked between FL320 and FL400, with three aircraft sharing FL320. That band is where the next conflict will come from.", [
-            { kind: "chart", chart: "hist", title: "Aircraft by flight level", x_label: "flight level", y_label: "aircraft", series: [{ label: "aircraft", points: bins }] },
-          ]));
-          return;
-        }
-        if (/\bpairs?\b/.test(q)) {
-          after(500, () => step(turn, 1, "viz.pairs", { max_nm: 60 }, "9 pairs within 60 NM", 11));
-          after(1000, () => answer(turn, "Nine pairs are within 60 NM. One sits close on both axes: ACA123 and DAL88, 9.8 NM apart and only 500 ft vertically, which is the pair I am watching.", [
-            { kind: "chart", chart: "scatter", title: "Nearby pairs", x_label: "horizontal NM", y_label: "vertical ft", series: [
-              { label: "clear", points: [[42, 4000], [38, 3000], [55, 2000], [31, 5000], [48, 1500], [26, 6000]] },
-              { label: "watching", tone: "bad", points: [[9.8, 500], [14, 900], [17, 1200]] },
-            ], caption: "Under 5 NM and 1,000 ft at once is a loss of separation." },
+          after(500, () => step(turn, 1, "query.aircraft", {}, "10 aircraft in 6 bands", 5));
+          after(1000, () => answer(turn, "Most of the traffic sits between 32,000 and 40,000 feet, with three flights sharing 32,000.", [
+            { kind: "table", title: "Aircraft by level", columns: ["level", "aircraft"], rows: [["FL200", 1], ["FL240", 2], ["FL280", 1], ["FL320", 3], ["FL360", 2], ["FL400", 1]] },
           ]));
           return;
         }
@@ -808,7 +750,7 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
           after(600, () => step(turn, 1, "explain.card", { callsign: cs }, `descend FL240 · reason "Crossing traffic DAL88 at FL350 in 4 minutes" · confidence 0.91`, 9));
           after(1500, () => step(turn, 2, "query.pairs", { max_nm: 10 }, `${cs}/DAL88 closest 4.1 NM before the card, 9.8 NM after`, 21));
           after(2400, () => step(turn, 3, "explain.replan", { last: true }, "cost 61.2 vs runner-up 63.9 (climb FL370); +1.2 NM, +0.3 min", 7));
-          after(3100, () => answer(turn, `${cs} descended to FL240 to stay clear of DAL88 at FL350; the runner-up, a climb to FL370, cost 2.7 more.`, [
+          after(3100, () => answer(turn, `It was going to come within 4 miles of Delta 88, so I sent it down to 24,000 feet for about a mile extra.`, [
             {
               kind: "aircraft", title: "Why this card", callsign: cs, live: { aircraft: cs },
               fields: [{ label: "reason", value: "Crossing traffic DAL88 at FL350 in 4 minutes" }, { label: "cause", value: "DAL88" }, { label: "cost · runner-up", value: "61.2 · 63.9" }, { label: "confidence", value: "0.91 (risk after 0.03, margin 1.0)" }, { label: "miles added", value: 1.2 }],
@@ -818,19 +760,7 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
           return;
         }
         if (/monte|carlo|simulat|\bsim\b|sweep|does it (still )?hold|how safe/.test(q)) {
-          const job_id = `job-${turnSeq}`;
-          const params = { scenario: "demo", runs: 8, density: /double/.test(q) ? 2 : 1, error_rate: 0.1 };
-          const jobAt = (progress: number, status: SimJob["status"], result?: SimJob["result"]) =>
-            send({ type: "sim_job", payload: { job_id, kind: "sim.montecarlo", status, progress, eta_s: status === "running" ? Math.round((1 - progress) * 7) : 0, params, ...(result ? { result } : {}) }, t: simT });
-          after(300, () => step(turn, 1, "sim.montecarlo", params, `job ${job_id} started in the background`, 4));
-          after(600, () => answer(turn, `Running ${params.runs} runs at ${params.density}x density in the background, about 7 s. The clock keeps ticking.`));
-          for (let i = 0; i <= 6; i++) after(700 + i * 1000, () => jobAt(Math.min(0.95, i / 6), "running"));
-          const rows: (string | number)[][] = [["fixed routes", 0.42, 3.8, 0], ["squack, no errors", 0.06, 6.1, -8.4], ["squack + readback errors", 0.09, 5.7, -8.1]];
-          after(7900, () => jobAt(1, "done", { columns: ["arm", "LoS / flight hour", "closest p5 NM", "miles vs fixed"], rows, caption: `${params.runs} runs · density ${params.density}x · error rate ${params.error_rate} · buffer 3 NM` }));
-          after(8100, () => answer(`${turn}-result`, `It holds: ${params.runs} runs, losses of separation per flight hour 0.42 on fixed routes against 0.06 with squack, 0.09 with readback errors injected.`, [
-            { kind: "chart", title: "Losses of separation per flight hour", unit: "/h", series: [{ label: "fixed routes", value: 0.42, tone: "bad" }, { label: "squack, no errors", value: 0.06, tone: "ok" }, { label: "squack + readback errors", value: 0.09 }], caption: `${params.runs} runs · density ${params.density}x · error rate ${params.error_rate} · buffer 3 NM · mock numbers` },
-            { kind: "table", title: "By arm", columns: ["arm", "LoS / h", "closest p5 NM", "miles vs fixed"], rows },
-          ], "event"));
+          after(600, () => answer(turn, "I cannot run a simulation; the Monte Carlo is the eval harness, not something I can start."));
           return;
         }
         if (/\b(focus|follow|show me|where is)\b/.test(q) && csIn) {
@@ -852,16 +782,10 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
           return;
         }
         if (/scoreboard|numbers so far|how are we doing/.test(q)) {
-          after(400, () => answer(turn, "The numbers measured this session.", [{ kind: "text", title: "Scoreboard", text: "Only what was measured on this laptop.", live: { scoreboard: true } }]));
+          after(400, () => answer(turn, "Here are the numbers measured this session.", [{ kind: "text", title: "Scoreboard", text: "Only what was measured on this laptop.", live: { scoreboard: true } }]));
           return;
         }
-        if (/agent mode|squack decides|normal mode/.test(q)) {
-          const mode = /normal/.test(q) ? "normal" : "agent";
-          after(300, () => send({ type: "ui_command", payload: { command: "mode", args: { mode } }, t: simT }));
-          after(500, () => answer(turn, mode === "agent" ? "squack decides what is on screen now." : "Back to the usual panels."));
-          return;
-        }
-        after(900, () => answer(turn, `Mock: no backend is connected, so "${msg.text}" changed nothing. Try "who is above 350", "why did you turn ACA123" or "run the monte carlo".`, [], uiMode === "agent" ? "message" : "message"));
+        after(900, () => answer(turn, `No backend is connected, so "${msg.text}" changed nothing; try "who is above 350", "why did you turn ACA123" or "run the monte carlo".`));
         return;
       }
       case "radio_text":

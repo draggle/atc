@@ -1,14 +1,14 @@
 """The squack agent's tools. PRD sections 3 and 4.
 
-Five namespaces: `world.*` changes the world through the World methods the screen already uses;
+Four namespaces: `world.*` changes the world through the World methods the screen already uses;
 `ui.*` does nothing here but emit a `ui_command` the screen applies; `query.*` reads live state
 into a table or list card; `explain.*` reads the planner's own reasons (card reason and cause,
-path changes, cost against the runner-up, confidence) and never invents one (hard rule 10);
-`sim.*` hands a Monte Carlo or a sweep to the background job runner (`tools/simjobs.py`).
+path changes, cost against the runner-up, confidence) and never invents one (hard rule 10).
 
-No tool opens a clearance: nothing here touches the frequency. The one tool that acts on traffic
-is `world.nudge`, which asks the planner for a new path with a bigger buffer and produces a
-card, the same as any replan (hard rule 8: the floor stays in the planner).
+No tool opens a clearance: nothing here touches the frequency, and no tool reaches into the
+planner or starts a simulation. Background evaluation lives in `tools/simjobs.py` and `eval/`,
+which the agent cannot call; `backend/tools/simjobs.py` is unchanged and still used by the
+eval harness.
 
 Every tool takes `(world, args)` and returns a JSON-able dict. `summary` is the one-line trace,
 `card` an optional card descriptor (agent/cards.py), `undo` the inverse action when there is one.
@@ -27,12 +27,8 @@ from schemas import AircraftState, InstructionCard, PlannedPath, event
 if TYPE_CHECKING:
     from world import World
 
-NUDGE_EXTRA_NM = 2.0  # world.nudge: the temporary extra buffer for the one flight being re-planned
-MC_RUNS_DEFAULT, MC_RUNS_MAX = 8, 20
-SWEEP_POINTS_MAX = 4
 TIMELINE_DEFAULT_S = 300.0
 PAIRS_DEFAULT_NM = 10.0
-UI_MODES = ("normal", "agent")
 LINE_VIEWS = ("today", "tower", "both", "changed")
 LIFECYCLE_ACTIONS = ("start", "pause", "reset")
 
@@ -43,7 +39,6 @@ class Tool:
     description: str
     parameters: dict[str, Any]
     fn: Callable[["World", dict[str, Any]], dict[str, Any]]
-    acts_on_traffic: bool = False
     required: list[str] = field(default_factory=list)
 
     @property
@@ -62,10 +57,10 @@ class Tool:
 REGISTRY: dict[str, Tool] = {}
 
 
-def tool(name: str, description: str, parameters: dict[str, Any] | None = None, *, required: list[str] | None = None,
-         acts_on_traffic: bool = False) -> Callable[[Callable[..., dict[str, Any]]], Callable[..., dict[str, Any]]]:
+def tool(name: str, description: str, parameters: dict[str, Any] | None = None, *,
+         required: list[str] | None = None) -> Callable[[Callable[..., dict[str, Any]]], Callable[..., dict[str, Any]]]:
     def deco(fn: Callable[..., dict[str, Any]]) -> Callable[..., dict[str, Any]]:
-        REGISTRY[name] = Tool(name, description, parameters or {}, fn, acts_on_traffic, required or [])
+        REGISTRY[name] = Tool(name, description, parameters or {}, fn, required or [])
         return fn
     return deco
 
@@ -88,9 +83,6 @@ def execute(world: "World", name: str, args: dict[str, Any] | None = None) -> di
     t = REGISTRY.get(name)
     if t is None:
         return {"error": f"unknown tool {name}", "summary": f"unknown tool {name}"}
-    if t.acts_on_traffic and name != "world.nudge":
-        return {"error": f"{name} acts on traffic and the agent may not call it",
-                "summary": f"refused {name}: acts on traffic"}
     try:
         out = t.fn(world, dict(args or {}))
     except Exception as exc:  # noqa: BLE001 - never silent, never fatal
@@ -318,33 +310,6 @@ def _spawn(world: "World", a: dict[str, Any]) -> dict[str, Any]:
     return {"callsign": cs, "summary": text}
 
 
-@tool("world.nudge", "Ask the planner to re-plan ONE flight with a temporarily bigger buffer (+2 NM), for example to separate the closest pair. Produces an instruction card; never a clearance.",
-      {"callsign": {"type": "string"}}, required=["callsign"], acts_on_traffic=True)
-def _nudge(world: "World", a: dict[str, Any]) -> dict[str, Any]:
-    if err := _no_scenario(world):
-        return err
-    cs = find_callsign(world, a.get("callsign"))
-    if cs is None:
-        return {"error": f"{a.get('callsign')} is not in the sector", "summary": f"{a.get('callsign')} is not in the sector"}
-    before = {c.id for c in world.cards.values()}
-    saved = world.buffer_nm
-    world.buffer_nm = saved + NUDGE_EXTRA_NM
-    try:
-        changed = world._replan(f"nudge {cs}", repin={cs})  # noqa: SLF001 - the planner's own repair path
-    finally:
-        world.buffer_nm = saved
-    new = [c for c in world.cards.values() if c.id not in before and c.callsign == cs and not c.minor]
-    card = new[-1] if new else None
-    out = _card_result(world, cs, card)
-    if card is None:
-        out["summary"] = f"nudged {cs} with +{NUDGE_EXTRA_NM:g} NM: the planner kept its path" + (
-            f" (replanned {', '.join(changed)})" if changed else "")
-    else:
-        out["summary"] = f"nudged {cs} with +{NUDGE_EXTRA_NM:g} NM: {card.phrase} ({card.reason})"
-    out["changed"] = changed
-    return out
-
-
 # --------------------------------------------------------------------------------------- ui.*
 
 
@@ -396,16 +361,6 @@ def _line_view(world: "World", a: dict[str, Any]) -> dict[str, Any]:
 def _panel(world: "World", a: dict[str, Any]) -> dict[str, Any]:
     p = str(a.get("panel") or "none")
     return {**_ui(world, "panel", {"panel": p}), "summary": f"panel: {p}"}
-
-
-@tool("ui.mode", "Switch the screen between normal (hand-laid-out panels) and agent (a stage squack composes).",
-      {"mode": {"type": "string", "enum": list(UI_MODES)}}, required=["mode"])
-def _mode(world: "World", a: dict[str, Any]) -> dict[str, Any]:
-    m = str(a.get("mode") or "normal")
-    if m not in UI_MODES:
-        return {"error": f"unknown mode {m}", "summary": f"unknown mode {m}"}
-    world.set_ui_mode(m)
-    return {**_ui(world, "mode", {"mode": m}), "summary": f"mode: {m}"}
 
 
 # ------------------------------------------------------------------------------------ query.*
@@ -576,8 +531,6 @@ def describe_event(ev: dict[str, Any]) -> str | None:
         return f"resolver {p.get('tool')}: {p.get('result_summary')}"
     if typ == "clearance_opened":
         return f"clearance to {p.get('callsign')}"
-    if typ == "sim_job":
-        return f"sim job {p.get('kind')} {p.get('status')}"
     return None
 
 
@@ -709,109 +662,6 @@ def _e_replan(world: "World", a: dict[str, Any]) -> dict[str, Any]:
             "summary": f"replan ({trigger}): {len(changed)} flight(s) changed" + (f": {', '.join(changed[:5])}" if changed else "")}
 
 
-# -------------------------------------------------------------------------------------- sim.*
-# A3's runner: tools/simjobs.py. A subprocess per job, one at a time, progress over a pipe. Its
-# payloads go out as `sim_job` events from the callback below; when a job finishes the same
-# callback also emits an `answer` (for: "event") carrying the chart or comparison card, so the bar
-# shows the result without the agent polling.
-
-try:
-    from tools.simjobs import cancel_job, job_status, start_job
-    SIM_JOBS = True
-except Exception:  # noqa: BLE001 - pragma: no cover
-    SIM_JOBS = False
-
-    def start_job(kind: str, params: dict[str, Any] | None, on_progress: Callable[[dict[str, Any]], None]) -> str:  # type: ignore[misc]
-        raise RuntimeError("sim jobs are not available: tools/simjobs.py is missing")
-
-    def job_status(job_id: str) -> dict[str, Any]:  # type: ignore[misc]
-        raise RuntimeError("sim jobs are not available: tools/simjobs.py is missing")
-
-    def cancel_job(job_id: str) -> None:  # type: ignore[misc]
-        raise RuntimeError("sim jobs are not available: tools/simjobs.py is missing")
-
-
-def _progress_emitter(world: "World") -> Callable[[dict[str, Any]], None]:
-    def on_progress(p: dict[str, Any]) -> None:
-        world.emit_from_thread(event("sim_job", p, t=world.sim.t))
-        if p.get("status") == "done" and p.get("result"):
-            card = CD.sim_result_card(str(p.get("kind")), p["result"], p.get("params") or {})
-            text = str(p["result"].get("caption") or f"{p.get('kind')} job {p.get('job_id')} finished")
-            world.emit_from_thread(event("answer", {"turn_id": f"job-{p.get('job_id')}", "text": text,
-                                                    "cards": [CD.dump(card)], "for": "event", "steps": []}, t=world.sim.t))
-        elif p.get("status") in ("failed", "cancelled"):
-            world.emit_from_thread(event("answer", {"turn_id": f"job-{p.get('job_id')}", "for": "event", "steps": [],
-                                                    "text": f"{p.get('kind')} job {p.get('status')}"
-                                                            + (f": {p.get('error')}" if p.get("error") else "."),
-                                                    "cards": []}, t=world.sim.t))
-    return on_progress
-
-
-def _sim_params(world: "World", a: dict[str, Any]) -> dict[str, Any]:
-    return {"scenario": str(a.get("scenario") or (world.scenario.name if world.scenario else "demo")),
-            "error_rate": float(a["error_rate"]) if a.get("error_rate") is not None else world.error_rate,
-            "buffer_nm": float(a["buffer_nm"]) if a.get("buffer_nm") is not None else world.buffer_nm}
-
-
-def _started(world: "World", job_id: str, what: str) -> dict[str, Any]:
-    st = job_status(job_id)
-    notice = st.get("notice")
-    eta = st.get("eta_s")
-    summary = (notice if notice and st.get("kind") != what.split()[0] else
-               f"running {what} in the background (job {job_id})" + (f", about {eta:.0f} s" if eta else ""))
-    return {**st, "summary": summary}
-
-
-@tool("sim.montecarlo", "Run the Monte Carlo safety evaluation in the background (three arms: fixed routes, squack off, squack on). Returns the job id; sim_job events carry progress, and the result lands as a card. Default 8 runs, at most 20.",
-      {"runs": {"type": "integer"}, "density": {"type": "number"}, "error_rate": {"type": "number"},
-       "buffer_nm": {"type": "number"}, "scenario": {"type": "string"}})
-def _s_montecarlo(world: "World", a: dict[str, Any]) -> dict[str, Any]:
-    params = {**_sim_params(world, a), "runs": int(min(MC_RUNS_MAX, max(1, int(a.get("runs") or MC_RUNS_DEFAULT)))),
-              "density": float(a.get("density") or (world.scenario.traffic_multiplier if world.scenario else 1.0))}
-    job_id = start_job("montecarlo", params, _progress_emitter(world))
-    return _started(world, job_id, f"montecarlo {params['runs']} runs at {params['density']:g}x")
-
-
-@tool("sim.sweep", "Sweep traffic density (and optionally the buffer) in the background: at most 4 densities. Returns the job id; the result lands as a chart card.",
-      {"densities": {"type": "array", "items": {"type": "number"}}, "buffers": {"type": "array", "items": {"type": "number"}},
-       "runs": {"type": "integer"}, "scenario": {"type": "string"}})
-def _s_sweep(world: "World", a: dict[str, Any]) -> dict[str, Any]:
-    dens = [float(x) for x in (a.get("densities") or [1.0, 1.5, 2.0])][:SWEEP_POINTS_MAX]
-    params = {**_sim_params(world, a), "densities": dens, "runs": int(a.get("runs") or 2)}
-    if a.get("buffers"):
-        params["buffers"] = [float(x) for x in a["buffers"]][:2]
-    else:
-        params.pop("buffer_nm", None)
-    job_id = start_job("sweep", params, _progress_emitter(world))
-    return _started(world, job_id, f"sweep of {len(dens)} densities x {params['runs']} runs")
-
-
-@tool("sim.status", "Progress or result of a background sim job. No id means the current one.", {"job_id": {"type": "string"}})
-def _s_status(world: "World", a: dict[str, Any]) -> dict[str, Any]:
-    jid = str(a.get("job_id") or "")
-    if not jid:
-        from tools.simjobs import current_job
-        cur = current_job()
-        if cur is None:
-            return {"status": "idle", "summary": "no sim job running"}
-        jid = cur["job_id"]
-    st = job_status(jid)
-    out: dict[str, Any] = {**st}
-    if st.get("status") == "done" and st.get("result"):
-        out["card"] = CD.sim_result_card(str(st.get("kind")), st["result"], st.get("params") or {})
-        out["summary"] = str(st["result"].get("caption") or "done")
-    else:
-        pct = f"{float(st.get('progress') or 0.0):.0%}"
-        out["summary"] = f"job {jid}: {st.get('status')} {pct}" + (f", {st.get('error')}" if st.get("error") else "")
-    return out
-
-
-@tool("sim.cancel", "Cancel a background sim job.", {"job_id": {"type": "string"}}, required=["job_id"])
-def _s_cancel(world: "World", a: dict[str, Any]) -> dict[str, Any]:
-    cancel_job(str(a.get("job_id") or ""))
-    return {"job_id": a.get("job_id"), "summary": f"cancelling job {a.get('job_id')}"}
-
-
 __all__ = ["REGISTRY", "Tool", "execute", "schemas", "names", "summarize", "resolve_name", "find_callsign",
            "pairs_now", "disruption_effect", "describe_event", "card_of", "state_of", "path_of", "baseline_of",
-           "REPLAN_P", "SHOW_P", "SIM_JOBS"]
+           "REPLAN_P", "SHOW_P"]
