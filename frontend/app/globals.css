@@ -114,3 +114,30 @@ html, body {
 }
 
 input[type="range"] { accent-color: var(--accent); }
+
+/* Boot screen: "squack." rises in, a radar ping behind it, then it keeps pulsing until loaded. */
+.boot { --ease: cubic-bezier(0.22, 1, 0.36, 1); position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; background: #0a0a0b; opacity: 1; transition: opacity 0.5s ease; }
+.boot-leave { opacity: 0; pointer-events: none; }
+.boot-stage { position: relative; display: grid; place-items: center; }
+.boot-radar { position: absolute; left: 50%; top: 50%; width: 1px; height: 1px; pointer-events: none; }
+.boot-radar i {
+  --d: min(90vmin, 720px);
+  position: absolute; left: 0; top: 0; width: var(--d); height: var(--d);
+  margin: calc(var(--d) / -2) 0 0 calc(var(--d) / -2);
+  border-radius: 50%; border: 1px solid #f2f2f2; opacity: 0; transform: scale(0.2);
+  animation: boot-ping 2.4s var(--ease) infinite;
+}
+.boot-radar i:nth-child(2) { animation-delay: 0.35s; }
+.boot-radar i:nth-child(3) { animation-delay: 0.7s; }
+@keyframes boot-ping { 0% { opacity: 0.5; transform: scale(0.2); } 100% { opacity: 0; transform: scale(1); } }
+.boot-word {
+  position: relative; display: flex; white-space: nowrap; color: #f2f2f2;
+  font-family: var(--font-jakarta), ui-sans-serif, system-ui, sans-serif;
+  font-weight: 600; font-size: clamp(40px, 8vw, 96px); letter-spacing: -0.035em; line-height: 1.1;
+}
+.boot-word span { display: inline-block; opacity: 0; transform: translateY(0.25em); animation: boot-rise 0.7s var(--ease) forwards; }
+.boot-word .boot-dot { transform: none; animation: boot-appear 0.5s var(--ease) 0.62s forwards, boot-blink 2.4s ease-in-out 1.4s infinite; }
+@keyframes boot-rise { to { opacity: 1; transform: none; } }
+@keyframes boot-appear { to { opacity: 1; } }
+@keyframes boot-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .boot-radar i, .boot-word span { animation-duration: 0.01s !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; opacity: 1; transform: none; } }

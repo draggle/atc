@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>squack.</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600&display=swap">
+<style>
+  :root{--ink:#0a0a0b;--w:#f2f2f2;--ease:cubic-bezier(.22,1,.36,1)}
+  html,body{height:100%;margin:0;background:var(--ink);color:var(--w);font-family:"Plus Jakarta Sans",system-ui,sans-serif;overflow:hidden}
+  body{display:grid;place-items:center}
+  .stage{position:relative;display:grid;place-items:center}
+
+  /* radar out, behind the word: thin rings expanding from the centre */
+  .radar{position:absolute;width:1px;height:1px;left:50%;top:50%;pointer-events:none}
+  .radar i{position:absolute;left:0;top:0;width:var(--d);height:var(--d);margin:calc(var(--d) / -2) 0 0 calc(var(--d) / -2);border-radius:50%;border:1px solid var(--w);opacity:0;transform:scale(.2)}
+  .go .radar i{animation:ping 2.4s var(--ease) forwards}
+  .go .radar i:nth-child(2){animation-delay:.35s}
+  .go .radar i:nth-child(3){animation-delay:.7s}
+  @keyframes ping{0%{opacity:.5;transform:scale(.2)}100%{opacity:0;transform:scale(1)}}
+  /* a quiet repeating ping once idle */
+  .idle .radar i:nth-child(1){animation:ping 4s var(--ease) 1.2s infinite}
+  .idle .radar i:nth-child(2),.idle .radar i:nth-child(3){animation:none;opacity:0}
+
+  .word{position:relative;font-weight:600;font-size:clamp(40px,8vw,96px);letter-spacing:-.035em;line-height:1.1;white-space:nowrap;display:flex}
+  .word span{display:inline-block;opacity:0;transform:translateY(.25em)}
+  .word span.dot{transform:none}
+  .go .word span{animation:rise .7s var(--ease) forwards}
+  .go .word span:nth-child(1){animation-delay:.10s}.go .word span:nth-child(2){animation-delay:.16s}.go .word span:nth-child(3){animation-delay:.22s}
+  .go .word span:nth-child(4){animation-delay:.28s}.go .word span:nth-child(5){animation-delay:.34s}.go .word span:nth-child(6){animation-delay:.40s}
+  .go .word span.dot{animation:appear .5s var(--ease) .62s forwards}
+  @keyframes appear{to{opacity:1}}
+  @keyframes rise{to{opacity:1;transform:none}}
+  /* the period is the live indicator once idle */
+  .idle .word span.dot{animation:blink 2.4s ease-in-out infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+
+  .hint{position:fixed;bottom:18px;left:0;right:0;text-align:center;font-size:11px;color:#444;letter-spacing:.06em}
+  @media (prefers-reduced-motion:reduce){*{animation-duration:.01s!important;animation-delay:0s!important}}
+</style>
+</head>
+<body>
+<div class="stage" id="stage">
+  <div class="radar" aria-hidden="true"><i style="--d:min(90vmin,720px)"></i><i style="--d:min(90vmin,720px)"></i><i style="--d:min(90vmin,720px)"></i></div>
+  <div class="word" id="word" aria-label="squack."></div>
+</div>
+<div class="hint">press r to replay</div>
+<script>
+(function(){
+  const stage=document.getElementById('stage'), word=document.getElementById('word');
+  word.innerHTML=''; for(const ch of 'squack'){const s=document.createElement('span'); s.textContent=ch; word.appendChild(s);} 
+  const dot=document.createElement('span'); dot.className='dot'; dot.textContent='.'; word.appendChild(dot);
+  let t=null;
+  function run(){ clearTimeout(t); stage.className='stage'; void stage.offsetWidth; stage.classList.add('go'); t=setTimeout(()=>stage.classList.add('idle'),2600); }
+  addEventListener('keydown',e=>{ if(e.key==='r') run(); });
+  (document.fonts&&document.fonts.ready?document.fonts.ready:Promise.resolve()).then(run);
+})();
+</script>
+</body>
+</html>
