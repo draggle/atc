@@ -275,13 +275,13 @@ The planner's conflict test is exact and blind: it asks whether the plan, flown 
 
 **What the judge sees.** A translucent red wedge between two aircraft before anything is wrong, labelled "LoS 42% · 71 s", its width the p5 to p95 lateral spread of the rollouts at the closest approach, brightening as the probability rises and gone when the replan clears it. A confidence on every card and strip. Three new scoreboard tiles: conflicts predicted, resolved before they happened, and futures simulated per second, the last one measured from `n_rollouts × aircraft / elapsed` that tick. The slide says "a few hundred futures a tick", never "thousands" unless the counter does.
 
-Measured: futures per second at 12 / 80 / 150 aircraft: TBD (integration pass fills this in).
+Measured Sunday 00:40 on the demo laptop: 2.3 ms and about 545,000 futures per second with 5 airborne (demo), 61 ms and about 273,000 with 65 airborne (Europe replay), n=256. Live scoreboard during a run: 200,000 to 450,000. In a head-on test with Voice off the periodic replan vectored the pair apart before risk reached 0.30, which is the planner working; the risk trigger earns its keep when a hazard develops faster than the 15 s check, and that case has not been watched live yet..
 
 - [ ] Drop a storm on `demo`: the cone appears before the replan fires, and clears after it
 - [ ] Force a wrong heading toward another aircraft: the risk replan fires earlier than the periodic check would have
-- [ ] Confidence shown on every card and strip, in [0.05, 0.99]
-- [ ] Futures per second on the scoreboard is the measured number for this laptop, not a constant
-- [ ] 396 tests plus the new `test_risk.py` and `test_world_risk.py` pass
+- [x] Confidence shown on every card and strip, in [0.05, 0.99] (seen live: 0.99 on directs, 0.5 on a tied candidate)
+- [x] Futures per second on the scoreboard is the measured number for this laptop, not a constant
+- [x] 437 tests pass, including `test_risk.py` and `test_world_risk.py`
 
 ### Phase 7. Scale and robustness. About 2 hours
 - [ ] Planner: initial plan for 150 flights in under 5 seconds, replans inside their budget. If not, cap the scenario and say so
