@@ -1,7 +1,7 @@
 "use client";
 
 import { alertFor, riskFor, useTowerDispatch, useTowerState, type ActiveAlert } from "@/lib/store";
-import { ItemList, alertLook } from "./AlertCard";
+import { AlertEvidence, alertLook } from "./AlertCard";
 import { Confidence } from "./InstructionCards";
 import { useClient } from "./TowerApp";
 
@@ -44,15 +44,9 @@ function Issue({ alert }: { alert: ActiveAlert }) {
     <div className={`rounded-md border border-line border-l-2 ${frame} bg-panel-2 px-3 py-2`}>
       <div className={`text-sm font-semibold ${titleCls}`}>{title}</div>
       {radar && <div className="text-[11px] text-muted">Read back right, flying wrong</div>}
-      <div className="mt-2 grid grid-cols-2 gap-3">
-        <div className="min-w-0">
-          <div className="text-[11px] text-muted mb-0.5">Expected</div>
-          <ItemList items={alert.expected} tone="expected" size="sm" />
-        </div>
-        <div className="min-w-0">
-          <div className="text-[11px] text-muted mb-0.5">Heard</div>
-          <ItemList items={alert.heard} tone="heard" size="sm" />
-        </div>
+      {/* The same shaped evidence the alert shows: an omission never reads as a wrong value. */}
+      <div className="mt-2">
+        <AlertEvidence a={alert} dense />
       </div>
       {alert.reason && <p className="mt-1.5 text-[11px] leading-snug text-muted">{alert.reason}</p>}
     </div>
