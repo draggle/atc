@@ -8,6 +8,7 @@ import { useClient } from "./TowerApp";
  * next instruction it goes back to chance by itself. It sits in the right rail under the cards,
  * because it is pressed in the same breath as "say this card"; it used to be one more row at the
  * bottom of the settings sheet, which is two clicks and a scroll away in the middle of a demo.
+ * Always clickable, in either mode: it is set now and used by the next spoken instruction.
  */
 const READBACKS = [
   ["random", "By chance", "Use the pilot error rate from Settings"],
@@ -21,15 +22,12 @@ export default function NextReadback() {
   const { sim } = useTowerState();
   const { send } = useClient();
   const next = sim?.next_readback ?? "random";
-  const voiceOn = sim ? (sim.voice ?? !sim.auto_speak) : true;
   const armed = next !== "random";
   return (
     <section className="panel px-3 py-2.5 shrink-0 select-none" aria-label="Next readback">
       <div className="flex items-baseline justify-between gap-2">
         <h2 className="text-[13px] font-semibold text-fg">Next readback</h2>
-        <span className={`text-[11px] ${armed ? "text-warn" : "text-muted"}`}>
-          {!voiceOn ? "nothing is read back in Autonomous" : armed ? "set for the next instruction only" : "as the error rate decides"}
-        </span>
+        {armed && <span className="text-[11px] text-muted">next instruction only</span>}
       </div>
       <div className="mt-2 flex flex-wrap gap-1.5" role="group" aria-label="What the next pilot reply will be">
         {READBACKS.map(([mode, label, hint]) => {
@@ -39,11 +37,10 @@ export default function NextReadback() {
             <button
               key={mode}
               type="button"
-              disabled={!voiceOn}
               onClick={() => send({ type: "set_next_readback", mode })}
               aria-pressed={on}
               title={hint}
-              className={`pill cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg/70 ${
+              className={`pill cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg/70 ${
                 on ? (wrong ? "!bg-bad !text-bg !border-bad font-semibold" : "pill-on") : ""
               }`}
             >
