@@ -12,8 +12,7 @@ import InstructionCards from "./InstructionCards";
 import AlertCard from "./AlertCard";
 import Transcript from "./Transcript";
 import ScoreboardPanel from "./ScoreboardPanel";
-import SlidersPanel from "./SlidersPanel";
-import PushToTalk from "./PushToTalk";
+import SettingsSheet from "./SettingsSheet";
 import SetupPanel from "./SetupPanel";
 import Notices from "./Notices";
 import BootScreen from "./BootScreen";
@@ -82,16 +81,16 @@ function Screen() {
       {/* The map is the screen. Everything else floats over it. */}
       <MapView />
 
-      <div className="absolute top-2 left-2 right-2 z-20">
+      {/* No panel behind the bar: only a soft fade so the words read over bright basemap. */}
+      <div className="pointer-events-none absolute top-0 left-0 right-0 h-16 z-20 bg-gradient-to-b from-bg/70 to-transparent" />
+      <div className="absolute top-0 left-0 right-0 z-20">
         <TopBar />
       </div>
 
-      <div className="absolute top-[60px] right-2 bottom-2 z-10 w-[380px] flex flex-col gap-2 overflow-y-auto scroll-thin pr-0.5">
+      <div className="absolute top-[52px] right-2 bottom-2 z-10 w-[380px] flex flex-col gap-2 overflow-y-auto scroll-thin pr-0.5">
         {(alerts.length > 0 || resolving.length > 0) && <AlertCard />}
         <InstructionCards />
-        <PushToTalk />
         <ScoreboardPanel />
-        <SlidersPanel />
       </div>
 
       <div className="absolute left-2 bottom-2 z-10 h-[180px] w-[min(calc(50vw-372px),420px)]">
@@ -102,11 +101,12 @@ function Screen() {
         <div className="pointer-events-none absolute top-[60px] left-1/2 -translate-x-1/2 z-10 hint">
           {lifecycle === "ready" && <>World loaded. Look over the plan, then press <span className="text-fg font-medium">Start</span>.</>}
           {lifecycle === "paused" && <>Paused. Press <span className="text-fg font-medium">Resume</span> to continue.</>}
-          {lifecycle === "ended" && <>Every flight has left the sector. Press <span className="text-fg font-medium">Reset</span> to run it again.</>}
+          {lifecycle === "ended" && <>Every flight has left the sector. <span className="text-fg font-medium">Reset</span> from Settings to run it again.</>}
         </div>
       )}
 
       <CommandBar />
+      <SettingsSheet />
       <SetupPanel />
       <Notices />
       <BootScreen />

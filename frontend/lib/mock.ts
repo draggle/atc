@@ -13,6 +13,7 @@ import type {
   InstructionCard,
   Item,
   Lifecycle,
+  NextReadback,
   LonLatAlt,
   OpenClearance,
   PathSample,
@@ -106,6 +107,9 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
   // Same lifecycle as the backend: the mock loads "ready" and nothing moves until start.
   let lifecycle: Lifecycle = "ready";
   let speed = 1;
+  // Echoed back so the settings sheet reflects what was picked; the mock's pilots do not use them.
+  let speakReplies = true;
+  let nextReadback: NextReadback = "random";
   let scriptStarted = false;
   let towerEnabled = true;
   let autoSpeak = false;
@@ -195,6 +199,8 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
     watching: Array.from(watching),
     lifecycle,
     speed,
+    speak_replies: speakReplies,
+    next_readback: nextReadback,
     world_id: MOCK_WORLD_ID,
     scenarios: MOCK_SCENARIOS,
     live_regions: MOCK_LIVE_REGIONS,
@@ -657,8 +663,15 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
         send({ type: "state", payload: stateEvent(), t: simT });
         return;
       case "set_auto_voice":
-      case "set_next_readback":
       case "confirm_heard":
+        return;
+      case "set_next_readback":
+        nextReadback = msg.mode;
+        send({ type: "state", payload: stateEvent(), t: simT });
+        return;
+      case "set_speak_replies":
+        speakReplies = msg.enabled;
+        send({ type: "state", payload: stateEvent(), t: simT });
         return;
       case "set_voice":
         autoSpeak = !msg.enabled;

@@ -134,6 +134,10 @@ input[type="range"] { accent-color: var(--accent); }
 /* .btn-primary: the one filled button on a screen. White ground, dark ink. Combine with .btn. */
 .btn-primary { background: var(--fg); color: var(--bg); border-color: var(--fg); font-weight: 600; }
 .btn-primary:hover:not(:disabled) { background: #ffffff; color: var(--bg); border-color: #ffffff; }
+/* .btn-round: a 32px circle for one icon (play, pause, the gear). Combine with .btn. */
+.btn-round { width: 32px; height: 32px; padding: 0; border-radius: 50%; }
+.btn > svg { width: 12px; height: 12px; flex: none; }
+.btn-round svg { width: 14px; height: 14px; }
 /* .seg: segmented control; children are buttons, the chosen one carries .seg-on or aria-pressed="true". */
 .seg { display: inline-flex; align-items: stretch; height: 28px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: transparent; }
 .seg > button { padding: 0 10px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 500; line-height: 1; white-space: nowrap; transition: color 0.15s, background-color 0.15s; }
@@ -165,6 +169,12 @@ input[type="range"] { accent-color: var(--accent); }
 .scrim { background: rgba(10, 10, 11, 0.8); }
 /* .hint: one small muted line that floats over the map, for example "World loaded, press Start". */
 .hint { display: inline-flex; align-items: center; gap: 4px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--glass); color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+/* Settings sheet: slides in from the right over a scrim. */
+.sheet { transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1); }
+.sheet-closed { transform: translateX(100%); }
+.scrim-fade { transition: opacity 0.2s ease; }
+@media (prefers-reduced-motion: reduce) { .sheet, .scrim-fade { transition: none; } }
 
 /* Command bar: the thin caret at the end of the typewriter placeholder, blinking only while a line is being typed. */
 @keyframes cb-caret { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
