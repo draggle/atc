@@ -80,6 +80,7 @@ Environment variables, all optional, in `.env` (copy `.env.example`):
 | Variable | Effect |
 |---|---|
 | `BASETEN_API_KEY`, `EXTRACTOR_MODEL`, `RESOLVER_MODEL` | Real LLM for the resolver, extractor fallback, and world builder. Without it, deterministic mocks |
+| `OPENAI_API_KEY`, `SQUACK_MODEL` | The conversational agent (squack, the command bar) only, default `gpt-4o-mini`. Without them it uses Baseten, and without a Baseten key the keyword router |
 | `ASR_MODEL_URL`, `ASR_STOCK_MODEL_URL` | Baseten Whisper endpoints. Without them, local faster-whisper |
 | `ASR_LOCAL_MODEL` | faster-whisper size or a CTranslate2 directory, default `base.en`. Also what the app falls back to, per transmission, when the Baseten model cannot be reached. Deployment: `training/BASETEN.md` |
 | `CHECKER_MODEL_URL` | Cross-encoder endpoint, see `training/serve_checker.py`. Without it, rules only |

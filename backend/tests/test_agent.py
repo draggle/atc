@@ -348,3 +348,113 @@ def test_only_real_descriptors_reach_the_screen():
     assert _cards_of({"cards": [brief]}) == []
     assert _cards_of({"card": {"kind": "not-a-kind"}}) == []
     assert _cards_of({"card": table}) == [table]
+
+
+# ------------------------------------------------------- which provider the agent talks to
+
+class StubClient:
+    """Stands in for the OpenAI SDK client. Records the call; never touches the network."""
+
+    def __init__(self):
+        self.seen = []
+        outer = self
+
+        class _Completions:
+            def create(self, **kwargs):
+                outer.seen.append(kwargs)
+                msg = type("M", (), {"content": "Eleven flights, all on plan.", "tool_calls": []})()
+                return type("R", (), {"choices": [type("C", (), {"message": msg})()]})()
+
+        self.chat = type("Chat", (), {"completions": _Completions()})()
+
+
+@pytest.fixture
+def no_keys(monkeypatch):
+    for k in ("OPENAI_API_KEY", "BASETEN_API_KEY", "SQUACK_MODEL"):
+        monkeypatch.delenv(k, raising=False)
+
+
+def test_agent_llm_prefers_openai_when_its_key_is_set(no_keys, monkeypatch):
+    from tower.llm import DEFAULT_SQUACK_MODEL, LLM, get_agent_llm
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+    monkeypatch.setenv("BASETEN_API_KEY", "baseten-not-real")
+    llm = get_agent_llm()
+    assert isinstance(llm, LLM) and not llm.is_mock
+    assert str(llm.client.base_url).rstrip("/") == "https://api.openai.com/v1"
+    assert llm.resolver_model == DEFAULT_SQUACK_MODEL
+
+
+def test_squack_model_env_picks_the_openai_model(no_keys, monkeypatch):
+    from tower.llm import get_agent_llm
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+    monkeypatch.setenv("SQUACK_MODEL", "gpt-4o")
+    assert get_agent_llm().resolver_model == "gpt-4o"
+
+
+def test_agent_llm_falls_back_to_baseten_without_an_openai_key(no_keys, monkeypatch):
+    from tower.llm import LLM, get_agent_llm
+
+    monkeypatch.setenv("BASETEN_API_KEY", "baseten-not-real")
+    llm = get_agent_llm()
+    assert isinstance(llm, LLM) and "baseten" in str(llm.client.base_url)
+
+
+def test_agent_llm_is_the_mock_without_any_key(no_keys):
+    from tower.llm import MockLLM, get_agent_llm
+
+    assert isinstance(get_agent_llm(), MockLLM)
+
+
+def test_the_agent_defaults_to_get_agent_llm(no_keys, world):
+    """No keys: the agent built the way World builds it answers through the keyword router."""
+    w, ev = world
+    agent = SquackAgent(w)
+    assert agent.has_model is False
+    ans = agent.handle_message("double the traffic")
+    assert [s.tool for s in ans.steps] == ["world.multiply_traffic"]
+
+
+def test_a_turn_on_openai_sends_the_agent_model_and_touches_no_network(no_keys, monkeypatch, world):
+    from tower.llm import LLM
+
+    w, ev = world
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+    stub = StubClient()
+    agent = SquackAgent(w, LLM.openai(client=stub))
+    ans = agent.handle_message("what's going on out there?")
+    assert stub.seen and all(c["model"] == "gpt-4o-mini" for c in stub.seen)
+    assert stub.seen[0]["tool_choice"] == "auto"
+    assert ans.text == "Eleven flights, all on plan."
+
+
+def test_every_tool_schema_is_one_openai_would_accept():
+    """OpenAI validates `parameters` as JSON Schema: an object with properties, and `required`
+    naming only declared ones."""
+    for s in R.schemas():
+        fn = s["function"]
+        assert s["type"] == "function" and fn["name"].replace("_", "").isalnum()
+        p = fn["parameters"]
+        assert p["type"] == "object" and isinstance(p["properties"], dict)
+        assert all(r in p["properties"] for r in p.get("required", []))
+        stack = list(p["properties"].values())
+        while stack:
+            node = stack.pop()
+            assert isinstance(node, dict) and (
+                "type" in node or "enum" in node or "anyOf" in node), node
+            if node.get("type") == "object":
+                assert isinstance(node.get("properties"), dict), node
+                stack += list(node["properties"].values())
+                assert all(r in node["properties"] for r in node.get("required", []))
+            if node.get("type") == "array":
+                assert isinstance(node.get("items"), dict), node
+                stack.append(node["items"])
+
+
+def test_aircraft_filters_take_symbol_operators_too(world):
+    """A model that writes ">" instead of "gt" still gets rows, not an empty table."""
+    w, _ = world
+    fl = R.execute(w, "query.aircraft", {"filters": [{"field": "fl", "op": "gt", "value": 100}]})
+    sym = R.execute(w, "query.aircraft", {"filters": [{"field": "fl", "op": ">", "value": 100}]})
+    assert fl["count"] == sym["count"] > 0

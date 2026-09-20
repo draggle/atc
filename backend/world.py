@@ -1922,11 +1922,12 @@ class World:
     # --- squack agent (backend/agent/, docs/trd/08-squack-agent-prd.md) ---------------------------
 
     def agent(self) -> Any:
-        """The SquackAgent, built once. Its LLM is Baseten with a key, the keyword router without."""
+        """The SquackAgent, built once. Its LLM is OpenAI with a key, then Baseten, then the
+        keyword router (`tower.llm.get_agent_llm`)."""
         if self._agent is None:
             from agent.loop import SquackAgent
-            from tower.llm import get_llm
-            self._agent = SquackAgent(self, get_llm(), emit=self.emit_from_thread)
+            from tower.llm import get_agent_llm
+            self._agent = SquackAgent(self, get_agent_llm(), emit=self.emit_from_thread)
         return self._agent
 
     def _remember_loop(self) -> None:

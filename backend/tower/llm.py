@@ -1,11 +1,18 @@
 """Baseten LLM access through the OpenAI SDK, plus a deterministic MockLLM for keyless runs.
 
 Environment: BASETEN_API_KEY, EXTRACTOR_MODEL, RESOLVER_MODEL. `get_llm()` returns the real
-client when a key is set, otherwise `LLM.mock()`.
+client when a key is set, otherwise `LLM.mock()`. Everything on the readback path -- the
+resolver, the interpreter, the extractor fallback, the tuned Whisper and the checker -- goes
+through Baseten (hard rule 5).
+
+The one exception is the conversational agent behind the command bar (`agent/`), which the team
+decided to run on OpenAI proper: `get_agent_llm()` builds the same wrapper against
+OPENAI_API_KEY and SQUACK_MODEL, and falls back to Baseten and then the mock.
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from collections.abc import Callable
@@ -17,6 +24,9 @@ from tower import parse as P
 from tower.normalize import phrase_from_items
 
 BASETEN_BASE_URL = "https://inference.baseten.co/v1"
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+# The squack agent only. Small and fast: the turn has an 8 s budget and up to five calls in it.
+DEFAULT_SQUACK_MODEL = "gpt-4o-mini"
 DEFAULT_EXTRACTOR_MODEL = "meta-llama/Llama-3.3-70B-Instruct"
 DEFAULT_RESOLVER_MODEL = "meta-llama/Llama-3.3-70B-Instruct"
 MAX_RETRIES = 3
@@ -89,6 +99,13 @@ class LLM:
     @staticmethod
     def mock() -> MockLLM:
         return MockLLM()
+
+    @classmethod
+    def openai(cls, api_key: str | None = None, model: str | None = None, **kw: Any) -> "LLM":
+        """The same wrapper against OpenAI proper. Used by the conversational agent only."""
+        model = model or os.environ.get("SQUACK_MODEL") or DEFAULT_SQUACK_MODEL
+        return cls(api_key=api_key or os.environ.get("OPENAI_API_KEY"), base_url=OPENAI_BASE_URL,
+                   extractor_model=model, resolver_model=model, **kw)
 
     def _with_retry(self, fn: Callable[[], Any]) -> Any:
         from openai import APIConnectionError, APITimeoutError, RateLimitError
@@ -316,4 +333,35 @@ def get_llm() -> LLM | MockLLM:
     """Real Baseten client when BASETEN_API_KEY is set, else the deterministic mock."""
     if os.environ.get("BASETEN_API_KEY"):
         return LLM()
+    return LLM.mock()
+
+
+_agent_provider_logged: str | None = None
+
+
+def _log_agent_provider(provider: str, model: str) -> None:
+    """Once per process, and never the key."""
+    global _agent_provider_logged
+    line = f"{provider}:{model}"
+    if _agent_provider_logged != line:
+        _agent_provider_logged = line
+        logging.getLogger("tower.llm").info("squack agent language model: %s (%s)", provider, model)
+
+
+def get_agent_llm() -> LLM | MockLLM:
+    """The conversational agent's client: OpenAI if keyed, else Baseten, else the mock.
+
+    OPENAI_API_KEY wins, so the command bar runs on OpenAI (SQUACK_MODEL, default gpt-4o-mini).
+    Without it nothing regresses: BASETEN_API_KEY gives the same wrapper on the Baseten
+    endpoint, and with neither key the agent falls back to its keyword router.
+    """
+    if os.environ.get("OPENAI_API_KEY"):
+        llm = LLM.openai()
+        _log_agent_provider("openai", llm.resolver_model)
+        return llm
+    if os.environ.get("BASETEN_API_KEY"):
+        llm = LLM()
+        _log_agent_provider("baseten", llm.resolver_model)
+        return llm
+    _log_agent_provider("mock", "keyword router")
     return LLM.mock()

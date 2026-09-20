@@ -1,14 +1,17 @@
 """The squack agent: one sentence in, tool calls over the world and the screen, one sentence and
 cards out. PRD sections 3 and 4.
 
-`SquackAgent(world, llm)` generalises `world_agent._llm_agent`: the same `LLM.chat` with tools on
-the resolver model (Baseten, hard rule 5), the registry in `agent/registry.py` instead of six
-hand-wired tools, and caps like the resolver's: 4 tool calls, 8 s, a short output. Every tool
+`SquackAgent(world, llm)` generalises `world_agent._llm_agent`: the same `LLM.chat` with tools, the
+registry in `agent/registry.py` instead of six hand-wired tools, and caps like the resolver's: 4 tool calls, 8 s, a short output. Every tool
 call goes out as an `agent_step` and every turn ends in exactly one `answer` (never silent). The
 agent never opens a clearance, never touches the planner and never starts a simulation: it talks,
 it reads, and it changes the world and the screen the way the controls on screen do.
 
-Without a Baseten key the same tools are reached by a keyword router, so the demo lines that
+The client comes from `tower.llm.get_agent_llm`: OpenAI (`OPENAI_API_KEY`, `SQUACK_MODEL`) for
+this agent alone, falling back to Baseten. The readback path -- resolver, interpreter, extractor,
+the tuned Whisper and the checker -- stays on Baseten.
+
+Without either key the same tools are reached by a keyword router, so the demo lines that
 matter (focus, follow, why, scoreboard, closest pair, double traffic, load, storm, speed, voice)
 work offline, and anything else says "I need a model for that".
 """
@@ -26,7 +29,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from agent import cards as CD
 from agent import registry as R
 from schemas import event
-from tower.llm import MockLLM
+from tower.llm import MockLLM, get_agent_llm
 
 if TYPE_CHECKING:
     from world import World
@@ -128,11 +131,11 @@ class SquackAgent:
     squack speaks only when spoken to. There is no event-driven entry point: nothing in the world
     makes it talk."""
 
-    def __init__(self, world: "World", llm: Any, emit: Callable[[dict[str, Any]], None] | None = None,
+    def __init__(self, world: "World", llm: Any = None, emit: Callable[[dict[str, Any]], None] | None = None,
                  clock: Callable[[], float] = time.monotonic, max_tool_calls: int = MAX_TOOL_CALLS,
                  budget_s: float = BUDGET_S) -> None:
         self.world = world
-        self.llm = llm
+        self.llm = llm if llm is not None else get_agent_llm()
         self._emit = emit or world.emit
         self.clock = clock
         self.max_tool_calls = max_tool_calls
@@ -181,7 +184,7 @@ class SquackAgent:
             try:
                 resp = self.llm.chat(messages, tools=R.schemas(), tool_choice="auto", max_tokens=MAX_TOKENS)
             except Exception:  # noqa: BLE001 - never silent, never a traceback on the screen
-                # Baseten unreachable or refusing: do the turn with the keyword router instead, so
+                # The provider is unreachable or refusing: do the turn with the keyword router, so
                 # "double the traffic" still doubles the traffic, and say so in one honest line.
                 log.warning("agent model call failed; falling back to the keyword router", exc_info=True)
                 return self._degraded(turn, user, ui_state, ans)
