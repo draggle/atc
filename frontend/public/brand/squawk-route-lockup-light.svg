@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 160" width="560" height="160" role="img" aria-label="Squawk">
+<rect width="560" height="160" fill="#f3f5f8"/>
+<g transform="translate(24 20) scale(1.2)">
+<path d="M 76 18 H 28 V 50 H 72 V 82 H 24" fill="none" stroke="#0c8fc4" stroke-width="8" stroke-linejoin="round" stroke-linecap="round"/>
+<g fill="#c47a00">
+  <path d="M 28 10 L 36 24 H 20 Z"/>
+  <path d="M 28 42 L 36 56 H 20 Z"/>
+  <path d="M 72 42 L 80 56 H 64 Z"/>
+  <path d="M 72 74 L 80 88 H 64 Z"/>
+</g>
+<path d="M 90 8 L 76 18 L 90 28 L 84 18 Z" fill="#c47a00"/></g>
+<text x="176" y="92" font-family="B612, system-ui, sans-serif" font-weight="700" font-size="64" letter-spacing="6" fill="#0a0e14">SQUAWK</text>
+<text x="180" y="126" font-family="B612 Mono, ui-monospace, monospace" font-size="16" letter-spacing="4" fill="#74808e">HEARD · READ BACK · FLOWN</text>
+</svg>

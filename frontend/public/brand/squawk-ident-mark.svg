@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="256" height="256" role="img" aria-label="Squawk mark">
+<g fill="none" stroke="#46c8ff" stroke-linecap="round">
+  <path d="M 42.6 32.0 A 22 22 0 0 1 42.6 68.0" stroke-width="7"/>
+  <path d="M 49.5 22.1 A 34 34 0 0 1 49.5 77.9" stroke-width="5" opacity="0.7"/>
+  <path d="M 56.4 12.3 A 46 46 0 0 1 56.4 87.7" stroke-width="3" opacity="0.4"/>
+</g>
+<rect x="16" y="43" width="14" height="14" fill="#ffb02e"/>
+<path d="M 30 50 H 46" stroke="#ffb02e" stroke-width="4" stroke-linecap="round"/></svg>
