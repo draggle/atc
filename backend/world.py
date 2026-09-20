@@ -72,10 +72,11 @@ AUTO_VOICE_QUEUE_MAX = 0  # cards allowed to wait for the voice channel. None: r
 #                           so one aircraft is talked round and every other reroute goes out at once
 # How far ahead a new path may start. The aircraft cannot change what it does before the instruction
 # reaches it: a minute for a human to say it and hear it back, seconds for Tower in Auto.
-FROZEN_MANUAL_S = 60.0
+FROZEN_MANUAL_S = 25.0  # voice on: long enough to say a card and hear it back, no longer
 FROZEN_AUTO_S = 10.0  # Auto with Tower's voice on
 FROZEN_LINK_S = 0.0  # Auto, silent: the reroute is on the flight deck in the same second
 REPLAN_ACTIVE_S = 15.0  # how often every path is re-checked while a disruption is in the sector
+TURN_BACK_RETRY_S = 5.0  # a flight at its expected turn-back point is looked at this often until it can go direct
 ROUTE_MIN_OFFSET_NM = 1.0  # a planned path this close to a straight line is just "direct"
 AUTO_EXCHANGE_S = 12.0  # a spoken instruction and its readback, roughly
 AUTO_EXCHANGE_TIMEOUT_S = 30.0  # stop waiting for a readback that never came
@@ -142,6 +143,7 @@ class World:
         self.speed = 1.0
         self.card_t: dict[str, float] = {}  # card id -> sim time it was issued, for "due at"
         self._voice_card: str | None = None  # the card Tower is saying right now, in Auto
+        self._turn_back_t: dict[str, float] = {}  # callsign -> when its turn back was last looked at
         self._voice_since = 0.0
         self.human_on_mic = False  # the controller is holding the mic: Tower keeps quiet
         self.auto_voice = False  # Auto speaks one exchange at a time. Off: every instruction by data link
@@ -201,6 +203,7 @@ class World:
         self.pending.clear()
         self.card_t.clear()
         self._voice_card, self.human_on_mic, self.datalink_sent = None, False, 0
+        self._turn_back_t.clear()
         self.held.clear(); self.alerted.clear(); self.correcting.clear()
         self.next_readback = "random"
         self.rerouted, self.reaction_s, self._react, self.in_zone_now = set(), None, None, 0
@@ -242,7 +245,7 @@ class World:
     def radar_payload(self, states: list[AircraftState] | None = None) -> dict[str, Any]:
         states = self.sim.aircraft() if states is None else states
         out = {"aircraft": self._with_latlon([a.model_dump() for a in states]), "t": self.sim.t,
-               "watching": self.watching()}
+               "watching": self.watching(), "clock_speed": self.clock_speed()}
         if any(z.gs_kt or z.swell_nm_per_min for z in self.sim.zones):
             out["zones"] = self._with_latlon([z.model_dump() for z in self.sim.zones])  # they move
         return out
@@ -275,6 +278,7 @@ class World:
             "mode": "auto" if self.auto_speak else "manual",
             "auto_voice": self.auto_voice,
             "voice": not self.auto_speak,
+            "clock_speed": self.clock_speed(),
             "next_readback": self.next_readback,
             "t": self.sim.t,
             "waypoints": self._with_latlon([w.model_dump() for w in (sc.waypoints if sc else [])
@@ -373,6 +377,9 @@ class World:
                     self.matches += 1
                     self.matched_at[cid] = self.sim.t
                     self._set_card_status(cid, "validated")
+                    matched = self.core.store.get(cid)
+                    if matched is not None:
+                        self._after_readback(matched)
                     original = self.correcting.pop(cid, None)
                     if original is not None:  # the corrected readback came back right: close the alert
                         cs = p.get("callsign")
@@ -468,13 +475,11 @@ class World:
         """
         self.auto_speak = not on
         self._voice_card = None
-        slowed = on and self.speed > 1.0
-        if slowed:
-            self.speed = 1.0  # speech takes real seconds
         self.emit_state()
         if self.scenario is not None:
             self.notice(("Voice on: say each instruction and the pilot reads it back."
-                         + (" Clock set to 1x, because speech takes real seconds." if slowed else ""))
+                         + (f" The clock runs at {self.speed:g}x and slows to 1x by itself whenever there is "
+                            "something to say." if self.speed > 1.0 else ""))
                         if on else "Voice off: Tower sends every instruction by data link, instantly.", "info")
         if not on:
             self._auto_links()  # whatever was waiting to be said goes out now
@@ -482,6 +487,30 @@ class World:
     def set_auto_speak(self, enabled: bool) -> None:
         """Older name for the same switch: auto_speak on is voice off."""
         self.set_voice(not enabled)
+
+    def clock_speed(self) -> float:
+        """How fast the clock really runs right now.
+
+        Voice off: whatever speed was chosen. Voice on: speech takes real seconds, so the clock
+        drops to 1x by itself whenever there is something to say or somebody is talking, and
+        runs at the chosen speed in between. A spoken reroute is two instructions several
+        minutes of flying apart: without this a short demo is mostly waiting.
+        """
+        if self.auto_speak or self.speed <= 1.0:
+            return self.speed
+        return 1.0 if self.talking() else self.speed
+
+    def talking(self) -> bool:
+        """Voice on: is the frequency in use, or is an instruction waiting to be said?"""
+        if self.human_on_mic or self._speaking or self.held:
+            return True
+        now = self.sim.t
+        if any(c.status == "open" and now - c.issued_at < c.timeout_s for c in self.core.store.all_open()):
+            return True  # an exchange in progress: instruction issued, readback not yet in
+        if any(t <= now + 3.0 for t, _ in self.pending):
+            return True  # a pilot is about to key up
+        return any(c.status in ("pending", "error") and not c.minor and c.callsign in self.sim.active
+                   and (c.origin != "initial" or c.cause or c.emergency) for c in self.cards.values())
 
     def set_next_readback(self, mode: str) -> None:
         """Script the next pilot reply so a catch can be shown on cue. One shot, then back to random."""
@@ -543,9 +572,15 @@ class World:
                             self.core.store.get(cid).callsign if self.core.store.get(cid) else ""):
                         self._set_card_status(cid, "verified")
                         del self.matched_at[cid]
-                every = REPLAN_ACTIVE_S if (self.disruptions and self.auto_speak) else REPLAN_EVERY_S
-                if now - self.last_replan_t >= every:
+                # Re-check often while anything unusual is going on, in either mode. Never while the
+                # controller is mid-sentence: a card must not change under the words being read.
+                busy = bool(self.disruptions) or any(a.target_hdg is not None and not a.is_intruder
+                                                     for a in self.sim.active.values())
+                every = REPLAN_ACTIVE_S if busy else REPLAN_EVERY_S
+                if now - self.last_replan_t >= every and not self.human_on_mic:
                     self._replan("periodic")
+                if not self.auto_speak:
+                    self._back_on_course()
             now = self.sim.t
             states = self.sim.aircraft()
             self.emit(event("radar", self.radar_payload(states), t=now))
@@ -708,21 +743,23 @@ class World:
     # ------------------------------------------------------------------ planning
 
     def _replan(self, trigger: str, disruption: Disruption | None = None,
-                release: set[str] | None = None, why: str = "") -> list[str]:
+                release: set[str] | None = None, why: str = "", repin: set[str] | None = None) -> list[str]:
         """Repair the plan and issue the cards. Returns the callsigns that got a new instruction."""
         if self.plan is None or self.scenario is None:
             return []
         states = self.sim.aircraft()
         prev = self.plan
+        issued = self._unsaid_headings()
         self.plan = PL.replan(prev, states, self.scenario.waypoints, self.sim.zones, self.buffer_nm,
                               disruption=disruption, flights=self.scenario.flights, now_t=self.sim.t,
-                              time_budget_s=0.5, release=release,
+                              time_budget_s=0.5, release=release, repin=repin, unsaid=set(issued),
+                              as_flown=not self.auto_speak,
                               frozen_s=(FROZEN_MANUAL_S if not self.auto_speak else
                                         FROZEN_LINK_S if self._links_only() else FROZEN_AUTO_S))
         self.plan.trigger = trigger
         self.last_replan_t = self.sim.t
-        new_cards = C.cards_from_plan(self.plan, prev, now_t=self.sim.t, states=states)
-        new_cards += C.followup_cards(self.plan, states, self.sim.t)
+        new_cards = C.cards_from_plan(self.plan, prev, now_t=self.sim.t, states=states, issued=issued)
+        new_cards += self._new_followups(states)
         if release:
             ended = tuple(f" to clear {name}" for name in release)
             freed = {p.callsign for p in prev.paths if any(c.endswith(ended) for c in p.changes)}
@@ -734,8 +771,90 @@ class World:
         for card in new_cards:
             self._drop_pending_cards(card.callsign)  # superseded by this one
             self._add_card(card)
+        # A heading nobody has said yet, for a turn the plan no longer wants (the storm moved on, or
+        # the flight is past it): take the card down rather than leave a stale turn on the list.
+        still = C.turning(self.plan)
+        for cs in issued:
+            if cs not in still and cs not in changed:
+                for c in list(self.cards.values()):
+                    if c.callsign == cs and c.status == "pending" and all(i.type == "heading" for i in c.items):
+                        c.status = "superseded"
+                        self.emit(event("instruction_card", c, t=self.sim.t))
+                        del self.cards[c.id]
         self._auto_links()  # in Auto the reroutes leave now, not on the next tick of the clock
         return changed
+
+    def _unsaid_headings(self) -> dict[str, float]:
+        """Voice on: callsign -> the heading on its card that nobody has said yet.
+
+        A heading is worked out for one place and one moment. While its card waits in the list the
+        aircraft flies on, so the planner works these flights out again on every replan, and the
+        card is replaced once the heading on it is no longer the one to say. Not the card being
+        said at this moment: that one must not change under the controller's words.
+        """
+        if self.auto_speak:
+            return {}
+        out: dict[str, float] = {}
+        for c in self.cards.values():
+            if c.status != "pending" or c.id == self._voice_card or c.callsign not in self.sim.active:
+                continue
+            for i in c.items:
+                if i.type == "heading":
+                    try:
+                        out[c.callsign] = float(i.value)
+                    except (TypeError, ValueError):
+                        pass
+        return out
+
+    def _new_followups(self, states: list[AircraftState]) -> list[InstructionCard]:
+        """"Proceed direct" cards that are due and not already on the list."""
+        if self.plan is None:
+            return []
+        waiting = {c.callsign for c in self.cards.values()
+                   if c.origin == "followup" and c.status in ("pending", "spoken")}
+        causes = {c.callsign: c.cause for c in self.cards.values()  # cards are kept in the order they were issued
+                  if c.cause and any(i.type == "heading" for i in c.items)}
+        return [c for c in C.followup_cards(self.plan, states, self.sim.t, causes) if c.callsign not in waiting]
+
+    def _back_on_course(self) -> None:
+        """Voice on, every tick: offer the second card of a reroute the moment it is safe.
+
+        The planner says when: a flight on an assigned heading whose plan is direct again can be
+        told to go direct from where it is. Every flight on a heading is looked at again on each
+        replan, and here as well when it reaches the point where the planner expected the turn
+        back to become possible, so the card is not up to REPLAN_ACTIVE_S late.
+        """
+        if self.plan is not None and not self.human_on_mic:
+            due = set()
+            via = {p.callsign: p.via[0] for p in self.plan.paths if p.via}
+            for a in self.sim.active.values():
+                if a.is_intruder or a.target_hdg is None or a.callsign not in via:
+                    continue
+                if self.sim.t - self._turn_back_t.get(a.callsign, -1e9) < TURN_BACK_RETRY_S:
+                    continue
+                r = math.radians(a.target_hdg)
+                ahead = (via[a.callsign][0] - a.x) * math.sin(r) + (via[a.callsign][1] - a.y) * math.cos(r)
+                if ahead <= 1.0:  # NM still to run to the expected turn-back point
+                    due.add(a.callsign)
+                    self._turn_back_t[a.callsign] = self.sim.t
+            if due:
+                self._replan("turn back", repin=due)
+        for card in self._new_followups(self.sim.aircraft()):
+            self._drop_pending_cards(card.callsign)
+            self._add_card(card)
+
+    def _after_readback(self, c: OpenClearance) -> None:
+        """A heading or a routing has just been accepted: plan that flight again from where it is.
+
+        Until now the line on the map was the plan made before the controller spoke. The aircraft
+        turns when its pilot reads back, not when the plan assumed, so the line and the aircraft
+        parted company and a minute later the planner called it a deviation. Now the line is
+        redrawn at once: along the heading for the shortest safe distance, then direct.
+        """
+        if self.auto_speak or not any(i.type in ("heading", "route") for i in c.items):
+            return
+        if c.callsign in self.sim.active and self.plan is not None:
+            self._replan("readback", repin={c.callsign})
 
     # ------------------------------------------------------------------ disruptions
 
@@ -1176,7 +1295,9 @@ class World:
             heard = OpenClearance.model_validate(e["payload"])
             if heard.callsign != card.callsign:
                 continue
-            if [(i.type, i.value) for i in heard.items] == [(i.type, i.value) for i in card.items]:
+            # The same items in another order ("maintain flight level 360, direct TULEK") is not a
+            # mishearing. Compared as what they ask for, so FL360 and 36,000 ft are the same too.
+            if sorted(map(str, map(_item_key, heard.items))) == sorted(map(str, map(_item_key, card.items))):
                 continue
             stored = self.core.store.get(heard.id)
             if stored is None:
@@ -1184,7 +1305,9 @@ class World:
             log.warning("Tower misheard its own card for %s: heard %s, said %s", card.callsign,
                         [i.value for i in heard.items], [i.value for i in card.items])
             stored.items = [it.model_copy() for it in card.items]
-            e["payload"] = stored
+            # A dict, like every other event payload. The model object here could not be turned into
+            # JSON, and that one failure killed the task that sends every event to every screen.
+            e["payload"] = stored.model_dump()
             overruled = True
         return overruled
 

@@ -137,6 +137,16 @@ export default function TopBar() {
         })}
       </div>
 
+      {/* Voice on at a fast clock: it slows itself to 1x while there is something to say. Show which. */}
+      {sim && (sim.voice ?? !sim.auto_speak) && (sim.speed ?? 1) > 1 && sim.lifecycle === "running" && (
+        <span
+          className={`px-2 py-1 rounded-md border text-[11px] font-medium ${(sim.clock_speed ?? 1) <= 1 ? "border-ok/50 bg-ok/10 text-ok" : "border-line bg-panel-2 text-muted"}`}
+          title="With voice on, the clock runs at your chosen speed between instructions and drops to 1x by itself whenever a card is waiting or somebody is talking."
+        >
+          {(sim.clock_speed ?? 1) <= 1 ? "1x: something to say" : `${sim.speed}x until the next instruction`}
+        </span>
+      )}
+
       {/* Auto with Tower's own voice is paused while we get the human side right: Auto is silent
           (data link) and the spoken loop is Manual. The backend still supports it: send
           {type: "set_auto_voice", enabled: true} to bring it back, and restore this switch. */}

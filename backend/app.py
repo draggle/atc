@@ -50,7 +50,13 @@ class Hub:
     async def pump(self) -> None:
         while True:
             ev = await self.queue.get()
-            data = json.dumps(ev, default=_json_default)
+            try:
+                data = json.dumps(ev, default=_json_default)
+            except Exception:
+                # One event that cannot be sent must never stop all the others. This task dying is
+                # silent: the backend keeps running and every screen freezes on its last frame.
+                log.exception("dropped an event that could not be turned into JSON: %s", ev.get("type"))
+                continue
             dead = []
             for ws in list(self.clients):
                 try:
@@ -64,6 +70,8 @@ class Hub:
 def _json_default(o: Any) -> Any:
     if isinstance(o, (np.floating, np.integer)):
         return o.item()
+    if hasattr(o, "model_dump"):  # a pydantic model that was put in a payload as it was
+        return o.model_dump()
     if isinstance(o, np.ndarray):
         return o.tolist()
     raise TypeError(str(type(o)))
@@ -98,12 +106,13 @@ async def clock() -> None:
     loop = asyncio.get_event_loop()
     while True:
         t0 = loop.time()
-        speed = max(0.05, world.speed)
-        if speed <= 1.0:
-            period, dt = 1.0 / speed, 1.0
-        else:
-            period, dt = 0.25, speed * 0.25
-        try:
+        period = 1.0
+        try:  # everything inside: an exception out here would end the clock without a word
+            speed = max(0.05, world.clock_speed())  # voice on: 1x while anyone is talking, the chosen speed otherwise
+            if speed <= 1.0:
+                period, dt = 1.0 / speed, 1.0
+            else:
+                period, dt = 0.25, speed * 0.25
             await world.tick(dt)
         except Exception:
             log.exception("tick failed")

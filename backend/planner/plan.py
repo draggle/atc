@@ -42,9 +42,18 @@ INTRUDER_GROWTH_NM_PER_MIN = 1.0
 INTRUDER_SEP_FT = 2000.0
 INTRUDER_HORIZON_S = 1200.0
 ZONE_MARGIN_NM = 3.0  # new paths keep this far outside a zone: a plane on a heading wanders a mile or two
+# A heading that is already being flown is judged more gently than a new one. The detour was
+# trimmed until it just cleared the margin, for a turn at the moment the planner assumed. By voice
+# the turn comes a few seconds early or late, so the same heading grazes the margin by a fraction
+# of a mile, and without this the controller is handed a second heading five degrees from the first.
+# The zone itself is still never entered, and the leg back to the exit still keeps the full margin.
+HOLD_MARGIN_NM = 1.0
 ESCAPE_S_PER_S = 6.0  # cost of each second spent inside a zone that appeared on top of the flight
 ESCAPE_CLEAR_NM = 6.0  # an escape leg ends this far outside the zone
 ZONE_LEVEL_REACH_FT = 6000.0  # how far a flight will climb or descend to go over or under a zone
+# On an assigned heading: how far along it before turning direct. Tried shortest first, so the
+# "back on course" instruction comes as early as it is safe, not when the aircraft is abeam.
+HOLD_HEADING_NM = (0, 2, 4, 6, 8, 10, 13, 16, 20, 25, 30, 36, 44, 54, 66, 80, 100, 125, 150)
 EMERGENCY_LOOKAHEAD_S = 120.0
 EMERGENCY_LEG_S = 90.0
 DEVIATION_NM = 2.0  # off the previous path by more than this => replan from the real position
@@ -79,6 +88,9 @@ class _Flight:
     deviated: bool = False
     keep_ok: bool = False  # its current path may compete with the new candidates (see _plan_one)
     now_t: float = 0.0
+    # Flying a heading a controller assigned, not its route. It stays on that heading until it is
+    # told otherwise, so its plan is "this heading for the shortest safe distance, then direct".
+    assigned_hdg: float | None = None
 
 
 @dataclass
@@ -120,7 +132,12 @@ def intruder_radius(samples: np.ndarray, now_t: float, threat: str | None = None
 
 
 def _build_flights(specs: list[FlightSpec], wps: dict[str, Waypoint], states: list[AircraftState] | None,
-                   now_t: float, previous: Plan | None, frozen_s: float) -> list[_Flight]:
+                   now_t: float, previous: Plan | None, frozen_s: float,
+                   as_flown: bool = False) -> list[_Flight]:
+    """`as_flown` (voice on): the frozen stretch of every airborne path is what the aircraft is
+    cleared to do right now, its assigned heading or its own route, not what the previous plan
+    says. By voice the two differ whenever a card has not been said yet, or was said early or
+    late, and a plan that starts from a place the aircraft will never be is wrong all the way."""
     st = {s.callsign: s for s in (states or [])}
     prev = {p.callsign: p for p in previous.paths} if previous else {}
     out: list[_Flight] = []
@@ -158,6 +175,8 @@ def _build_flights(specs: list[FlightSpec], wps: dict[str, Waypoint], states: li
         pref_alt = s.target_alt_ft if s is not None else f.alt_ft
         fl = _Flight(f.callsign, start, start_t, alt0, pref_alt, gs, exit_pt, exit_name, airborne,
                      False, hdg, route_pts=pts)
+        if s is not None and s.target_hdg_deg is not None:
+            fl.assigned_hdg = float(s.target_hdg_deg)
         p = prev.get(f.callsign)
         if p is not None:
             arr = samples_array(p)
@@ -168,10 +187,23 @@ def _build_flights(specs: list[FlightSpec], wps: dict[str, Waypoint], states: li
                 k = int(np.argmin(np.abs(arr[:, 0] - now_t)))
                 off = math.hypot(arr[k, 1] - s.x_nm, arr[k, 2] - s.y_nm) if abs(arr[k, 0] - now_t) <= DT else float("inf")
                 fl.deviated = off > DEVIATION_NM
-            if airborne and frozen_s > 0 and arr.shape[0] and not fl.deviated:
+            if airborne and frozen_s > 0 and arr.shape[0] and not fl.deviated and fl.assigned_hdg is None and not as_flown:
                 keep = (arr[:, 0] >= now_t - 1e-6) & (arr[:, 0] <= now_t + frozen_s + 1e-6)
                 fl.prefix = arr[keep]
-        if s is not None and frozen_s > 0 and fl.prefix.shape[0] == 0:
+        if s is not None and fl.assigned_hdg is not None:
+            # What it will really do for the next while: finish rolling onto the assigned heading and
+            # hold it. At least one sample, so the new leg always starts from the aircraft itself.
+            ahead = max(frozen_s, DT) * s.gs_kt / 3600.0 + 1.0
+            r = math.radians(fl.assigned_hdg)
+            pts_h = flyable([(s.x_nm, s.y_nm), (s.x_nm + math.sin(r) * ahead, s.y_nm + math.cos(r) * ahead)], s.hdg_deg, s.gs_kt)
+            pre = sample_path(pts_h, s.gs_kt, now_t, s.alt_ft, s.target_alt_ft)
+            fl.prefix = pre[pre[:, 0] <= now_t + max(frozen_s, DT) + 1e-6]
+        elif s is not None and as_flown and frozen_s > 0 and s.route:
+            own = [(s.x_nm, s.y_nm)] + route_points(list(s.route), wps)
+            if len(own) >= 2:
+                pre = sample_path(flyable(own, s.hdg_deg, s.gs_kt), s.gs_kt, now_t, s.alt_ft, s.target_alt_ft)
+                fl.prefix = pre[pre[:, 0] <= now_t + frozen_s + 1e-6]
+        if s is not None and fl.assigned_hdg is None and frozen_s > 0 and fl.prefix.shape[0] == 0:
             # Off plan (or no plan): freeze a straight projection of what the plane is doing now.
             fl.prefix = sample_straight(s.x_nm, s.y_nm, s.hdg_deg, s.gs_kt, now_t, s.alt_ft, frozen_s)
             if s.target_alt_ft != s.alt_ft and fl.prefix.shape[0]:
@@ -374,7 +406,8 @@ def _tighten(fl: _Flight, c: _Cand, grid: Grid, zones: list[Zone]) -> _Cand:
     return best
 
 
-def _zone_verdict(fl: _Flight, samples: np.ndarray, zones: list[Zone]) -> tuple[bool, float]:
+def _zone_verdict(fl: _Flight, samples: np.ndarray, zones: list[Zone],
+                  mask: np.ndarray | None = None) -> tuple[bool, float]:
     """(acceptable, seconds spent escaping) for a candidate against the blocked zones.
 
     The frozen prefix cannot be changed, so it is not held against the candidate. If the
@@ -382,7 +415,7 @@ def _zone_verdict(fl: _Flight, samples: np.ndarray, zones: list[Zone]) -> tuple[
     it, the candidate may spend that first stretch getting out, at a cost, but it may never
     go back in. A flight that is not yet flying gets no such allowance.
     """
-    m = zone_mask(samples, zones, ZONE_MARGIN_NM)
+    m = zone_mask(samples, zones, ZONE_MARGIN_NM) if mask is None else mask
     if not m.any():
         return True, 0.0
     free = m[fl.prefix.shape[0]:]
@@ -454,7 +487,59 @@ def _remaining_fixed(fl: _Flight) -> float:
     return polyline_length([fl.start] + pts[best_i + 1:])
 
 
+def _hold_heading(fl: _Flight, grid: Grid, zones: list[Zone]) -> _Result | None:
+    """On an assigned heading: go direct now if that is clear from here, else the shortest stretch
+    of the heading after which it will be. The first gives a plan with no heading in it, which is
+    what puts the "proceed direct" card up (cards.followup_cards); the second records the expected
+    turn-back point in `via` for the map.
+
+    Returns None if no distance works, which means the heading itself has become unsafe and the
+    flight needs a new instruction like anyone else.
+    """
+    # First: is going direct safe from where it is this second? Only then is it offered, because
+    # that is the one answer that stays right however long the card takes to say: further along
+    # the heading the way back only gets clearer. "Safe from a point 25 s ahead" is not the same
+    # thing. Told at once, the aircraft turns short of that point, clips the margin, and is given
+    # a new heading, then another direct, for as long as anyone keeps reading the cards out.
+    here = sample_path(flyable([fl.start, fl.exit], fl.hdg, fl.gs), fl.gs, fl.start_t, fl.alt0, fl.pref_alt)
+    if (here.shape[0] >= 2 and not zone_mask(here, zones, ZONE_MARGIN_NM).any()
+            and not grid.conflicts(here).any()):
+        return _Result(here, 0.0, [f"direct {fl.exit_name} saves 0.0 NM from t={fl.start_t:.0f}s"], [], [])
+    start, t0, _alt0 = _leg_start(fl)
+    r = math.radians(fl.assigned_hdg or 0.0)
+    ux, uy = math.sin(r), math.cos(r)
+    direct_len = polyline_length([start, fl.exit])
+    who = next((c.rsplit(" to clear ", 1)[-1] for c in reversed(fl.prev_changes) if " to clear " in c), "traffic")
+    for d in HOLD_HEADING_NM:
+        turn = (start[0] + ux * d, start[1] + uy * d)
+        pts = [start, fl.exit] if d == 0 else [start, turn, fl.exit]
+        samples = _candidate_samples(fl, pts, fl.gs, fl.pref_alt, t0)
+        mask = zone_mask(samples, zones, ZONE_MARGIN_NM)
+        if d > 0 and mask.any():
+            # The stretch still on the heading gets the gentler margin; from where it starts to
+            # turn back (it leaves the heading line) the full one applies again.
+            cross = np.abs((samples[:, 1] - start[0]) * uy - (samples[:, 2] - start[1]) * ux)
+            left = np.where((cross > 0.5) & (np.arange(samples.shape[0]) >= fl.prefix.shape[0]))[0]
+            k = int(left[0]) if left.size else samples.shape[0]
+            mask = np.concatenate([zone_mask(samples[:k], zones, HOLD_MARGIN_NM), mask[k:]])
+        ok, _ = _zone_verdict(fl, samples, zones, mask)
+        if not ok or grid.conflicts(samples).any():
+            continue
+        ex, ey = fl.exit[0] - start[0], fl.exit[1] - start[1]
+        L = math.hypot(ex, ey) or 1.0
+        off = (turn[0] - start[0]) * (ey / L) + (turn[1] - start[1]) * (-ex / L)
+        txt = (f"heading {(fl.assigned_hdg or 0.0) % 360:03.0f} from t={t0:.0f}s ({abs(off):.0f} NM "
+               f"{'right' if off > 0 else 'left'} dogleg, then direct {fl.exit_name}) to clear {who}")
+        added_s = (polyline_length(pts) - direct_len) * 3600.0 / fl.gs
+        return _Result(samples, max(added_s, 0.0), [txt], [], [turn])
+    return None
+
+
 def _plan_one(fl: _Flight, grid: Grid, zones: list[Zone], buffer_nm: float, with_direct: bool) -> _Result:
+    if fl.assigned_hdg is not None and fl.airborne:
+        held = _hold_heading(fl, grid, zones)
+        if held is not None:
+            return held
     cands = _candidates(fl, grid, zones, with_direct)
     fc = grid.first_conflict(cands[0].samples) if cands else None
     if fc is not None:
@@ -672,11 +757,20 @@ def _emergency(fl: _Flight, threats: Grid, now_t: float) -> _Result | None:
 def replan(previous_plan: Plan, states: list[AircraftState], waypoints, zones: list[Zone], buffer: float,
            disruption: Disruption | None = None, frozen_s: float = 60.0, *,
            flights: list[FlightSpec] | None = None, now_t: float | None = None,
-           time_budget_s: float = 1.0, release: set[str] | None = None) -> Plan:
+           time_budget_s: float = 1.0, release: set[str] | None = None,
+           repin: set[str] | None = None, unsaid: set[str] | None = None,
+           as_flown: bool = False) -> Plan:
     """Repair the previous plan: only conflicting flights move, widened to neighbours if needed.
 
     `release` names disruptions that have ended. Flights that were moved to clear them are
     planned again, so they go back to the better route instead of flying around nothing.
+
+    `unsaid` names flights whose heading card is still waiting to be said (voice on). A heading is
+    only right for the place it was worked out for, so these are planned again from where they
+    really are, every time, and the card on the screen is always one that can be said now.
+    A flight holding an assigned heading is looked at again every time too: the shortest safe
+    stretch of that heading gets shorter as the storm moves, and the turn back should not wait.
+    `as_flown` is voice on: see _build_flights.
 
     Intruders (from `states` or `disruption`) are predicted straight-line with a buffer that
     starts at 10 NM and grows 1 NM per minute. Storm/closed disruptions become zones.
@@ -714,7 +808,7 @@ def replan(previous_plan: Plan, states: list[AircraftState], waypoints, zones: l
             specs.append(FlightSpec(callsign=st.callsign, route=[], entry_time_s=now, is_intruder=True,
                                     threat=st.threat, x_nm=st.x_nm, y_nm=st.y_nm, hdg_deg=st.hdg_deg,
                                     gs_kt=st.gs_kt, alt_ft=st.alt_ft, actype=st.actype))
-    all_fl = _build_flights(specs, wps, states, now, previous_plan, frozen_s)
+    all_fl = _build_flights(specs, wps, states, now, previous_plan, frozen_s, as_flown)
     regular = [f for f in all_fl if not f.is_intruder]
     if disruption is None and any(f.deviated for f in regular):
         trigger = "deviation"
@@ -749,9 +843,15 @@ def replan(previous_plan: Plan, states: list[AircraftState], waypoints, zones: l
     for fl in held:
         s = prev_from_now(fl)
         freed = bool(ended) and any(c.endswith(ended) for c in fl.prev_changes)
+        if repin and fl.callsign in repin:
+            freed = True  # it has just started or stopped flying a heading: plan it from where it is
+        if unsaid and fl.callsign in unsaid and fl.airborne:
+            freed = True  # its turn has not been said yet: the heading has to be worked out again from here
+        recheck = fl.assigned_hdg is not None and fl.airborne  # is an earlier turn back safe by now?
         fl.now_t = now
         fl.keep_ok = not freed and not fl.deviated and fl.airborne
-        if freed or fl.deviated or s.shape[0] == 0 or grid.conflicting_names(s) or crosses_zone(s, zones, SAMPLING_MARGIN_NM):
+        if (freed or fl.deviated or recheck or s.shape[0] == 0 or grid.conflicting_names(s)
+                or crosses_zone(s, zones, SAMPLING_MARGIN_NM)):
             moving.append(fl)
         else:
             _add_to_grid(grid, fl, s, buffer, now)
