@@ -62,6 +62,8 @@ log = logging.getLogger("tower.world")
 DATA_DIR = Path(os.environ.get("TOWER_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
 AUDIO_DIR = DATA_DIR / "audio"
 PILOT_DELAY_S = 1.5  # seconds between a clearance and the pilot keying up
+MIN_MIC_S = 0.5  # shorter than this from the mic is a stray key press
+GUESS_MIN_CONF = 0.6  # below this, an instruction only the language model could find is noise
 REPLAN_EVERY_S = 60.0
 # Auto mode. One voice exchange at a time; whatever the voice cannot get to in time goes by data link.
 AUTO_VOICE_MAX_SPEED = 1.5  # faster than this and speech, which takes real seconds, cannot keep up
@@ -349,7 +351,8 @@ class World:
                         self.alert_latencies.append(time.monotonic() - meta["issued_real"])
                 elif p.get("result") in ("mismatch", "partial", "missing"):
                     self.false_alarms += 1
-                self._set_card_status(cid, "error")
+                if p.get("result") != "ambiguous":  # "unclear" asks for a confirmation, it accuses nobody
+                    self._set_card_status(cid, "error")
             elif typ == "resolver_step" and not self.tower_enabled:
                 continue
             elif typ == "clearance_updated":
@@ -995,6 +998,8 @@ class World:
         """A controller utterance from the mic: transcribe, then treat as controller text."""
         if not self._radio_open():
             return
+        if len(samples) / sr < MIN_MIC_S:
+            return  # a stray tap of Space, not a transmission (07 section 7.1: drop under 0.5 s)
         ref = f"ctl-{uuid.uuid4().hex[:8]}.wav"
         float_to_wav(AUDIO_DIR / ref, samples, sr)
         text, conf, n_best, stock, lat = await self._transcribe(samples)
@@ -1034,17 +1039,29 @@ class World:
             self.emit(event("clearance_opened", c, t=self.sim.t))
             opened = [c]
             conf = min(conf, 0.5)
+        # Tower only guessed this instruction (the language model filled it in). Decided before any
+        # card is linked below: a card Tower spoke itself is the truth, a card merely pending for the
+        # same aircraft is not.
+        ext = self.core.last_extraction
+        guessed = ext is not None and ext.transmission_id == tx.id and ext.method == "llm" and card is None
         for c in opened:
             self.clearance_meta[c.id] = {"issued_real": time.monotonic(), "issued_sim": self.sim.t}
+            if guessed and conf < GUESS_MIN_CONF:
+                # Speaker bleed, a cough, half a word: the grammar found nothing, the model found an
+                # "instruction", and the speech model itself was unsure. Issue nothing at all.
+                async with self._lock:
+                    closed = self.core.store.resolve(c.id, "uncertain")
+                if closed is not None:
+                    self.emit(event("clearance_updated", closed, t=self.sim.t))
+                self.notice("Tower could not make an instruction out of that transmission, so nothing was issued.", "info")
+                continue
             if card is None:
                 card = self._match_card(c)
             if card is not None:
                 card.via = card.via or "human"
                 self._link_card(card, c.id)
-            # Tower only guessed this instruction (the language model filled it in): a pilot who
-            # heard the same garble asks for it again. Flying a guess put an aircraft on heading 021.
-            ext = self.core.last_extraction
-            guessed = ext is not None and ext.transmission_id == tx.id and ext.method == "llm" and card is None
+            # A pilot who heard the same garble asks for it again. Flying a guess put an aircraft on
+            # heading 021.
             self._schedule_pilot(c, heard_ok=(conf >= 0.5 and not guessed))
 
     def _trust_the_card(self, card: InstructionCard, events: list[dict[str, Any]]) -> bool:

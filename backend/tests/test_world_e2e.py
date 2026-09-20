@@ -321,6 +321,55 @@ def test_say_again_voids_the_instruction_instead_of_timing_out(world):
     assert w.sim.get(cs).target_alt != 24000, "nothing was read back, so nothing is flown"
 
 
+class _Guesser:
+    """The fallback extractor inventing an instruction out of noise."""
+    def __init__(self, callsign):
+        self.callsign = callsign
+
+    def extract(self, text, active, transmission_id=""):
+        from schemas import Extraction, Item
+        return Extraction(transmission_id=transmission_id, callsign=self.callsign, method="llm",
+                          items=[Item(type="speed", value=160, unit="kt", action="increase")])
+
+
+def test_a_stray_tap_of_the_mic_is_not_a_transmission(world):
+    import numpy as np
+    w, ev = world
+    ev.clear()
+    asyncio.run(w.controller_audio(np.zeros(int(0.4 * 16000), dtype=np.float32)))
+    assert not [e for e in ev if e["type"] in ("transcript", "clearance_opened")], types(ev)
+
+
+def test_noise_the_model_turned_into_an_instruction_issues_nothing(world):
+    """Found live: 1.5 s of speaker bleed was heard as "In 1.60 increase." at confidence 0.54."""
+    w, ev = world
+    cs = w.sim.aircraft()[0].callsign
+    w.core.llm, w.core.use_llm_fallback = _Guesser(cs), True
+    ev.clear()
+    asyncio.run(w._controller("in 1.60 increase", conf=0.54))
+    for _ in range(40):
+        asyncio.run(w.tick(1.0))
+    assert not w.core.store.open_clearances(cs)
+    assert not [e for e in ev if e["type"] == "alert"], [e["payload"].get("reason") for e in ev if e["type"] == "alert"]
+    assert not [e for e in ev if e["type"] == "transcript" and e["payload"]["speaker"] == "pilot"], "no pilot answers noise"
+    assert w.sim.get(cs).target_gs != 160 if hasattr(w.sim.get(cs), "target_gs") else True
+
+
+def test_an_unclear_card_does_not_mark_the_instruction_as_a_wrong_readback(world, monkeypatch):
+    from tower.resolver.agent import Resolution
+    w, ev = world
+    w.fleet.set_error_rate(0.0)
+    cs = w.sim.aircraft()[0].callsign
+    asyncio.run(w.controller_text(f"{cs} descend and maintain flight level two four zero"))
+    monkeypatch.setattr(w.core.resolver, "resolve", lambda c, v, tx, extra_context=None: Resolution(
+        v.model_copy(update={"result": "ambiguous", "decided_by": "resolver"}), [], None))
+    seen = []
+    monkeypatch.setattr(w, "_set_card_status", lambda cid, status: seen.append(status))
+    tx = w._new_tx(f"descend flight level two one zero {cs}", "pilot", conf=0.4)
+    w._emit_core_events(w.core.on_transmission(tx, list(w.sim.active), w.sim.aircraft()))
+    assert "error" not in seen, seen
+
+
 def test_snap_waypoints_uses_route_prior():
     from world import snap_waypoints
     wps = ["WAKOL", "GALTO", "ESTIR", "PIKAR", "CENTA"]

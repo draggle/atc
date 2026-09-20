@@ -167,3 +167,31 @@ def test_a_value_the_model_guessed_from_garble_is_never_a_confident_alert():
                       asr_confidence=0.9, speaker="pilot", n_best=[])
     v = check(c, ext, tx, active=ACTIVE)
     assert v.result == "ambiguous" and "guess" in v.reason.lower(), (v.result, v.reason)
+
+
+# --- found live on JZA912: a perfectly heard instruction was treated as a guess ---------------------
+
+class _EchoLLM:
+    """A fallback extractor that finds exactly what the grammar already found."""
+    def extract(self, text, active, transmission_id=""):
+        from schemas import Extraction
+        return Extraction(transmission_id=transmission_id, callsign="JZA912", method="llm",
+                          items=[Item(type="heading", value=18, unit="deg", action="turn_left")])
+
+
+def test_digits_written_one_by_one_are_one_number():
+    """Whisper wrote the callsign as "Jazz 9-1-2". That left "JZA9 1 2" and two stray digits."""
+    assert normalize("Jazz 9-1-2, confirm turn left heading 018.") == "JZA912 confirm turn left heading 018"
+    assert normalize("turn left heading 2 1 1 air canada 8 5 9") == "turn left heading 211 ACA859"
+    assert normalize("squawk 4 5 2 1") == "squawk 4521"
+    assert normalize("descend flight level 240 then heading 270") == "descend flight level 240 then heading 270"
+
+
+def test_an_instruction_the_grammar_read_is_not_a_guess_because_the_model_also_ran():
+    from tower.parse import parse_with_fallback
+    n = "JZA9 1 2 confirm turn left heading 018"  # enough stray words to wake the fallback
+    ext = parse_with_fallback(n, ["JZA912"], "controller", _EchoLLM(), "t")
+    assert [(i.type, i.value) for i in ext.items] == [("heading", 18)]
+    assert ext.method == "grammar", "the model agreed with the grammar: nothing was guessed"
+    ext = parse_with_fallback("JZA912 garble warble", ["JZA912"], "controller", _EchoLLM(), "t")
+    assert ext.method == "llm", "here the items exist only because the model supplied them"

@@ -324,11 +324,31 @@ def _two_heard_as_to(words: list[str]) -> list[str]:
     return out
 
 
+def _join_spelled_digits(words: list[str]) -> list[str]:
+    """Whisper sometimes writes a number digit by digit: "Jazz 9-1-2", "heading 2 1 1".
+
+    A run of two or more single digits is one number. Left apart, "JZA9 1 2" kept its callsign but
+    the stray digits counted as unexplained words and woke the language model fallback.
+    """
+    out: list[str] = []
+    run: list[str] = []
+    for w in [*words, ""]:
+        if len(w) == 1 and w.isdigit():
+            run.append(w)
+            continue
+        if run:
+            out.append("".join(run) if len(run) > 1 else run[0])
+            run = []
+        if w:
+            out.append(w)
+    return out
+
+
 def normalize(text: str) -> str:
     """Normalize dataset-convention ATC text to digits and ICAO codes. Idempotent."""
     if not text or not text.strip():
         return ""
-    words = _two_heard_as_to(_pre_tokenize(text))
+    words = _join_spelled_digits(_two_heard_as_to(_pre_tokenize(text)))
     toks = _apply_telephony(words)
     toks = _collapse(toks)
     toks = _runways(toks)

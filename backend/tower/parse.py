@@ -311,6 +311,11 @@ def parse_with_fallback(text_norm: str, active: list[str] | None, speaker: Speak
         out.callsign = ext.callsign
     if not out.items:
         out.items = ext.items
+    # "llm" means the model supplied or changed what was heard. Stray words can wake the fallback
+    # on a transmission the grammar read completely ("JZA9 1 2 confirm turn left heading 018"): if
+    # the model only agrees, nothing was guessed, and nobody downstream should treat it as a guess.
+    if ext.items and [(i.type, i.value) for i in out.items] == [(i.type, i.value) for i in ext.items]:
+        out.method = "grammar"
     return out
 
 
