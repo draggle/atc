@@ -111,7 +111,7 @@ def say_item(item: Item, current_alt_ft: float | None = None) -> str:
         verb = item.action or "maintain"
         return f"{verb} and maintain {say_altitude(float(ft))}"
     if item.type == "heading":
-        hdg = f"{int(item.value):03d}"
+        hdg = f"{int(float(item.value)):03d}"
         if item.action in ("turn_left", "turn_right"):
             return f"turn {item.action.split('_')[1]} heading {say_digits(hdg)}"
         return f"fly heading {say_digits(hdg)}"
@@ -120,6 +120,13 @@ def say_item(item: Item, current_alt_ft: float | None = None) -> str:
         return f"{verb} {say_digits(int(item.value))} knots"
     if item.type == "route":
         return f"proceed direct {item.value}"
+    if item.type == "manoeuvre":
+        side = "left" if str(item.action or "").endswith("left") else "right"
+        if str(item.action or "").startswith("orbit_"):
+            return f"make a {side} three sixty"
+        if str(item.action or "").startswith("hold_"):
+            return f"hold present position, {side} turns"
+        return str(item.value).lower()
     return str(item.value)
 
 
@@ -141,7 +148,8 @@ def item_for(ch: Change, current_alt_ft: float | None = None) -> Item | None:
         return Item(type="altitude", value=int(round(ft)), unit="ft", action=action)
     if ch.kind == "heading":
         side = (ch.extra or {}).get("side")
-        return Item(type="heading", value=int(ch.value), unit="deg", action=f"turn_{side}" if side else "fly")
+        # North is said "three six zero", never "zero zero zero".
+        return Item(type="heading", value=int(ch.value) % 360 or 360, unit="deg", action=f"turn_{side}" if side else "fly")
     if ch.kind == "speed":
         pct = (ch.extra or {}).get("pct", 0)
         return Item(type="speed", value=int(ch.value), unit="kt", action="reduce" if pct < 0 else "increase")
@@ -161,6 +169,9 @@ def item_to_sim_command(item: Item) -> SimCommand:
         return SimCommand(kind="speed", value=float(item.value))
     if item.type == "route" and item.action == "direct":
         return SimCommand(kind="direct", value=str(item.value))
+    if item.type == "manoeuvre" and (item.action or "").startswith(("orbit_", "hold_")):
+        kind, side = str(item.action).split("_", 1)
+        return SimCommand(kind="orbit", value=side, turns=1.0 if kind == "orbit" else None)
     return SimCommand(kind="none")
 
 

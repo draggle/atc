@@ -77,6 +77,7 @@ FROZEN_MANUAL_S = 25.0  # voice on: long enough to say a card and hear it back, 
 FROZEN_AUTO_S = 10.0  # Auto with Tower's voice on
 FROZEN_LINK_S = 0.0  # Auto, silent: the reroute is on the flight deck in the same second
 REPLAN_ACTIVE_S = 15.0  # how often every path is re-checked while a disruption is in the sector
+UNSURE_CONF = 0.6  # below this Tower doubts its own ears, and a clash with the card is settled in the card's favour
 TURN_BACK_RETRY_S = 5.0  # a flight at its expected turn-back point is looked at this often until it can go direct
 ROUTE_MIN_OFFSET_NM = 1.0  # a planned path this close to a straight line is just "direct"
 AUTO_EXCHANGE_S = 12.0  # a spoken instruction and its readback, roughly
@@ -146,6 +147,7 @@ class World:
         self._voice_card: str | None = None  # the card Tower is saying right now, in Auto
         self._turn_back_t: dict[str, float] = {}  # callsign -> when its turn back was last looked at
         self._tasks: set[asyncio.Task[Any]] = set()  # pilot replies in flight: kept so they are not collected
+        self._undo: dict[str, dict[str, Any]] = {}  # callsign -> what it was cleared to do before the last instruction
         self._voice_since = 0.0
         self.human_on_mic = False  # the controller is holding the mic: Tower keeps quiet
         self.auto_voice = False  # Auto speaks one exchange at a time. Off: every instruction by data link
@@ -205,7 +207,7 @@ class World:
         self.pending.clear()
         self.card_t.clear()
         self._voice_card, self.human_on_mic, self.datalink_sent = None, False, 0
-        self._turn_back_t.clear()
+        self._turn_back_t.clear(); self._undo.clear()
         self.held.clear(); self.alerted.clear(); self.correcting.clear()
         self.next_readback = "random"
         self.rerouted, self.reaction_s, self._react, self.in_zone_now = set(), None, None, 0
@@ -775,6 +777,8 @@ class World:
             have = {c.callsign for c in new_cards}
             new_cards += [c for c in C.release_cards(self.plan, states, freed, self.sim.t, why)
                           if c.callsign not in have]
+        circling = {a.callsign for a in self.sim.active.values() if a.orbit_dir}
+        new_cards = [c for c in new_cards if c.callsign not in circling]  # it was told to circle: no advice until it is done
         changed = sorted({c.callsign for c in new_cards})
         self.emit_plan(self.plan, trigger=trigger, changed=changed)
         for card in new_cards:
@@ -862,6 +866,8 @@ class World:
         """
         if self.auto_speak or not any(i.type in ("heading", "route") for i in c.items):
             return
+        if self.clearance_meta.get(c.id, {}).get("replanned"):
+            return  # already done the moment the aircraft acted, which is sooner
         if c.callsign in self.sim.active and self.plan is not None:
             self._replan("readback", repin={c.callsign})
 
@@ -1223,6 +1229,10 @@ class World:
         if card is not None and self._trust_the_card(card, events):
             conf = min(conf, 0.5)
         self._emit_core_events(events)
+        for e in events:
+            if e["type"] == "aside":
+                await self._aside(e["payload"])
+                return
         opened = [OpenClearance.model_validate(e["payload"]) for e in events if e["type"] == "clearance_opened"]
         if card is not None and not opened:
             # Tower's own ears missed part of the card. The pilot still heard the real instruction,
@@ -1267,9 +1277,27 @@ class World:
                 this_card = self._match_card(c)
                 if this_card is not None:
                     verdict, detail = _said_vs_card(c.items, this_card.items)
+                    standard = ext is not None and ext.transmission_id == tx.id and ext.method == "grammar"
+                    if verdict == "conflict" and conf < UNSURE_CONF and standard:
+                        # A standard phrase, Tower doubts its own ears, and the card says something
+                        # close: it was almost certainly the card. Never for plain English: "turn
+                        # around" scores low with a model tuned on phraseology, and it is not the card. (The simulated pilot acts on Tower's transcript,
+                        # which a real pilot does not, so a mishearing here would move an aircraft.)
+                        c.items = [i.model_copy() for i in this_card.items]
+                        stored = self.core.store.get(c.id)
+                        if stored is not None:  # the copy the readback will be checked against
+                            stored.items = [i.model_copy() for i in this_card.items]
+                            self.emit(event("clearance_updated", stored, t=self.sim.t))
+                        self.notice(f"Tower was not sure what it heard for {c.callsign} and took the card: {this_card.phrase}.", "info")
+                        verdict, conf = "same", max(conf, 0.5)  # the pilot hears the card, which is clear enough
                     if verdict == "conflict":
-                        await self._hold_for_the_controller(c, this_card, detail)
-                        continue
+                        # The controller is the authority. What was said is what happens; the card
+                        # was advice. It stays up, marked, until the planner catches up a moment
+                        # later and replaces it with what is right for the aircraft's new course.
+                        this_card.heard_instead = C.phrase_for(c.callsign, c.items)
+                        self.emit(event("instruction_card", this_card, t=self.sim.t))
+                        self.notice(f"{c.callsign} is doing what you said ({detail} was on the card). Tower is planning round it.", "info")
+                        this_card = None
                     if verdict == "partial":
                         self.notice(f"That was part of the card for {c.callsign}. Still to say: {detail}.", "info")
                         this_card = None  # the card stays open for the rest
@@ -1280,6 +1308,41 @@ class World:
             # A pilot who heard the same garble asks for it again. Flying a guess put an aircraft on
             # heading 021.
             self._schedule_pilot(c, heard_ok=(conf >= 0.5 and not guessed))
+
+    async def _aside(self, p: dict[str, Any]) -> None:
+        """Two things a controller says that are not clearances: "disregard" and the impossible."""
+        cs = str(p.get("callsign") or "")
+        a = self.sim.active.get(cs)
+        if a is None:
+            return
+        pilot = self.fleet.get(cs)
+        from pilots.readback import say_callsign as pilot_callsign
+        if p.get("action") == "disregard":
+            before = self._undo.pop(cs, None)
+            for c in self.core.store.open_clearances(cs):  # nothing is owed on an instruction that was withdrawn
+                async with self._lock:
+                    closed = self.core.store.resolve(c.id, "uncertain")
+                if closed is not None:
+                    self.emit(event("clearance_updated", closed, t=self.sim.t))
+            if before is None:
+                self.notice(f"{cs}: nothing to disregard.", "info")
+                return
+            a.target_hdg, a.target_alt, a.target_gs = before["target_hdg"], before["target_alt"], before["target_gs"]
+            a.route, a.via = list(before["route"]), list(before["via"])
+            a.orbit_dir, a.orbit_left_deg = before["orbit_dir"], before["orbit_left_deg"]
+            a._last_wp_dist = None
+            self.emit(event("radar", self.radar_payload(), t=self.sim.t))
+            self.notice(f"{cs}: last instruction withdrawn. It is back to what it was cleared to do before.", "info")
+            if not self.auto_speak and self.plan is not None:
+                self._replan("instruction", repin={cs})
+            text = f"disregarding, {pilot_callsign(cs)}"
+        else:
+            what = str(p.get("what") or "").replace("UNABLE", "").strip().lower()
+            self.notice(f"{cs}: unable{' (' + what + ')' if what else ''}. Nothing changed.", "warn")
+            text = f"unable, {pilot_callsign(cs)}"
+        resp = await asyncio.to_thread(pilot.announce, text, self.noise)
+        tx = await self._hear_pilot(resp)
+        self.emit(event("transcript", {**tx.model_dump(), "callsign": cs}, t=self.sim.t))
 
     def _explain_unheard(self, tx: Transmission) -> None:
         """The controller keyed the mic and nothing came of it. Say why, or it looks like a dead radio."""
@@ -1453,12 +1516,24 @@ class World:
         # The plane obeys what the pilot said, whoever the pilot was.
         actor = resp.acting_callsign
         moved = False
-        for cmd in (resp.sim_commands or [resp.sim_command]):
-            if cmd.kind != "none" and actor in self.sim.active:
+        cmds = [cmd for cmd in (resp.sim_commands or [resp.sim_command]) if cmd.kind != "none"]
+        if cmds and actor in self.sim.active:
+            a = self.sim.active[actor]
+            self._undo[actor] = {"target_hdg": a.target_hdg, "target_alt": a.target_alt, "target_gs": a.target_gs,
+                                 "route": list(a.route), "via": list(a.via), "orbit_dir": a.orbit_dir,
+                                 "orbit_left_deg": a.orbit_left_deg}
+        for cmd in cmds:
+            if actor in self.sim.active:
                 self.sim.apply(actor, cmd)
                 moved = True
         if moved:
             meta["acted_real"] = time.monotonic()
+            if not self.auto_speak and actor in self.sim.active and self.plan is not None:
+                # Plan round what it is now really doing, at once: its own line is redrawn from
+                # where it is, and everyone else is kept clear of it. If the instruction itself
+                # is the problem (a heading into a storm), the card that comes out of this says so.
+                meta["replanned"] = True
+                self._replan("instruction", repin={actor})
             # Show it now, not on the next tick of the clock: the cleared heading and level are in
             # the radar frame, and the screen draws them the moment they change.
             self.emit(event("radar", self.radar_payload(), t=self.sim.t))

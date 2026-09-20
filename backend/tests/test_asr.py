@@ -112,11 +112,13 @@ def test_fast_mode_is_one_beam_and_does_not_wait_for_the_comparison():
 
     sent: list[dict] = []
     remote = BasetenWhisper("https://example.invalid/predict", api_key="x", beam_size=3, n_best=3)
-    remote._post = lambda body: (sent.append(body) or {"text": "air canada one two three turn left heading two seven zero"})
+    remote._post = lambda body, quick=False: (sent.append({**body, "quick": quick})
+                                              or {"text": "air canada one two three turn left heading two seven zero"})
     remote.transcribe(np.zeros(1600, dtype=np.float32), "ACA123")
     remote.transcribe(np.zeros(1600, dtype=np.float32), "ACA123", fast=True)
     assert (sent[0]["beam_size"], sent[0]["n_best"]) == (3, 3)
     assert (sent[1]["beam_size"], sent[1]["n_best"]) == (1, 1)
+    assert sent[1]["quick"] and not sent[0]["quick"]  # one short attempt, then the local model: never 16 s of dead radio
 
     release = threading.Event()
     arrived = threading.Event()

@@ -44,6 +44,8 @@ class Aircraft:
     route: list[str] = field(default_factory=list)
     via: list[tuple[float, float]] = field(default_factory=list)  # unnamed points to fly before `route`
     target_hdg: float | None = None  # set => route following suspended
+    orbit_dir: int = 0  # -1 circling left, +1 right, 0 not circling
+    orbit_left_deg: float | None = None  # degrees of circle still to fly; None while orbit_dir != 0 is a hold
     actype: str = "A320"
     is_intruder: bool = False
     threat: str | None = None  # disruption kind when is_intruder
@@ -60,6 +62,8 @@ class Aircraft:
             target_alt_ft=self.target_alt, hdg_deg=self.hdg, target_hdg_deg=self.target_hdg,
             gs_kt=self.gs, target_gs_kt=self.target_gs, route=list(self.route),
             actype=self.actype, is_intruder=self.is_intruder, threat=self.threat, t=t,
+            manoeuvre=(None if not self.orbit_dir else
+                       f"{'hold' if self.orbit_left_deg is None else '360'} {'left' if self.orbit_dir < 0 else 'right'}"),
         )
 
 
@@ -99,7 +103,12 @@ class Simulator:
         a = self.active.get(callsign)
         if a is None or cmd.kind == "none" or cmd.value is None:
             return
-        if cmd.kind == "altitude":
+        if cmd.kind in ("heading", "direct", "route"):
+            a.orbit_dir, a.orbit_left_deg = 0, None  # told where to go: the circling is over
+        if cmd.kind == "orbit":
+            a.orbit_dir = -1 if str(cmd.value).lower().startswith("l") else 1
+            a.orbit_left_deg = None if cmd.turns is None else 360.0 * float(cmd.turns)
+        elif cmd.kind == "altitude":
             a.target_alt = float(cmd.value)
         elif cmd.kind == "heading":
             a.target_hdg = float(cmd.value) % 360.0
@@ -262,7 +271,17 @@ class Simulator:
     def _advance(self, a: Aircraft, dt: float) -> None:
         # Desired heading: explicit target, else bearing to the next waypoint.
         desired = a.target_hdg
-        if desired is None:
+        if a.orbit_dir:
+            # A three sixty or a hold: keep turning one way at the standard rate. When the circle is
+            # complete it goes back to whatever it was doing, which by then is where it started.
+            turned = TURN_RATE_DEG_S * dt
+            a.hdg = (a.hdg + a.orbit_dir * turned) % 360.0
+            desired = None
+            if a.orbit_left_deg is not None:
+                a.orbit_left_deg -= turned
+                if a.orbit_left_deg <= 0:
+                    a.orbit_dir, a.orbit_left_deg = 0, None
+        elif desired is None:
             wp = self.next_waypoint(a)
             if wp is not None:
                 desired = bearing_deg(a.x, a.y, wp.x_nm, wp.y_nm)
@@ -283,7 +302,7 @@ class Simulator:
         a.distance_nm += d
         a.airborne_s += dt
         # Waypoint capture.
-        if a.target_hdg is None:
+        if a.target_hdg is None and not a.orbit_dir:
             wp = self.next_waypoint(a)
             if wp is not None:
                 dist = dist_nm(a.x, a.y, wp.x_nm, wp.y_nm)

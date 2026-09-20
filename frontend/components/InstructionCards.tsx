@@ -59,19 +59,28 @@ function Card({ card, arrivedT, simT, auto, onFrequency, running, held, tag }: {
       )}
       {card.status === "pending" && card.heard_instead && (
         <div className="mt-2 rounded-md border border-warn/50 bg-warn/10 px-2 py-1.5">
-          <p className="text-[11px] text-warn font-medium">Tower heard something else. Nothing went to the pilot.</p>
-          <p className="mt-0.5 text-xs text-fg/90">&ldquo;{card.heard_instead}&rdquo;</p>
-          <div className="mt-1.5 flex items-center gap-2">
-            <span className="text-[10px] text-muted">Hold Space and say the card again, or</span>
-            {held && (
-              <button
-                onClick={() => send({ type: "confirm_heard", clearance_id: held })}
-                className="px-2 py-0.5 rounded border border-warn/50 text-warn text-[11px] hover:bg-warn/15"
-              >
-                Send as heard
-              </button>
-            )}
-          </div>
+          {held ? (
+            <>
+              <p className="text-[11px] text-warn font-medium">Tower heard something else. Nothing went to the pilot.</p>
+              <p className="mt-0.5 text-xs text-fg/90">&ldquo;{card.heard_instead}&rdquo;</p>
+              <div className="mt-1.5 flex items-center gap-2">
+                <span className="text-[10px] text-muted">Hold Space and say the card again, or</span>
+                <button
+                  onClick={() => send({ type: "confirm_heard", clearance_id: held })}
+                  className="px-2 py-0.5 rounded border border-warn/50 text-warn text-[11px] hover:bg-warn/15"
+                >
+                  Send as heard
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              {/* You are the authority: what you said is what the aircraft is doing. The card was advice. */}
+              <p className="text-[11px] text-warn font-medium">You said something else, and the aircraft is doing it.</p>
+              <p className="mt-0.5 text-xs text-fg/90">&ldquo;{card.heard_instead}&rdquo;</p>
+              <p className="mt-1 text-[10px] text-muted">Tower is planning round it. This card updates in a moment.</p>
+            </>
+          )}
         </div>
       )}
       {card.status === "pending" && !auto && !onFrequency && (

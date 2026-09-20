@@ -19,8 +19,11 @@ from schemas import (
     Verdict,
     event,
 )
+import logging
+
 from tower import callsign as CS
 from tower import check as CK
+from tower import freeform as FF
 from tower import parse as P
 from tower.commands import items_to_sim_command
 from tower.conform import ConformanceMonitor
@@ -29,6 +32,8 @@ from tower.normalize import normalize
 from tower.resolver.agent import Resolver
 from tower.resolver.tools import ResolverTools, clearance_brief
 from tower.state import State, StateStore
+
+log = logging.getLogger("tower.pipeline")
 
 _RESULT_TO_STATUS = {"match": "matched", "mismatch": "mismatched", "partial": "partial",
                      "missing": "missing", "ambiguous": "uncertain"}
@@ -49,6 +54,7 @@ class TowerCore:
         self._active: list[str] = []
         self.last_extraction: Extraction | None = None
         self.verdicts: list[Verdict] = []
+        self.waypoint_names: list[str] = [w.upper() for w in (waypoints or {})]
         tools = ResolverTools(
             relisten=relisten or self._relisten_from_nbest,
             active_aircraft=self._active_aircraft,
@@ -100,12 +106,44 @@ class TowerCore:
             tx.speaker = speaker
 
         llm = self.llm if self.use_llm_fallback else None
-        ext = P.parse_with_fallback(tx.text_norm, active, speaker, llm, transmission_id=tx.id)
+        ext = self._understand(tx, speaker, active, llm)
         self.last_extraction = ext
 
         if speaker == "controller":
             return self._on_controller(tx, ext)
         return self._on_pilot(tx, ext, active)
+
+    def _understand(self, tx: Transmission, speaker: Speaker, active: list[str] | None, llm) -> Extraction:
+        """Words to items, fastest way first.
+
+        1. Plain English resolved against the aircraft it is addressed to (tower/freeform.py):
+           "turn around", "go up another two thousand", "make a three sixty". Patterns, no waiting.
+        2. The grammar, on whatever words are left: standard phraseology.
+        3. Only if neither found an instruction, the language model's reading of what was heard.
+        Every item is then checked for a value that can be said and flown. A model once answered
+        "heading: around", and formatting that raised in a background task: the transmission
+        vanished without a word.
+        """
+        text = tx.text_norm
+        grammar = P.parse(text, active, speaker, transmission_id=tx.id)
+        state = self._states.get(grammar.callsign or "") if speaker == "controller" else None
+        if speaker == "controller" and state is None and grammar.callsign is None and len(self._active) == 1:
+            state = self._states.get(self._active[0])
+        free_items, rest = FF.interpret(text, state, self.waypoint_names)
+        if free_items:
+            ext = P.parse(rest, active, speaker, transmission_id=tx.id) if rest != text else grammar
+            ext.callsign = ext.callsign or grammar.callsign
+            taken = {i.type for i in free_items if i.type != "manoeuvre"}
+            ext.items = free_items + [i for i in ext.items if i.type not in taken]
+            ext.method = "freeform"
+        else:
+            ext = P.parse_with_fallback(text, active, speaker, llm, transmission_id=tx.id)
+        bad = [i for i in ext.items if not FF.valid(i)]
+        if bad:
+            log.warning("dropped %d item(s) with no usable value from %r: %s", len(bad), text,
+                        [(i.type, i.value) for i in bad])
+            ext.items = [i for i in ext.items if FF.valid(i)]
+        return ext
 
     def tick(self, now: float, states: list[AircraftState] | None = None) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
@@ -145,6 +183,12 @@ class TowerCore:
         if callsign is None or not ext.items:
             self.store.record(callsign, tx, ext)
             return []
+        # Not instructions to be read back: the world acts on them (see World._controller).
+        aside = [i for i in ext.items if i.type == "manoeuvre" and i.action in ("unable", "disregard")]
+        if aside:
+            self.store.record(callsign, tx, ext)
+            return [event("aside", {"callsign": callsign, "action": aside[0].action, "what": str(aside[0].value),
+                                    "transmission_id": tx.id}, t=tx.t_end)]
         said = [(i.type, i.value) for i in ext.items]
         for again in self.store.open_clearances(callsign):
             if [(i.type, i.value) for i in again.items] == said:

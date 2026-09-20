@@ -94,36 +94,37 @@ def test_saying_the_card_goes_through_and_is_marked_said_by_you():
     assert not of(events, "said_check")
 
 
-def test_a_slip_is_stopped_before_the_pilot_acts():
+def test_what_the_controller_says_wins_over_the_card():
+    """The card is advice. Say something else and that is what happens: nothing is held, nobody
+    is asked to confirm, the aircraft does it and Tower plans round it."""
     w, events = make()
     card = a_card(w)
-    slip = C.phrase_for(card.callsign, [wrong_version(w, card.items[0])])
-    before = w.sim.active[card.callsign].target_hdg, w.sim.active[card.callsign].target_alt, list(w.sim.active[card.callsign].route)
-    asyncio.run(w.controller_text(slip))
-    run(w, 8)
-    check = of(events, "said_check")
-    assert len(check) == 1 and check[0]["callsign"] == card.callsign and check[0]["card_id"] == card.id
-    assert card.status == "pending" and card.heard_instead  # still to be said, and flagged
+    other = wrong_version(w, card.items[0])
+    w.set_next_readback("correct")
+    asyncio.run(w.controller_text(C.phrase_for(card.callsign, [other])))
+    run(w, 4)
+    assert not of(events, "said_check")  # no "did you mean the card?" any more
+    assert [t for t in of(events, "transcript") if t["speaker"] == "pilot"]  # the pilot answered
     a = w.sim.active[card.callsign]
-    assert (a.target_hdg, a.target_alt, list(a.route)) == before  # the aircraft did nothing
-    assert not [t for t in of(events, "transcript") if t["speaker"] == "pilot"]  # and nobody read it back
-    assert any("Tower heard" in n for n in notices(events))
-    # Said properly the second time: through, and the flag clears.
-    asyncio.run(w.controller_text(card.phrase))
-    run(w)
-    assert card.status == "validated" and card.heard_instead is None
+    if other.type == "route":
+        assert list(a.route) == [str(other.value)]
+    elif other.type == "heading":
+        assert a.target_hdg == float(other.value) % 360
+    assert any("doing what you said" in n for n in notices(events))
+    assert card.clearance_id is None  # the card itself was never given: it was not what was said
 
 
-def test_send_as_heard_issues_what_was_said():
+def test_an_unsure_hearing_that_clashes_with_the_card_is_taken_as_the_card():
+    """The simulated pilot acts on Tower's transcript of the controller, which no real pilot does.
+    So when the speech model itself was unsure and the card says nearly the same, it was the card."""
     w, events = make()
     card = a_card(w)
-    slip_item = wrong_version(w, card.items[0])
-    asyncio.run(w.controller_text(C.phrase_for(card.callsign, [slip_item])))
-    held = of(events, "said_check")[0]["clearance_id"]
-    w.confirm_heard(held)
-    run(w)
-    assert [t for t in of(events, "transcript") if t["speaker"] == "pilot"]  # now the pilot answers
-    assert card.status == "pending" and card.heard_instead is None  # the card itself was never given
+    w.set_next_readback("correct")
+    slip = C.phrase_for(card.callsign, [wrong_version(w, card.items[0])])
+    asyncio.run(w._controller(slip, conf=0.4))
+    run(w, 4)
+    assert any("took the card" in n for n in notices(events))
+    assert card.status in ("validated", "verified")
 
 
 def test_nothing_understood_says_so():

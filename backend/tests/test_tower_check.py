@@ -163,7 +163,7 @@ def test_items_to_sim_command_from_readback():
     cmd = items_to_sim_command(ext.items)
     assert (cmd.kind, cmd.value) == ("altitude", 21000.0)
     ext, _ = readback("left two seven zero air canada one two three")
-    assert items_to_sim_command(ext.items).model_dump(exclude={"via"}) == {"kind": "heading", "value": 270.0}
+    assert items_to_sim_command(ext.items).model_dump(exclude={"via", "turns"}) == {"kind": "heading", "value": 270.0}
     ext, _ = readback("direct bosox air canada one two three")
     assert items_to_sim_command(ext.items).value == "BOSOX"
     ext, _ = readback("one two four six five air canada one two three")
