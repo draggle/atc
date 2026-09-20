@@ -278,9 +278,12 @@ export default function CommandBar() {
         return;
       }
       // Plain space is the radio. Bare: with a modifier down it belongs to someone else.
-      if (e.code !== "Space" || e.repeat || isTyping(e.target)) return;
+      if (e.code !== "Space" || isTyping(e.target)) return;
       if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      // Every one of them, not only the first: a held key repeats, and each repeat that got through
+      // was the browser's own "Space = page down", which scrolled the card column while talking.
       e.preventDefault();
+      if (e.repeat) return;
       void start("radio");
     };
     const up = (e: KeyboardEvent) => {
