@@ -61,6 +61,8 @@ def thin(scenario: Scenario, max_flights: int | None) -> Scenario:
 
 
 def load(name: str) -> Scenario:
+    if name.startswith(CUSTOM_PREFIX):
+        return custom(*parse_custom(name))
     if name.startswith("real/"):
         path = REAL_DIR / f"{name.split('/', 1)[1]}.json"
         if not path.exists():
@@ -156,6 +158,79 @@ def _sample_flights(rng: random.Random, routes: dict[str, list[str]], n: int, wi
         ))
     out.sort(key=lambda f: f.entry_time_s)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Custom: the setup panel's own scenario. Everything about it is in its name
+# ("custom/24/busy/7"), so loading, Reset and the repeatable seed all work as
+# for a scenario on disk, and nothing has to be stored.
+# ---------------------------------------------------------------------------
+
+CUSTOM_PREFIX = "custom/"
+CUSTOM_FLIGHTS = (2, 80)
+PACES_S = {"calm": 120.0, "normal": 75.0, "busy": 40.0}  # average seconds between one entry and the next
+ON_AT_START = 3  # this many are already entering when Start is pressed, so the screen is never empty
+
+
+def custom_name(n_flights: int, pace: str = "normal", seed: int = 1) -> str:
+    n = max(CUSTOM_FLIGHTS[0], min(CUSTOM_FLIGHTS[1], int(n_flights)))
+    pace = pace if pace in PACES_S else "normal"
+    return f"{CUSTOM_PREFIX}{n}/{pace}/{max(0, int(seed))}"
+
+
+def parse_custom(name: str) -> tuple[int, str, int]:
+    parts = name[len(CUSTOM_PREFIX):].split("/")
+    try:
+        n, pace, seed = int(parts[0]), parts[1], int(parts[2])
+    except (IndexError, ValueError) as exc:
+        raise ValueError(f"not a custom scenario name: {name}") from exc
+    if pace not in PACES_S or not CUSTOM_FLIGHTS[0] <= n <= CUSTOM_FLIGHTS[1]:
+        raise ValueError(f"not a custom scenario name: {name}")
+    return n, pace, seed
+
+
+def is_known(name: str) -> bool:
+    if name.startswith(CUSTOM_PREFIX):
+        try:
+            parse_custom(name)
+            return True
+        except ValueError:
+            return False
+    return name in list_scenarios()
+
+
+def custom(n_flights: int, pace: str = "normal", seed: int = 1, sector_nm: float = 200.0) -> Scenario:
+    """`n_flights` on the demo route network, entering `PACES_S[pace]` apart on average.
+
+    The first few enter at once, each by a different fix, so there is traffic on the screen the
+    moment Start is pressed. The rest follow over the window. The upstream spacing per fix still
+    holds (_sample_flights), so a busy sky is a long queue, not two aircraft in the same place.
+    """
+    rng = random.Random(seed * 7919 + n_flights)
+    wps, routes = _network(sector_nm)
+    window = max(300.0, n_flights * PACES_S[pace])
+    flights = _sample_flights(rng, routes, n_flights, window, set())
+    taken: set[str] = set()
+    for f in flights:  # earliest first
+        if len(taken) >= min(ON_AT_START, n_flights):
+            break
+        if f.route and f.route[0] not in taken:
+            taken.add(f.route[0])
+            f.entry_time_s = 0.0
+    flights.sort(key=lambda f: f.entry_time_s)
+    last = max((f.entry_time_s for f in flights), default=0.0)
+    # How many share the sector at the busiest moment: each is in it for its route length at its speed.
+    at = {w.name: (w.x_nm, w.y_nm) for w in wps}
+    spans = []
+    for f in flights:
+        pts = [at[n] for n in f.route if n in at]
+        length = sum(((bx - ax) ** 2 + (by - ay) ** 2) ** 0.5 for (ax, ay), (bx, by) in zip(pts, pts[1:]))
+        spans.append((f.entry_time_s, f.entry_time_s + length / max(f.gs_kt, 1.0) * 3600.0))
+    peak = max((sum(1 for a, b in spans if a <= t < b) for t, _ in spans), default=0)
+    return Scenario(name=custom_name(n_flights, pace, seed), seed=seed, sector_nm=sector_nm, waypoints=wps,
+                    flights=flights,
+                    description=(f"Custom: {n_flights} aircraft, {pace}. Up to {peak} in the sector at once; "
+                                 f"the last one enters at {int(last // 60)}:{int(last % 60):02d}."))
 
 
 def generate(seed: int, n_flights: int, sector_nm: float = 200.0) -> Scenario:

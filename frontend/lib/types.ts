@@ -488,7 +488,8 @@ export type ClientMessage =
   | { type: "agent_text"; text: string }
   | { type: "radio_text"; text: string }
   | { type: "load_scenario"; name: string }
-  | { type: "configure"; source: "sim" | "real"; scenario: string; density?: number; max_flights?: number }
+  // scenario "custom": generated traffic. flights 2..80, pace calm | normal | busy, seed for a repeatable draw.
+  | { type: "configure"; source: "sim" | "real"; scenario: string; density?: number; max_flights?: number; flights?: number; pace?: "calm" | "normal" | "busy"; seed?: number }
   | { type: "configure"; source: "live"; region: string; max_flights?: number }
   | { type: "start" }
   | { type: "pause" }

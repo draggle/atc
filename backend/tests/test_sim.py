@@ -93,3 +93,41 @@ def test_scenarios_load_and_generate():
     for _ in range(60):
         sim.step(60.0)
     assert sim.done()
+
+
+# --------------------------------------------------------------------------- the setup panel's custom scenario
+
+def test_a_custom_scenario_is_its_name():
+    """Everything about it is in the name, so Reset and a reload give the same sky back."""
+    from sim import scenarios as SC
+    name = SC.custom_name(24, "busy", 7)
+    assert name == "custom/24/busy/7" and SC.is_known(name)
+    a, b = SC.load(name), SC.load(name)
+    assert [(f.callsign, f.entry_time_s, f.route) for f in a.flights] == [(f.callsign, f.entry_time_s, f.route) for f in b.flights]
+    assert len(a.flights) == 24 and len({f.callsign for f in a.flights}) == 24
+    assert sum(1 for f in a.flights if f.entry_time_s == 0) == 3  # traffic on the screen the moment Start is pressed
+    assert [f.callsign for f in SC.load(SC.custom_name(24, "busy", 8)).flights] != [f.callsign for f in a.flights]
+    # out of range is pulled in, nonsense is refused
+    assert SC.custom_name(999, "frantic", -4) == "custom/80/normal/0"
+    assert not SC.is_known("custom/12/frantic/1") and not SC.is_known("custom/x/normal/1") and not SC.is_known("custom/500/calm/1")
+
+
+def test_a_custom_scenario_runs_and_resets_like_any_other():
+    import asyncio
+
+    from world import World
+
+    w = World(lambda e: None, synthesize=False, realtime=False)
+    w.load("custom/14/busy/2")
+    w.set_auto_speak(True)
+    w.start()
+    asyncio.run(w.tick(1.0))
+    first = sorted(w.sim.active)
+    assert len(first) == 3 and w.plan is not None
+    for _ in range(900):
+        asyncio.run(w.tick(1.0))
+    assert w.monitor.losses == 0
+    assert w.reset() and w.scenario.name == "custom/14/busy/2"
+    w.start()
+    asyncio.run(w.tick(1.0))
+    assert sorted(w.sim.active) == first  # the same sky again
