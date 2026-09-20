@@ -123,3 +123,45 @@ input[type="range"] { accent-color: var(--accent); }
 @keyframes boot-appear { to { opacity: 1; } }
 @keyframes boot-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) { .boot-radar i, .boot-word span { animation-duration: 0.01s !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; opacity: 1; transform: none; } }
+
+/* ---------------------------------------------------------------------------------------------
+   Shared controls. One dark ground, white ink, hairlines. Reuse these before inventing a look.
+   --------------------------------------------------------------------------------------------- */
+/* .btn: quiet text button with a hairline; 28px tall, sentence case. Add disabled to dim it. */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 500; line-height: 1; white-space: nowrap; transition: color 0.15s, background-color 0.15s, border-color 0.15s; }
+.btn:hover:not(:disabled) { color: var(--fg); border-color: #34373d; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+/* .btn-primary: the one filled button on a screen. White ground, dark ink. Combine with .btn. */
+.btn-primary { background: var(--fg); color: var(--bg); border-color: var(--fg); font-weight: 600; }
+.btn-primary:hover:not(:disabled) { background: #ffffff; color: var(--bg); border-color: #ffffff; }
+/* .seg: segmented control; children are buttons, the chosen one carries .seg-on or aria-pressed="true". */
+.seg { display: inline-flex; align-items: stretch; height: 28px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: transparent; }
+.seg > button { padding: 0 10px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 500; line-height: 1; white-space: nowrap; transition: color 0.15s, background-color 0.15s; }
+.seg > button + button { border-left: 1px solid var(--line); }
+.seg > button:hover:not(:disabled) { color: var(--fg); }
+.seg > button:disabled { opacity: 0.4; cursor: not-allowed; }
+.seg > button.seg-on, .seg > button[aria-pressed="true"] { background: var(--fg); color: var(--bg); font-weight: 600; }
+.seg-sm { height: 24px; } .seg-sm > button { padding: 0 8px; font-size: 11px; }
+/* .pill: small on/off toggle. Outline when off, add .pill-on for filled white when on. */
+.pill { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 500; line-height: 1; white-space: nowrap; transition: color 0.15s, background-color 0.15s, border-color 0.15s; }
+.pill:hover:not(:disabled) { color: var(--fg); border-color: #34373d; }
+.pill-on, .pill-on:hover:not(:disabled) { background: var(--fg); color: var(--bg); border-color: var(--fg); font-weight: 600; }
+/* .chip: muted inline status label; .chip-ok / .chip-warn / .chip-bad tint the text and hairline only. */
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-size: 11px; font-weight: 500; line-height: 1; white-space: nowrap; }
+.chip-ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
+.chip-warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.chip-bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+/* .dot: 6px status dot, muted by default; .dot-ok / .dot-warn / .dot-bad when the colour means something. */
+.dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot-ok { background: var(--ok); } .dot-warn { background: var(--warn); } .dot-bad { background: var(--bad); }
+/* .stat: muted label followed by a white tabular number in <b>. */
+.stat { display: inline-flex; align-items: baseline; gap: 5px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.stat b { font-weight: 600; color: var(--fg); font-variant-numeric: tabular-nums; }
+/* .card-pick: selectable card with a hairline; .card-pick-on turns the hairline white. */
+.card-pick { display: block; text-align: left; width: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel-2); transition: border-color 0.15s; }
+.card-pick:hover { border-color: #3a3d44; }
+.card-pick-on, .card-pick-on:hover { border-color: var(--fg); }
+/* .scrim: full-bleed dark backdrop behind a sheet. No blur. */
+.scrim { background: rgba(10, 10, 11, 0.8); }
+/* .hint: one small muted line that floats over the map, for example "World loaded, press Start". */
+.hint { display: inline-flex; align-items: center; gap: 4px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--glass); color: var(--muted); font-size: 12px; white-space: nowrap; }

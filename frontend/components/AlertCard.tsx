@@ -9,6 +9,8 @@ const MUTE_KEY = "tower.alertMute";
 /** Only these verdicts play their clip unprompted. Ambiguous never does. */
 const AUTOPLAY_RESULTS = new Set<string>(["mismatch", "partial", "missing"]);
 
+const MONO = { fontFamily: "var(--font-mono)" } as const;
+
 function readMute(): boolean {
   try {
     return window.localStorage.getItem(MUTE_KEY) === "1";
@@ -30,24 +32,29 @@ function isRadarAlert(a: ActiveAlert): boolean {
   return a.reason.startsWith("Radar:");
 }
 
-/** Title and tones for one alert. The flight strip uses the same ones, so the two can never disagree. */
+/**
+ * Title and tones for one alert. The flight strip uses the same ones, so the two can never disagree.
+ * One flat card, a 2px left rule in the one colour that means something: red for wrong, amber for
+ * "squack is not sure". `frame` is that rule; `soft` is the quiet box the correction phrase sits in.
+ */
 export function alertLook(a: ActiveAlert) {
   const radar = isRadarAlert(a);
   const severe = a.result === "mismatch" || a.result === "missing";
   const title = radar
-    ? "NOT FLYING THE CLEARANCE"
+    ? "Not flying the clearance"
     : severe
       ? a.result === "missing"
-        ? "NO READBACK"
-        : "WRONG READBACK"
+        ? "No readback"
+        : "Wrong readback"
       : a.result === "partial"
-        ? "PARTIAL READBACK"
-        : "UNCLEAR READBACK"; // Tower could not tell, and says so. "CHECKING" is the card while it still is.
-  const frame = radar ? "border-cyan-400 bg-cyan-400/10" : severe ? "border-bad bg-bad/10" : "border-warn bg-warn/10";
-  const pulse = radar ? "alert-pulse-cyan" : severe ? "alert-pulse" : "";
-  const hover = radar ? "hover:bg-cyan-400/15" : severe ? "hover:bg-bad/15" : "hover:bg-warn/15";
-  const soft = radar ? "border-cyan-400/50 bg-cyan-400/10" : severe ? "border-bad/50 bg-bad/10" : "border-warn/50 bg-warn/10";
-  const titleCls = radar ? "text-cyan-300" : severe ? "text-bad" : "text-warn";
+        ? "Partial readback"
+        : "Unclear readback"; // squack could not tell, and says so. "Checking" is the card while it still is.
+  const wrong = radar || severe;
+  const frame = wrong ? "border-l-bad" : "border-l-warn";
+  const pulse = "";
+  const hover = "hover:bg-panel-2";
+  const soft = "border-line bg-panel-2";
+  const titleCls = wrong ? "text-bad" : "text-warn";
   return { radar, severe, title, frame, pulse, hover, soft, titleCls };
 }
 
@@ -57,12 +64,12 @@ export function fmtItem(i: Item): string {
   return `${act}${i.type} ${i.value}${unit}`;
 }
 
-export function ItemList({ items, tone }: { items: Item[]; tone: "expected" | "heard" }) {
-  if (items.length === 0) return <span className="text-muted italic">nothing</span>;
+export function ItemList({ items, tone, size = "lg" }: { items: Item[]; tone: "expected" | "heard"; size?: "lg" | "sm" }) {
+  if (items.length === 0) return <span className="text-muted italic text-sm">nothing</span>;
   return (
     <ul className="space-y-0.5">
       {items.map((i, k) => (
-        <li key={k} className={`font-mono ${tone === "expected" ? "text-fg" : "text-bad"}`}>
+        <li key={k} className={`tabular-nums leading-tight ${size === "lg" ? "text-lg" : "text-sm"} ${tone === "expected" ? "text-fg" : "text-bad"}`} style={MONO}>
           {fmtItem(i)}
         </li>
       ))}
@@ -94,18 +101,21 @@ export function useShowOnMap(callsign: string) {
   };
 }
 
-export const SHOW_CLS = "group cursor-pointer transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/60";
+export const SHOW_CLS = "group cursor-pointer transition-colors outline-none focus-visible:ring-1 focus-visible:ring-fg/60";
 
 /** The callsign, reading as a link when the card will take you to it. */
 export function CallsignLink({ callsign, live }: { callsign: string; live: boolean }) {
-  if (!live) return <span className="font-mono text-sm">{callsign}</span>;
+  if (!live) return <span className="text-sm font-medium text-fg">{callsign}</span>;
   return (
-    <span className="font-mono text-sm">
+    <span className="text-sm font-medium text-fg">
       <span className="underline decoration-dotted decoration-muted underline-offset-4 group-hover:decoration-fg">{callsign}</span>
-      <span className="ml-2 text-[10px] text-muted group-hover:text-fg">show on map ›</span>
+      <span className="ml-2 text-[11px] font-normal text-muted group-hover:text-fg">show on map ›</span>
     </span>
   );
 }
+
+/** A text link. Everything a card lets you do reads like this; nothing is a filled button. */
+const LINK = "text-xs text-muted hover:text-fg underline decoration-dotted underline-offset-4";
 
 function AgentTrace({ clearanceId, done }: { clearanceId: string; done: boolean }) {
   const { steps } = useTowerState();
@@ -113,22 +123,22 @@ function AgentTrace({ clearanceId, done }: { clearanceId: string; done: boolean 
   const [open, setOpen] = useState(true);
   const pending = !done;
   return (
-    <div className="mt-2 border-t border-line/60 pt-2">
+    <div className="mt-3 border-t border-line pt-2">
       <button onClick={() => setOpen(!open)} className="flex items-center gap-2 text-xs text-muted hover:text-fg">
-        <span>{open ? "▾" : "▸"}</span>
+        <span className="w-3 text-center">{open ? "▾" : "▸"}</span>
         <span>Agent trace</span>
-        <span className="font-mono">({list.length} step{list.length === 1 ? "" : "s"})</span>
-        {pending && <span className="spinner" />}
+        <span className="tabular-nums">· {list.length} step{list.length === 1 ? "" : "s"}</span>
+        {pending && <span className="dot dot-warn animate-pulse" />}
       </button>
       {open && (
-        <ol className="mt-1.5 space-y-1.5">
+        <ol className="mt-2 space-y-1.5">
           {list.map((s) => (
             <li key={s.step} className="text-xs grid grid-cols-[1.25rem_1fr] gap-1">
-              <span className="font-mono text-muted">{s.step}.</span>
+              <span className="text-muted tabular-nums">{s.step}.</span>
               <div>
-                <span className="font-mono text-warn">{s.tool}</span>
-                <span className="text-muted">({Object.entries(s.args).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ")})</span>
-                <div className="text-fg/90">{s.result_summary}</div>
+                <span className="text-muted" style={MONO}>{s.tool}</span>
+                <span className="text-muted/60">({Object.entries(s.args).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ")})</span>
+                <div className="text-fg/90 mt-0.5">{s.result_summary}</div>
               </div>
             </li>
           ))}
@@ -145,17 +155,17 @@ function OneAlert({ a }: { a: ActiveAlert }) {
   const callsign = a.callsign ?? callsignForClearance(state, a.clearance_id) ?? "";
   const hasSteps = (state.steps[a.clearance_id] ?? []).length > 0 || a.decided_by === "resolver";
   const resolving = state.resolving.includes(a.clearance_id);
-  const { radar, title, frame, pulse, hover, soft, titleCls } = alertLook(a);
+  const { radar, title, frame, hover, soft, titleCls } = alertLook(a);
   const show = useShowOnMap(callsign);
   if (a.resolved) {
     // The controller said the correction and the pilot read it back right. Closed, and it says so.
     return (
-      <div className="rounded-lg border border-ok/60 bg-ok/10 px-3 py-2">
+      <div className="rounded-lg border border-line border-l-2 border-l-ok bg-panel-2 px-3 py-2.5">
         <div className="flex items-center justify-between">
-          <span className="text-[11px] font-bold tracking-wider text-ok">CORRECTED</span>
-          <span className="font-mono text-xs text-muted">{callsign}</span>
+          <span className="text-sm font-semibold text-ok">Corrected</span>
+          <span className="text-xs text-muted">{callsign}</span>
         </div>
-        <p className="mt-1 text-xs text-fg/90">
+        <p className="mt-1 text-xs text-muted">
           Wrong readback caught, corrected and read back right in {Math.round(a.resolved.seconds)} s.
         </p>
       </div>
@@ -163,57 +173,53 @@ function OneAlert({ a }: { a: ActiveAlert }) {
   }
 
   return (
-    <div {...show} className={`rounded-lg border-2 p-3 ${frame} ${pulse} ${show ? `${SHOW_CLS} ${hover}` : ""}`}>
-      <div className="flex items-start justify-between gap-2">
-        <div>
-          {radar && (
-            <div className="inline-block mb-1 px-1.5 py-0.5 rounded bg-cyan-400/20 text-cyan-200 text-[10px] uppercase tracking-wider font-semibold">
-              Read back right, flying wrong
-            </div>
-          )}
-          <div className={`text-lg font-bold tracking-wide ${titleCls}`}>{title}</div>
-          <div>
+    <div {...show} className={`rounded-lg border border-line border-l-2 ${frame} bg-panel-2 px-3 py-2.5 ${show ? `${SHOW_CLS} ${hover}` : ""}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className={`text-base font-semibold leading-tight ${titleCls}`}>{title}</div>
+          {radar && <div className="mt-0.5 text-[11px] text-muted">Read back right, flying wrong</div>}
+          <div className="mt-1">
             <CallsignLink callsign={callsign} live={!!show} />
           </div>
         </div>
-        <div className="text-right">
-          <div className="text-[10px] uppercase text-muted">{a.error_type?.replace("_", " ") ?? a.result}</div>
-          <div className="font-mono text-xs text-muted">
-            conf {(a.confidence * 100).toFixed(0)}% · {a.decided_by.replace("_", " ")}
+        <div className="text-right text-[11px] text-muted shrink-0 leading-relaxed">
+          <div>{a.error_type?.replace("_", " ") ?? a.result}</div>
+          <div className="tabular-nums">
+            {(a.confidence * 100).toFixed(0)}% · {a.decided_by.replace("_", " ")}
           </div>
         </div>
       </div>
 
-      <div className="mt-2 grid grid-cols-2 gap-3 text-sm">
-        <div>
-          <div className="text-[10px] uppercase text-muted mb-0.5">Expected</div>
+      <div className="mt-3 grid grid-cols-2 gap-3">
+        <div className="min-w-0">
+          <div className="text-[11px] text-muted mb-1">Expected</div>
           <ItemList items={a.expected} tone="expected" />
         </div>
-        <div>
-          <div className="text-[10px] uppercase text-muted mb-0.5">Heard</div>
+        <div className="min-w-0">
+          <div className="text-[11px] text-muted mb-1">Heard</div>
           <ItemList items={a.heard} tone="heard" />
         </div>
       </div>
 
-      {a.reason && <p className="mt-2 text-xs text-fg/80">{a.reason}</p>}
+      {a.reason && <p className="mt-2.5 text-xs text-muted leading-snug">{a.reason}</p>}
 
-      <div className="mt-2 flex items-center gap-2">
+      {a.correction_phrase && (
+        <div className={`mt-3 rounded-md border px-3 py-2 ${soft}`}>
+          <div className="text-[11px] text-muted">Say now</div>
+          <div className="mt-0.5 text-[15px] leading-snug text-fg">&ldquo;{a.correction_phrase}&rdquo;</div>
+        </div>
+      )}
+
+      <div className="mt-2.5 flex items-center gap-3">
         {a.audio_ref && (
           <audio controls preload="none" className="h-7 max-w-[180px]" src={`${HTTP_URL}/audio/${a.audio_ref}`}>
             <track kind="captions" />
           </audio>
         )}
-        <button onClick={() => dispatch({ type: "dismiss_alert", clearance_id: a.clearance_id })} className="ml-auto text-xs text-muted hover:text-fg px-2 py-1 rounded border border-line">
+        <button onClick={() => dispatch({ type: "dismiss_alert", clearance_id: a.clearance_id })} className={`ml-auto ${LINK}`}>
           Dismiss
         </button>
       </div>
-
-      {a.correction_phrase && (
-        <div className={`mt-2 rounded-md border px-2.5 py-2 ${soft}`}>
-          <div className="text-[10px] uppercase text-muted">Say now</div>
-          <div className="text-[15px] leading-snug">&ldquo;{a.correction_phrase}&rdquo;</div>
-        </div>
-      )}
 
       {(hasSteps || resolving) && <AgentTrace clearanceId={a.clearance_id} done={!resolving} />}
     </div>
@@ -242,19 +248,20 @@ function Checking({ clearanceId }: { clearanceId: string }) {
     return () => clearTimeout(t);
   }, [left, clearanceId, dispatch]);
   return (
-    <div {...show} className={`rounded-lg border-2 border-warn bg-warn/10 p-3 ${show ? `${SHOW_CLS} hover:bg-warn/15` : ""}`}>
+    <div {...show} className={`rounded-lg border border-line border-l-2 border-l-warn bg-panel-2 px-3 py-2.5 ${show ? `${SHOW_CLS} hover:bg-panel` : ""}`}>
       <div className="flex items-center gap-2">
-        <span className="spinner" />
-        <span className="text-lg font-bold tracking-wide text-warn">{watch ? "WATCHING" : "CHECKING"}</span>
+        {/* The one animation left on an alert: a slow breathe while squack is still deciding. */}
+        <span className="dot dot-warn animate-pulse" />
+        <span className="text-base font-semibold text-warn animate-pulse">{watch ? "Watching" : "Checking"}</span>
         <CallsignLink callsign={callsign} live={!!show} />
-        {left !== null && <span className="ml-auto font-mono text-sm tabular-nums text-warn" title="Simulator seconds until Tower decides">{left}s</span>}
+        {left !== null && <span className="ml-auto text-sm tabular-nums text-warn" style={MONO} title="Simulator seconds until squack decides">{left} s</span>}
       </div>
       {watch ? (
-        <p className="mt-1 text-xs text-fg/80">
-          The readback was unclear, so Tower is watching what {callsign || "the aircraft"} actually flies before it decides. {left === 0 ? "Nothing wrong on the radar." : `Verdict in about ${left} s.`}
+        <p className="mt-1.5 text-xs text-muted">
+          The readback was unclear, so squack is watching what {callsign || "the aircraft"} actually flies before it decides. {left === 0 ? "Nothing wrong on the radar." : `Verdict in about ${left} s.`}
         </p>
       ) : (
-        <p className="mt-1 text-xs text-fg/80">Readback unclear. The resolver is gathering evidence before deciding whether to interrupt you.</p>
+        <p className="mt-1.5 text-xs text-muted">Readback unclear. The resolver is gathering evidence before deciding whether to interrupt you.</p>
       )}
       <AgentTrace clearanceId={clearanceId} done={false} />
     </div>
@@ -306,13 +313,13 @@ export default function AlertCard() {
   };
   return (
     // Same backing as the Instructions list below: an alert is read over a zoomed-in, busy map.
-    <section className="panel p-2.5 shrink-0 flex flex-col gap-2">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xs uppercase tracking-wider text-muted">Alerts</h2>
+    <section className="panel p-3 shrink-0 flex flex-col gap-2">
+      <div className="flex items-baseline justify-between">
+        <h2 className="text-[13px] font-semibold text-fg">Alerts</h2>
         <button
           onClick={toggleMute}
           title={muted ? "Alert clips are muted. Click to auto-play them." : "Alert clips auto-play once. Click to mute."}
-          className={`text-[10px] px-2 py-0.5 rounded border ${muted ? "border-line text-muted" : "border-accent/40 text-accent bg-accent/10"}`}
+          className={`text-[11px] hover:text-fg underline decoration-dotted underline-offset-4 ${muted ? "text-muted" : "text-ok"}`}
         >
           {muted ? "sound off" : "sound on"}
         </button>
@@ -321,7 +328,7 @@ export default function AlertCard() {
         <Checking key={id} clearanceId={id} />
       ))}
       {latest && <OneAlert a={latest} />}
-      {rest.length > 0 && <div className="text-[10px] text-muted text-right">{rest.length} earlier alert{rest.length === 1 ? "" : "s"} below</div>}
+      {rest.length > 0 && <div className="text-[11px] text-muted text-right">{rest.length} earlier alert{rest.length === 1 ? "" : "s"} below</div>}
       {rest.map((a) => (
         <OneAlert key={a.clearance_id} a={a} />
       ))}

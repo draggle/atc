@@ -2,11 +2,13 @@ import type { Metadata } from "next";
 import { B612, B612_Mono, Plus_Jakarta_Sans } from "next/font/google";
 import "./globals.css";
 
-// B612 is the typeface Airbus commissioned for cockpit displays: built to stay legible on a
-// dense screen, at a glance, under stress. The right voice for an air traffic tool.
+// Plus Jakarta Sans is the UI face: the wordmark, every label, every button. Hierarchy comes from
+// weight and opacity, so 400 to 700 are all loaded.
+const jakarta = Plus_Jakarta_Sans({ subsets: ["latin"], weight: ["400", "500", "600", "700"], variable: "--font-jakarta", display: "swap" });
+// B612 is the typeface Airbus commissioned for cockpit displays. B612 Mono is kept for data that
+// has to line up: callsigns, flight levels, transcripts. B612 proportional stays available under
+// --font-b612 for anything that still wants it.
 const b612 = B612({ subsets: ["latin"], weight: ["400", "700"], variable: "--font-b612", display: "swap" });
-// Plus Jakarta Sans carries the wordmark on the boot screen only.
-const jakarta = Plus_Jakarta_Sans({ subsets: ["latin"], weight: ["500", "600"], variable: "--font-jakarta", display: "swap" });
 const b612Mono = B612_Mono({ subsets: ["latin"], weight: ["400", "700"], variable: "--font-b612-mono", display: "swap" });
 
 export const metadata: Metadata = {

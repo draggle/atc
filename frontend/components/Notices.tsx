@@ -5,10 +5,11 @@ import { useTowerDispatch, useTowerState } from "@/lib/store";
 
 const LIFE_MS = 6000;
 
-const CLS = {
-  info: "border-accent/40 bg-accent/10 text-fg",
-  warn: "border-warn/50 bg-warn/15 text-fg",
-  error: "border-bad/50 bg-bad/15 text-fg",
+/** A flat panel with a 2px rule on the left in the level's colour. Nothing else is coloured. */
+const RULE = {
+  info: "border-l-fg/60",
+  warn: "border-l-warn",
+  error: "border-l-bad",
 } as const;
 
 /** Short messages from the backend: why an action was refused, or what failed. */
@@ -31,7 +32,7 @@ export default function Notices() {
         <button
           key={n.id}
           onClick={() => dispatch({ type: "dismiss_notice", id: n.id })}
-          className={`text-left text-sm rounded-md border px-3 py-2 shadow-lg backdrop-blur-md ${CLS[n.level] ?? CLS.info}`}
+          className={`text-left text-sm text-fg bg-panel border border-line rounded-[var(--radius)] px-3 py-2 border-l-2 ${RULE[n.level] ?? RULE.info}`}
         >
           {n.text}
         </button>

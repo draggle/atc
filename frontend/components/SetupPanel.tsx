@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { snapshotClock, useTowerDispatch, useTowerState } from "@/lib/store";
 import { useClient } from "./TowerApp";
+import VoiceToggle from "./VoiceToggle";
 import type { ScenarioInfo } from "@/lib/types";
 
 const DENSITIES = [1, 1.5, 2, 2.5] as const;
@@ -11,11 +12,19 @@ const LIVE_WAIT_MS = 15000; // a live snapshot is one network fetch on the backe
 
 type Source = "sim" | "real" | "live";
 
+const SOURCES: { key: Source; eyebrow: string; name: string; detail: string }[] = [
+  { key: "real", eyebrow: "Recorded", name: "Real day", detail: "Airline flights that really crossed a region at cruise, one hour of them." },
+  { key: "live", eyebrow: "Right now", name: "Live snapshot", detail: "One snapshot of the sky over a region as it is this minute." },
+  { key: "sim", eyebrow: "Scripted", name: "Simulated", detail: "Synthetic traffic built to show conflicts, storms and readback errors." },
+];
+
 function prettyDate(iso?: string): string {
   if (!iso) return "";
   const d = new Date(`${iso}T12:00:00Z`);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("en-CA", { weekday: "short", month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
 }
+
+const hh = (h?: number) => String(h ?? 0).padStart(2, "0");
 
 /**
  * The first thing you see. Pick where the traffic comes from and load it. Loading builds the world
@@ -85,7 +94,7 @@ export default function SetupPanel() {
     }, LIVE_WAIT_MS);
     return () => clearTimeout(h);
   }, [loading]);
-  // Reopened over a live snapshot: show the tab that says what is loaded.
+  // Reopened over a live snapshot: show the card that says what is loaded.
   const isLive = sim?.source === "real" && sim.meta?.live === true;
   useEffect(() => {
     if (isLive) setSource("live");
@@ -107,7 +116,7 @@ export default function SetupPanel() {
       : loading === "live"
         ? "Taking a snapshot of the sky…"
         : stalled
-          ? "The backend did not answer. Try again, or load a recorded hour from Real traffic."
+          ? "The backend did not answer. Try again, or load a recorded hour from Real day."
           : canLoad ? (cap > 0 ? `Up to ${cap} flights will load` : "Every flight at cruise will load") : "";
 
   const load = () => {
@@ -123,160 +132,117 @@ export default function SetupPanel() {
   const loadedFlights = plan?.paths.length || Object.values(aircraft).filter((a) => !a.is_intruder).length;
   const available = typeof sim?.meta?.flights_available === "number" && sim.meta.flights_available > loadedFlights ? sim.meta.flights_available : 0;
 
-  const tab = (active: boolean) =>
-    `flex-1 px-3 py-2 text-sm font-medium border-b-2 transition-colors ${active ? "border-accent text-fg" : "border-transparent text-muted hover:text-fg"}`;
-  const pick = (active: boolean) =>
-    `text-left rounded-md border px-3 py-2 transition-colors ${active ? "border-accent/60 bg-accent/10" : "border-line bg-panel-2/70 hover:border-muted"}`;
-  const seg = (active: boolean) => `px-3 py-1 font-mono text-sm ${active ? "bg-accent/20 text-accent" : "bg-panel-2/70 text-muted hover:text-fg"}`;
-
-  // What the live snapshot on the map turned out to be. The panel closes on load, so this is for whoever reopens it.
+  // What the live snapshot on the map turned out to be. The sheet closes on load, so this is for whoever reopens it.
   const liveLoaded = isLive && (
-    <div className="rounded-md border border-accent/30 bg-accent/5 px-3 py-2 text-xs text-muted leading-relaxed">
+    <p className="text-xs text-muted leading-relaxed">
       <span className="text-fg">On the map now: </span>
       {(sim?.meta?.label ?? sim?.meta?.region ?? "live snapshot").split(" (")[0]}
-      {snapshotAt && <>, snapshot taken <span className="font-mono text-fg">{snapshotAt}</span></>}
-      {loadedFlights > 0 && <>, <span className="font-mono text-fg">{loadedFlights}</span>{available > 0 && ` of ${available}`} flights</>}.
+      {snapshotAt && <>, snapshot taken <span className="text-fg tabular-nums">{snapshotAt}</span></>}
+      {loadedFlights > 0 && <>, <span className="text-fg tabular-nums">{loadedFlights}</span>{available > 0 && ` of ${available}`} flights</>}.
       {sim?.meta?.fallback === "saved_snapshot" && <span className="text-warn"> The live feed was unavailable, so this is the saved snapshot from that time.</span>}
       {typeof sim?.meta?.caveats === "string" && sim.meta.caveats && <span> {sim.meta.caveats}</span>}
+    </p>
+  );
+
+  const field = (label: string, children: React.ReactNode) => (
+    <div className="flex flex-col gap-2">
+      <span className="text-xs text-muted">{label}</span>
+      <div className="flex flex-wrap gap-1.5">{children}</div>
     </div>
+  );
+  const pill = (active: boolean, onClick: () => void, label: React.ReactNode, key: string | number) => (
+    <button key={key} onClick={onClick} aria-pressed={active} className={`pill ${active ? "pill-on" : ""}`}>{label}</button>
   );
 
   // Real and live traffic share one cap.
-  const capControl = (
-    <div className="flex flex-col gap-2">
-      <span className="eyebrow">Most flights to load</span>
-      <div className="flex rounded-md border border-line overflow-hidden w-fit">
-        {CAPS.map((c) => (
-          <button key={c} onClick={() => setCap(c)} aria-pressed={cap === c} className={seg(cap === c)}>{c === 0 ? "All" : c}</button>
-        ))}
-      </div>
-    </div>
-  );
+  const capControl = field("Most flights to load", CAPS.map((c) => pill(cap === c, () => setCap(c), c === 0 ? "All" : c, c)));
+  const chosenWindow = windows.find((w) => w.name === realName);
 
   return (
-    <div className="absolute inset-0 z-40 flex items-center justify-center bg-bg/75 backdrop-blur-sm p-6">
-      <div className="panel w-full max-w-2xl p-0 overflow-hidden max-h-[92vh] flex flex-col" role="dialog" aria-label="Set up the airspace">
-        <div className="px-5 pt-5 pb-3">
-          <div className="eyebrow mb-1">Tower</div>
-          <h1 className="text-xl font-bold tracking-tight">Set up the airspace</h1>
-          <p className="text-sm text-muted mt-1">Choose the traffic, load it, look at the plan, then press Start. Nothing moves until you do.</p>
+    <div className="absolute inset-0 z-40 flex items-center justify-center scrim p-6">
+      <div className="panel w-full max-w-[720px] max-h-[92vh] flex flex-col overflow-hidden" role="dialog" aria-label="Choose a sky">
+        <div className="px-6 pt-6 pb-4">
+          <h1 className="text-lg font-semibold tracking-tight">Choose a sky</h1>
+          <p className="text-sm text-muted mt-1">Pick where the traffic comes from and load it. Nothing moves until you press Start.</p>
         </div>
 
-        <div className="flex px-5 border-b border-line">
-          <button className={tab(source === "sim")} aria-pressed={source === "sim"} onClick={() => setSource("sim")}>Simulated traffic</button>
-          <button className={tab(source === "real")} aria-pressed={source === "real"} onClick={() => setSource("real")}>Real traffic</button>
-          <button className={tab(source === "live")} aria-pressed={source === "live"} onClick={() => setSource("live")}>Live sky</button>
+        <div className="px-6 grid grid-cols-3 gap-2">
+          {SOURCES.map((s) => (
+            <button key={s.key} onClick={() => setSource(s.key)} aria-pressed={source === s.key} className={`card-pick ${source === s.key ? "card-pick-on" : ""}`}>
+              <div className="text-[11px] text-muted">{s.eyebrow}</div>
+              <div className="text-sm font-semibold mt-1">{s.name}</div>
+              <div className="text-xs text-muted mt-1 leading-relaxed">{s.detail}</div>
+            </button>
+          ))}
         </div>
 
-        {/* One height for every tab, so the panel does not jump when you switch. */}
-        <div className="h-[28rem] overflow-y-auto scroll-thin">
+        {/* One minimum height for every source, so the sheet does not jump when you switch. */}
+        <div className="px-6 py-5 min-h-[15rem] overflow-y-auto scroll-thin flex flex-col gap-5">
           {source === "sim" ? (
-            <div className="p-5 flex flex-col gap-4">
-              <div className="flex flex-col gap-2">
-                <span className="eyebrow">Scenario</span>
-                {sims.length === 0 && <p className="text-sm text-muted">{connection === "connecting" ? "Connecting to the backend." : "No scenarios reported by the backend."}</p>}
-                {sims.map((s) => (
-                  <button key={s.name} onClick={() => setScenario(s.name)} className={pick(scenario === s.name)}>
-                    <div className="flex items-baseline justify-between gap-3">
-                      <span className="text-sm font-medium capitalize">{s.name}</span>
-                      <span className="text-xs font-mono text-muted">{s.flights} flights</span>
-                    </div>
-                    {s.description && <p className="text-xs text-muted mt-0.5">{s.description}</p>}
-                  </button>
-                ))}
-              </div>
-              <div className="flex flex-col gap-2">
-                <span className="eyebrow">Traffic density</span>
-                <div className="flex rounded-md border border-line overflow-hidden w-fit">
-                  {DENSITIES.map((d) => (
-                    <button key={d} onClick={() => setDensity(d)} className={seg(density === d)}>{d}x</button>
-                  ))}
-                </div>
-              </div>
-            </div>
+            <>
+              {sims.length === 0 ? (
+                <p className="text-sm text-muted">{connection === "connecting" ? "Connecting to the backend." : "No scenarios reported by the backend."}</p>
+              ) : (
+                <>
+                  {field("Scenario", sims.map((s) => pill(scenario === s.name, () => setScenario(s.name), <><span className="capitalize">{s.name}</span><span className="opacity-60 tabular-nums">{s.flights}</span></>, s.name)))}
+                  {chosenSim?.description && <p className="text-xs text-muted leading-relaxed -mt-2">{chosenSim.description}</p>}
+                </>
+              )}
+              {field("Traffic density", DENSITIES.map((d) => pill(density === d, () => setDensity(d), `${d}x`, d)))}
+            </>
           ) : source === "live" ? (
             liveRegions.length === 0 ? (
-              <div className="p-5 text-sm text-muted flex flex-col gap-2">
+              <div className="text-sm text-muted flex flex-col gap-2">
                 {liveLoaded}
                 <p className="text-fg">{connection === "connecting" ? "Connecting to the backend." : "No regions to take a snapshot of."}</p>
-                <p>The backend did not list any live regions and has no recorded ones to fall back on. Pull the repo and restart it, or use Simulated traffic.</p>
+                <p>The backend did not list any live regions and has no recorded ones to fall back on. Pull the repo and restart it, or use Simulated.</p>
               </div>
             ) : (
-              <div className="p-5 flex flex-col gap-4">
+              <>
                 {liveLoaded}
-                <div className="flex flex-col gap-2">
-                  <span className="eyebrow">Region</span>
-                  <div className="grid grid-cols-2 gap-2">
-                    {liveRegions.map((r) => (
-                      <button key={r.key} onClick={() => setLiveRegion(r.key)} aria-pressed={liveRegion === r.key} className={pick(liveRegion === r.key)}>
-                        <div className="text-sm font-medium">{r.label}</div>
-                        <div className="text-xs font-mono text-muted mt-0.5">as it is right now</div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                {field("Region", liveRegions.map((r) => pill(liveRegion === r.key, () => setLiveRegion(r.key), r.label, r.key)))}
                 {capControl}
                 <p className="text-xs text-muted leading-relaxed">
-                  This is one snapshot of the airline traffic at cruise over the region right now. From the moment you press Start the simulator flies it, because real aircraft will not obey Tower. Each flight&apos;s dashed line is its current track projected to the region boundary. Tower&apos;s plan is drawn over it. Flight data: adsb.lol, open under ODbL and CC0.
+                  This is one snapshot of the airline traffic at cruise over the region right now. From the moment you press Start the simulator flies it, because real aircraft will not obey squack. Each flight&apos;s dashed line is its current track projected to the region boundary. squack&apos;s plan is drawn over it. Flight data: adsb.lol, open under ODbL and CC0.
                 </p>
-              </div>
+              </>
             )
           ) : reals.length === 0 ? (
-            <div className="p-5 text-sm text-muted flex flex-col gap-2">
+            <div className="text-sm text-muted flex flex-col gap-2">
               <p className="text-fg">No real-traffic scenarios are installed.</p>
               <p>Build them with backend/tools/real_extract.py and real_build.py, or pull the repo: the built files live in backend/scenarios/real.</p>
             </div>
           ) : (
-            <div className="p-5 flex flex-col gap-4">
-              <div className="flex flex-col gap-2">
-                <span className="eyebrow">Region</span>
-                <div className="grid grid-cols-2 gap-2">
-                  {regions.map((r) => (
-                    <button key={r.key} onClick={() => setRegion(r.key)} className={pick(region === r.key)}>
-                      <div className="text-sm font-medium">{r.label}</div>
-                      <div className="text-xs font-mono text-muted mt-0.5">{r.items.length} time windows</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="flex flex-col gap-2">
-                <span className="eyebrow">Day and hour, UTC</span>
-                <div className="grid grid-cols-2 gap-2">
-                  {windows.map((w) => (
-                    <button key={w.name} onClick={() => setRealName(w.name)} className={pick(realName === w.name)}>
-                      <div className="flex items-baseline justify-between gap-2">
-                        <span className="text-sm font-medium">{prettyDate(w.meta?.date)}</span>
-                        <span className="text-xs font-mono text-muted">{w.flights} flights</span>
-                      </div>
-                      <div className="text-xs font-mono text-muted mt-0.5">
-                        {String(w.meta?.hour_utc ?? 0).padStart(2, "0")}:00 to {String((w.meta?.hour_utc ?? 0) + 1).padStart(2, "0")}:00 · {w.meta?.gates ?? 0} gates
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
+            <>
+              {field("Region", regions.map((r) => pill(region === r.key, () => setRegion(r.key), <>{r.label}<span className="opacity-60 tabular-nums">{r.items.length}</span></>, r.key)))}
+              {field(
+                "Day and hour, UTC",
+                windows.map((w) => pill(realName === w.name, () => setRealName(w.name), <>{prettyDate(w.meta?.date)}<span className="opacity-60 tabular-nums">{hh(w.meta?.hour_utc)}:00</span></>, w.name)),
+              )}
+              {chosenWindow && (
+                <p className="text-xs text-muted -mt-2 tabular-nums">
+                  {hh(chosenWindow.meta?.hour_utc)}:00 to {hh((chosenWindow.meta?.hour_utc ?? 0) + 1)}:00 · {chosenWindow.flights} flights · {chosenWindow.meta?.gates ?? 0} gates
+                </p>
+              )}
               {capControl}
               <p className="text-xs text-muted leading-relaxed">
-                These are airline flights that really crossed the region at cruise level that hour. Left alone, each one flies the track it actually flew. Tower&apos;s plan is drawn over it. Flight data: adsb.lol, open under ODbL and CC0.
+                These are airline flights that really crossed the region at cruise level that hour. Left alone, each one flies the track it actually flew. squack&apos;s plan is drawn over it. Flight data: adsb.lol, open under ODbL and CC0.
               </p>
-            </div>
+            </>
           )}
         </div>
 
-        <div className="px-5 py-4 border-t border-line flex items-center justify-between gap-3">
-          <span className={`text-xs font-mono ${stalled && source === "live" ? "text-warn" : "text-muted"}`} role="status">{footer}</span>
-          <div className="flex gap-2 shrink-0">
+        <div className="px-6 py-4 border-t border-line flex items-center justify-between gap-3">
+          <VoiceToggle />
+          <div className="flex items-center gap-3 shrink-0">
+            <span className={`text-xs ${stalled && source === "live" ? "text-warn" : "text-muted"}`} role="status">{footer}</span>
             {hasWorld && (
-              <button onClick={() => dispatch({ type: "set_setup_open", open: false })} className="px-4 py-1.5 rounded-md border border-line bg-panel-2/70 text-sm text-muted hover:text-fg">
+              <button onClick={() => dispatch({ type: "set_setup_open", open: false })} className="btn">
                 Cancel
               </button>
             )}
-            <button
-              onClick={load}
-              disabled={loading !== null || !canLoad}
-              className="px-4 py-1.5 rounded-md border border-accent/50 bg-accent/20 text-accent text-sm font-medium hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {loading ? "Loading" : "Load"}
+            <button onClick={load} disabled={loading !== null || !canLoad} className="btn btn-primary">
+              {loading ? "Loading" : "Load sky"}
             </button>
           </div>
         </div>

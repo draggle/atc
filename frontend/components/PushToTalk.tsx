@@ -13,6 +13,11 @@ function isTyping(el: EventTarget | null): boolean {
   return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable;
 }
 
+/** A quiet text link and a small outline chip, the same two shapes the other cards use. */
+const LINK = "text-[11px] text-muted hover:text-fg underline decoration-dotted underline-offset-4";
+const CHIP = "chip select-none";
+const INPUT = "flex-1 min-w-0 bg-transparent border-b border-line px-0.5 py-1.5 text-xs text-fg placeholder:text-muted/60 outline-none focus:border-fg/50 transition-colors";
+
 export default function PushToTalk() {
   const { send, sendBinary } = useClient();
   const { chat, connection, sim } = useTowerState();
@@ -119,68 +124,71 @@ export default function PushToTalk() {
   const isAgent = active === "agent";
 
   return (
-    <section className="panel p-2.5 shrink-0">
-      <div className="flex items-center justify-between mb-2">
-        <h2 className="text-xs uppercase tracking-wider text-muted">Talk</h2>
-        <span className="text-[10px] text-muted">hold <kbd className="font-mono px-1 rounded bg-panel-2 border border-line">Space</kbd> radio · <kbd className="font-mono px-1 rounded bg-panel-2 border border-line">Shift+Space</kbd> headset</span>
+    <section className="panel p-3 shrink-0">
+      <div className="flex items-baseline justify-between mb-2.5">
+        <h2 className="text-[13px] font-semibold text-fg">Talk</h2>
+        <button
+          onClick={() => { const m = !radioMuted; setRadioMuted(m); radio?.setMuted(m); }}
+          title={radioMuted ? "The frequency is muted. Click to hear every transmission." : "Every transmission is played as it happens. Click to mute."}
+          className={`text-[11px] underline decoration-dotted underline-offset-4 hover:text-fg ${radioMuted ? "text-muted" : "text-ok"}`}
+        >
+          {radioMuted ? "frequency muted" : "frequency on"}
+        </button>
       </div>
 
-      {/* Big mic indicator */}
-      <div className={`rounded-lg border-2 px-3 py-2 flex items-center gap-3 transition-colors ${isRadio ? "border-ok bg-ok/15" : isAgent ? "border-accent bg-accent/15" : "border-line bg-panel-2"}`}>
-        <div className={`w-9 h-9 rounded-full flex items-center justify-center text-lg ${isRadio ? "bg-ok text-bg" : isAgent ? "bg-accent text-bg" : "bg-line text-muted"}`}>
-          {isAgent ? "🎧" : "🎙"}
-        </div>
+      {/* The mic: an outline circle that fills green while you are on the air. Hold it, or hold Space. */}
+      <div className="flex items-center gap-3">
+        <button
+          {...holdProps("radio")}
+          aria-label="Hold to talk on the radio"
+          className={`relative w-9 h-9 shrink-0 rounded-full border transition-colors touch-none select-none outline-none ${isRadio ? "border-ok bg-ok" : isAgent ? "border-fg bg-fg" : "border-line hover:border-fg/50"}`}
+        >
+          {/* Level shows as a ring that swells with your voice while transmitting. */}
+          {active && <span className="absolute inset-0 rounded-full border border-fg/40 transition-transform duration-75" style={{ transform: `scale(${1 + Math.min(1, level * 1.6) * 0.35})` }} />}
+          <span className={`absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-2 h-2 rounded-full ${active ? "bg-bg" : "bg-muted"}`} />
+        </button>
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-semibold">
-            {isRadio ? "TRANSMITTING on frequency" : isAgent ? "TALKING to the agent" : "Mic idle"}
+          <div className={`text-sm font-medium ${isRadio ? "text-ok" : "text-fg"}`}>
+            {isRadio ? "Transmitting on frequency" : isAgent ? "Talking to the headset" : "Hold Space to talk"}
           </div>
-          <div className="h-1.5 mt-1 rounded bg-line overflow-hidden">
-            <div className={`h-full transition-[width] duration-75 ${isRadio ? "bg-ok" : "bg-accent"}`} style={{ width: `${Math.min(100, level * 160)}%` }} />
+          <div className="text-[11px] text-muted">
+            <button {...holdProps("agent")} className="hover:text-fg underline decoration-dotted underline-offset-4 touch-none select-none">Shift+Space</button> for the headset
+            {connection === "mock" && active && <span> · mock mode: audio is captured but not sent anywhere</span>}
           </div>
-          {micError && <div className="text-[10px] text-warn mt-1">No mic: {micError}. Use the typed fallback below.</div>}
-          {connection === "mock" && active && <div className="text-[10px] text-muted mt-1">Mock mode: audio is captured but not sent anywhere.</div>}
-        </div>
-        <div className="flex flex-col gap-1">
-          <button {...holdProps("radio")} className="px-2 py-1 rounded text-xs border border-ok/50 text-ok bg-ok/10 select-none touch-none">Hold: radio</button>
-          <button {...holdProps("agent")} className="px-2 py-1 rounded text-xs border border-accent/50 text-accent bg-accent/10 select-none touch-none">Hold: headset</button>
+          {micError && <div className="text-[11px] text-warn mt-0.5">No mic: {micError}. Use the typed fallback below.</div>}
         </div>
       </div>
 
       {/* Script the next pilot reply, so a catch happens on cue instead of by chance. One shot. */}
-      <div className="mt-2">
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-[10px] uppercase tracking-wider text-muted">Next readback</span>
-          <button
-            onClick={() => { const m = !radioMuted; setRadioMuted(m); radio?.setMuted(m); }}
-            title={radioMuted ? "The frequency is muted. Click to hear every transmission." : "Every transmission is played as it happens. Click to mute."}
-            className={`text-[10px] px-2 py-0.5 rounded border ${radioMuted ? "border-line text-muted" : "border-ok/40 text-ok bg-ok/10"}`}
-          >
-            {radioMuted ? "frequency muted" : "frequency on"}
-          </button>
-        </div>
-        <div className="grid grid-cols-5 gap-1">
-          {([["random", "By chance"], ["correct", "Correct"], ["wrong_value", "Wrong value"], ["wrong_aircraft", "Wrong plane"], ["missing_readback", "No reply"]] as const).map(([mode, label]) => (
-            <button
-              key={mode}
-              onClick={() => send({ type: "set_next_readback", mode })}
-              title={mode === "random" ? "Use the pilot error slider" : "Applies to the next instruction only, then goes back to chance"}
-              className={`px-1 py-1 rounded border text-[10px] leading-tight ${nextReadback === mode ? (mode === "random" || mode === "correct" ? "border-accent/50 text-accent bg-accent/15" : "border-bad/50 text-bad bg-bad/15") : "border-line text-muted bg-panel-2 hover:text-fg"}`}
-            >
-              {label}
-            </button>
-          ))}
+      <div className="mt-3">
+        <div className="text-[11px] text-muted mb-1.5">Next readback</div>
+        <div className="flex flex-wrap gap-1.5">
+          {([["random", "By chance"], ["correct", "Correct"], ["wrong_value", "Wrong value"], ["wrong_aircraft", "Wrong plane"], ["missing_readback", "No reply"]] as const).map(([mode, label]) => {
+            const on = nextReadback === mode;
+            const benign = mode === "random" || mode === "correct";
+            return (
+              <button
+                key={mode}
+                onClick={() => send({ type: "set_next_readback", mode })}
+                title={mode === "random" ? "Use the pilot error slider" : "Applies to the next instruction only, then goes back to chance"}
+                className={`${CHIP} ${on ? (benign ? "border-fg/60 text-fg" : "chip-bad") : "hover:text-fg hover:border-fg/40"}`}
+              >
+                {label}
+              </button>
+            );
+          })}
         </div>
       </div>
 
       {/* Agent chat */}
-      <div className="mt-2">
-        <div className="text-[10px] uppercase tracking-wider text-muted mb-1">Headset · world builder</div>
+      <div className="mt-3">
+        <div className="text-[11px] text-muted mb-1">Headset · world builder</div>
         {chat.length > 0 && (
           <div className="max-h-28 overflow-y-auto scroll-thin flex flex-col gap-1 mb-1.5">
             {chat.map((c, i) => (
-              <div key={i} className={`text-xs rounded-md px-2 py-1 max-w-[90%] ${c.role === "user" ? "self-end bg-accent/15 text-fg" : "self-start bg-panel-2 border border-line"}`}>
+              <div key={i} className={`text-xs rounded-md px-2 py-1 max-w-[90%] ${c.role === "user" ? "self-end bg-panel-2 text-fg" : "self-start border border-line text-fg/90"}`}>
                 {c.text}
-                {c.actions && c.actions.length > 0 && <div className="mt-0.5 font-mono text-[10px] text-muted">{c.actions.join(" · ")}</div>}
+                {c.actions && c.actions.length > 0 && <div className="mt-0.5 text-[11px] text-muted" style={{ fontFamily: "var(--font-mono)" }}>{c.actions.join(" · ")}</div>}
               </div>
             ))}
             <div ref={chatEnd} />
@@ -191,15 +199,15 @@ export default function PushToTalk() {
             e.preventDefault();
             submitAgent();
           }}
-          className="flex gap-1.5"
+          className="flex items-baseline gap-2"
         >
           <input
             value={agentText}
             onChange={(e) => setAgentText(e.target.value)}
             placeholder="Load Toronto at 4pm, add a Porter flight from the east"
-            className="flex-1 bg-panel-2 border border-line rounded-md px-2 py-1 text-xs outline-none focus:border-accent"
+            className={INPUT}
           />
-          <button type="submit" className="px-2 py-1 rounded-md text-xs border border-accent/40 text-accent bg-accent/10">Send</button>
+          <button type="submit" className={LINK}>Send</button>
         </form>
       </div>
 
@@ -209,15 +217,15 @@ export default function PushToTalk() {
           e.preventDefault();
           submitRadio();
         }}
-        className="mt-2 flex gap-1.5"
+        className="mt-2 flex items-baseline gap-2"
       >
         <input
           value={radioText}
           onChange={(e) => setRadioText(e.target.value)}
           placeholder="Typed radio fallback (no mic): air canada one two three descend flight level two four zero"
-          className="flex-1 bg-panel-2 border border-line rounded-md px-2 py-1 text-xs outline-none focus:border-ok"
+          className={INPUT}
         />
-        <button type="submit" className="px-2 py-1 rounded-md text-xs border border-ok/40 text-ok bg-ok/10">Transmit</button>
+        <button type="submit" className={LINK}>Transmit</button>
       </form>
     </section>
   );
