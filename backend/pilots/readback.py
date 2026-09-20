@@ -247,6 +247,22 @@ _PHRASERS = {
 }
 
 
+def _manoeuvre_phrases(item: Item, shorten: bool) -> list[str]:
+    """A circle is read back as "three sixty to the left": "left three sixty" is also how a pilot
+    shortens "turn left heading three six zero", and the checker could not tell them apart."""
+    side = "left" if str(item.action or "").endswith("left") else "right"
+    if str(item.action or "").startswith("orbit_"):
+        # Never starts with a number: after a leading callsign the digits would run together
+        # ("air canada one two three three sixty" normalizes to ACA123360).
+        return [f"making a three sixty to the {side}", f"a three sixty to the {side}"]
+    if str(item.action or "").startswith("hold_"):
+        return [f"holding present position {side} turns", f"hold present position {side} turns"]
+    return [str(item.value).lower()]
+
+
+_PHRASERS["manoeuvre"] = _manoeuvre_phrases
+
+
 def item_phrases(item: Item, shorten: bool = True) -> list[str]:
     """All acceptable spoken forms for one item. Index 0 is the most formal."""
     fn = _PHRASERS.get(item.type)

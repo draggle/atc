@@ -82,8 +82,9 @@ const ACK_FADES_MS = 1500;
 const CLEARED_VECTOR_MIN = 2.5;
 const angleBetween = (a: number, b: number) => Math.abs(((a - b + 540) % 360) - 180);
 /** Cleared heading and level as a radar data block shows them, only while they differ from what is flown. */
-function clearedLine(p: { hdg_deg: number; target_hdg_deg: number | null; alt_ft: number; target_alt_ft: number }): string {
+function clearedLine(p: { hdg_deg: number; target_hdg_deg: number | null; alt_ft: number; target_alt_ft: number; manoeuvre?: string | null }): string {
   const out: string[] = [];
+  if (p.manoeuvre) out.push(`⟳ ${p.manoeuvre.toUpperCase()}`);
   if (p.target_hdg_deg != null) out.push(`H${String(Math.round(p.target_hdg_deg) % 360 || 360).padStart(3, "0")}`);
   if (Math.abs(p.target_alt_ft - p.alt_ft) > 150) out.push(`${p.target_alt_ft > p.alt_ft ? "↑" : "↓"}${String(Math.round(p.target_alt_ft / 100)).padStart(3, "0")}`);
   return out.join(" ");

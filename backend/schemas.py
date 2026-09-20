@@ -18,6 +18,7 @@ Speaker = Literal["controller", "pilot", "unknown", "datalink"]  # datalink: sen
 ItemType = Literal[
     "altitude", "heading", "speed", "frequency", "squawk",
     "altimeter", "runway", "route", "hold_short", "other",
+    "manoeuvre",  # a 360, a hold, "disregard", "unable": see tower/freeform.py
 ]
 Unit = Literal["FL", "ft", "deg", "kt", "MHz", "hPa", "inHg", None]
 ClearanceStatus = Literal["open", "matched", "mismatched", "partial", "missing", "uncertain"]
@@ -57,7 +58,10 @@ class Extraction(BaseModel):
     callsign: str | None  # ICAO form, e.g. "ACA123"
     items: list[Item] = Field(default_factory=list)
     unexplained_words: int = 0  # words the grammar parser could not account for
-    method: Literal["grammar", "llm"] = "grammar"
+    # "freeform": plain English resolved against the aircraft by patterns (tower/freeform.py).
+    # "agent": the interpreter agent worked it out (tower/interpreter.py). "llm": a model filled in
+    # what was *heard*, which is a guess about the audio and is treated with suspicion.
+    method: Literal["grammar", "llm", "freeform", "agent"] = "grammar"
 
 
 class OpenClearance(BaseModel):
@@ -111,13 +115,17 @@ class AircraftState(BaseModel):
     actype: str = "A320"
     is_intruder: bool = False
     threat: str | None = None  # disruption kind when is_intruder: fighter, drone, balloon, emergency, unknown
+    manoeuvre: str | None = None  # "360 left", "hold right": circling, not navigating. See SimCommand "orbit"
     t: float = 0.0  # sim seconds
 
 
 class SimCommand(BaseModel):
     """What a clearance does to a plane. Frequency/squawk/altimeter have no motion effect."""
-    kind: Literal["altitude", "heading", "direct", "speed", "route", "none"]
-    value: float | str | None = None  # ft, deg, waypoint name, kt
+    kind: Literal["altitude", "heading", "direct", "speed", "route", "orbit", "none"]
+    value: float | str | None = None  # ft, deg, waypoint name, kt; "left" or "right" for an orbit
+    # "orbit": full circles at the standard rate. 1 is "make a three sixty", None is a hold: it
+    # circles until it is told something else. Afterwards it picks up whatever it was doing.
+    turns: float | None = 1.0
     # "route": fly these (x, y) points in order, then direct to the waypoint named in `value`.
     # Only a data link clearance can carry this. By voice a reroute is a heading, then a direct.
     via: list[tuple[float, float]] = Field(default_factory=list)
@@ -311,6 +319,7 @@ EventType = Literal[
     "radio_audio",  # a clip is on the frequency right now: play it. Sent before it is transcribed
     "said_check",  # what the controller said does not match the card: nothing went to the pilot
     "alert_resolved",  # a wrong readback was corrected and read back right
+    "aside",  # the controller said "disregard", or asked for something no airliner does: not a clearance
 ]
 
 

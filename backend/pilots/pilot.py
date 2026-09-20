@@ -57,6 +57,9 @@ def item_to_sim_command(item: Item) -> SimCommand:
         return SimCommand(kind="direct", value=str(item.value).upper())
     if item.type == "speed":
         return SimCommand(kind="speed", value=float(item.value))
+    if item.type == "manoeuvre" and (item.action or "").startswith(("orbit_", "hold_")):
+        kind, side = str(item.action).split("_", 1)
+        return SimCommand(kind="orbit", value=side, turns=1.0 if kind == "orbit" else None)
     return SimCommand(kind="none")
 
 

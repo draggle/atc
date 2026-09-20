@@ -216,6 +216,7 @@ class LocalWhisper:
 
 
 FAST_BEAMS = int(os.environ.get("ASR_CONTROLLER_BEAM", "1"))  # beam width for the controller's voice
+FAST_TIMEOUT_S = float(os.environ.get("ASR_CONTROLLER_TIMEOUT_S", "3.5"))  # then the local model hears it
 
 
 class BasetenWhisper:
@@ -241,15 +242,19 @@ class BasetenWhisper:
         self.name = name
         self._client = httpx.Client(timeout=timeout_s)
 
-    def _post(self, body: dict) -> dict:
+    def _post(self, body: dict, quick: bool = False) -> dict:
+        """`quick`: one attempt, FAST_TIMEOUT_S. The controller is waiting on this one. A deployment
+        that has scaled to zero takes a minute to come back, and two patient 8 s attempts were 16 s
+        of dead radio before the local model was even asked."""
         import httpx
 
         headers = {"Authorization": f"Api-Key {self.api_key}"} if self.api_key else {}
         delay = 0.5
         last_exc: Exception | None = None
-        for attempt in range(self.max_retries):
+        for attempt in range(1 if quick else self.max_retries):
             try:
-                r = self._client.post(self.url, json=body, headers=headers)
+                r = self._client.post(self.url, json=body, headers=headers,
+                                      **({"timeout": FAST_TIMEOUT_S} if quick else {}))
                 if r.status_code == 429 or 500 <= r.status_code < 600:
                     retry_after = r.headers.get("retry-after")
                     time.sleep(float(retry_after) if retry_after else delay)
@@ -259,9 +264,11 @@ class BasetenWhisper:
                 return r.json()
             except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                 last_exc = exc
+                if quick:
+                    break
                 time.sleep(delay)
                 delay = min(delay * 2, 8.0)
-        raise RuntimeError(f"Baseten ASR failed after {self.max_retries} attempts: {last_exc!r}")
+        raise RuntimeError(f"Baseten ASR failed after {1 if quick else self.max_retries} attempt(s): {last_exc!r}")
 
     def warm(self) -> None:
         """Open the connection now. Called when the controller presses the key, a few seconds before
@@ -273,6 +280,20 @@ class BasetenWhisper:
                              timeout=3.0)
         except Exception:  # a warm-up that fails costs nothing
             pass
+
+    def wake(self, timeout_s: float = 120.0) -> float | None:
+        """Bring a deployment that has scaled to zero back up, by asking it for something: half a
+        second of silence, one beam. Patient, and off the radio path. Returns the seconds it took,
+        or None if it did not answer. A warm deployment answers in well under a second."""
+        t0 = time.perf_counter()
+        body = {"audio": base64.b64encode(wav_bytes(np.zeros(SR // 2, dtype=np.float32), SR)).decode(),
+                "prompt": "", "beam_size": 1, "n_best": 1, "language": "en"}
+        headers = {"Authorization": f"Api-Key {self.api_key}"} if self.api_key else {}
+        try:
+            self._client.post(self.url, json=body, headers=headers, timeout=timeout_s).raise_for_status()
+            return time.perf_counter() - t0
+        except Exception:
+            return None
 
     @staticmethod
     def _extract(data: dict) -> tuple[str, float | None, list[str]]:
@@ -311,7 +332,7 @@ class BasetenWhisper:
             "n_best": hyps,  # training/serve_asr returns real beam alternatives with scores
             "language": "en",
         }
-        data = self._post(body)
+        data = self._post(body, quick=fast)
         text, lp, n_best = self._extract(data)
         conf = data.get("confidence") if isinstance(data, dict) else None
         if not n_best or n_best[0] != text:
@@ -354,6 +375,14 @@ class WithFallback:
         if time.monotonic() >= self._skip_until and hasattr(self.primary, "warm"):
             self.primary.warm()
 
+    def wake(self) -> float | None:
+        """Wake the remote model and have the local one loaded, so neither is met cold on the air."""
+        self._local()
+        took = self.primary.wake() if hasattr(self.primary, "wake") else None
+        if took is not None:
+            self._skip_until = 0.0  # it is up: stop avoiding it
+        return took
+
     def transcribe(self, samples_or_path, prompt: str | None = None, **kw) -> ASRResult:
         samples = _load_samples(samples_or_path)
         if time.monotonic() >= self._skip_until:
@@ -385,6 +414,9 @@ class StockAndTuned:
     def warm(self) -> None:
         if hasattr(self.tuned, "warm"):
             self.tuned.warm()
+
+    def wake(self) -> float | None:
+        return self.tuned.wake() if hasattr(self.tuned, "wake") else None
 
     def transcribe(self, samples_or_path, prompt: str | None = None, fast: bool = False,
                    on_stock=None) -> ASRResult:
@@ -436,14 +468,22 @@ def get_asr(force_new: bool = False) -> ASR:
     # Beam width is the speed dial for the deployed model. Measured on the T4, round trip:
     # 1 = 0.3 s, 3 = 0.8 s, 5 = 1.7 s. Three keeps a score and alternatives inside the 2 s budget.
     beams = int(os.environ.get("ASR_BEAM_SIZE", "3"))
-    tuned: ASR = (WithFallback(BasetenWhisper(tuned_url, beam_size=beams, n_best=beams, name="baseten:tuned"),
-                               lambda: LocalWhisper(local_size))
-                  if tuned_url else LocalWhisper(local_size))
+    shared: list[LocalWhisper] = []
+
+    def local() -> LocalWhisper:
+        # One local model, used both as the fallback and as the stock side of the comparison. Two
+        # copies meant the fallback was loaded for the first time at the moment it was needed.
+        if not shared:
+            shared.append(LocalWhisper(local_size))
+        return shared[0]
+
+    tuned: ASR = (WithFallback(BasetenWhisper(tuned_url, beam_size=beams, n_best=beams, name="baseten:tuned"), local)
+                  if tuned_url else local())
     stock: ASR | None = None
     if stock_url:
         stock = BasetenWhisper(stock_url, name="baseten:stock")
     elif tuned_url and os.environ.get("ASR_STOCK_LOCAL"):
-        stock = LocalWhisper(local_size)
+        stock = local()
     _ASR_SINGLETON = StockAndTuned(tuned, stock) if stock else tuned
     return _ASR_SINGLETON
 

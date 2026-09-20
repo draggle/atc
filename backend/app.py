@@ -82,6 +82,20 @@ world = World(hub.emit, synthesize=SYNTH)
 _background: set[asyncio.Task[Any]] = set()  # keeps fire-and-forget tasks alive until they finish
 
 
+def _spawn(coro, what: str) -> None:
+    """Run something off the socket loop, and never let it fail without a word. A transmission whose
+    task raised used to vanish: no transcript, no notice, no pilot, and nothing in the log either."""
+    async def guarded() -> None:
+        try:
+            await coro
+        except Exception:
+            log.exception("%s failed", what)
+            world.notice(f"Tower hit an error handling that {what}. Nothing was issued: say it again.", "error")
+    task = asyncio.create_task(guarded())
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+
+
 def _configure_live(data: dict[str, Any]) -> None:
     """configure with source "live": one snapshot of the real sky. See sim/live.py.
 
@@ -134,7 +148,7 @@ async def lifespan(_: FastAPI):
             world.start()
     else:
         world.emit_state()
-    tasks = [asyncio.create_task(hub.pump()), asyncio.create_task(clock())]
+    tasks = [asyncio.create_task(hub.pump()), asyncio.create_task(clock()), asyncio.create_task(keep_warm())]
     if SYNTH:
         asyncio.create_task(asyncio.to_thread(_warm_asr))
     yield
@@ -142,13 +156,38 @@ async def lifespan(_: FastAPI):
         t.cancel()
 
 
+KEEP_WARM_S = float(os.environ.get("ASR_KEEP_WARM_S", "240"))  # 0 turns it off
+
+
 def _warm_asr() -> None:
     try:
         from tower.asr import get_asr
         world.asr = get_asr()
         log.info("ASR ready: %s", type(world.asr).__name__)
+        _wake_asr("startup")
     except Exception:
         log.exception("ASR warmup failed; the radio will fall back to typed text")
+
+
+def _wake_asr(why: str) -> None:
+    """The deployed model scales to zero when idle and takes about a minute to return. Met cold on
+    the air that was a 20 s transmission. So it is woken when the backend starts, and kept awake
+    (one half-second clip every KEEP_WARM_S) while voice is on and a screen is connected."""
+    asr = world.asr
+    if asr is None or not hasattr(asr, "wake"):
+        return
+    took = asr.wake()
+    if took is None:
+        log.warning("speech model did not wake (%s); the local model will hear transmissions until it does", why)
+    elif took > 5.0:
+        log.info("speech model was asleep: woke in %.0f s (%s)", took, why)
+
+
+async def keep_warm() -> None:
+    while KEEP_WARM_S > 0:
+        await asyncio.sleep(KEEP_WARM_S)
+        if hub.clients and not world.auto_speak and world.lifecycle in ("running", "ready", "paused"):
+            await asyncio.to_thread(_wake_asr, "keep warm")
 
 
 app = FastAPI(title="Tower", lifespan=lifespan)
@@ -228,13 +267,13 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     if len(samples) < 16000 * 0.4:
                         continue
                     if channel == "agent":
-                        asyncio.create_task(world.agent_audio(samples))
+                        _spawn(world.agent_audio(samples), "headset request")
                     else:
-                        asyncio.create_task(world.controller_audio(samples))
+                        _spawn(world.controller_audio(samples), "transmission")
             elif typ == "agent_text":
-                asyncio.create_task(world.agent_request(str(data.get("text", ""))))
+                _spawn(world.agent_request(str(data.get("text", ""))), "headset request")
             elif typ == "radio_text":
-                asyncio.create_task(world.controller_text(str(data.get("text", ""))))
+                _spawn(world.controller_text(str(data.get("text", ""))), "transmission")
             elif typ == "configure" and data.get("source") == "live":
                 _configure_live(data)
             elif typ in ("load_scenario", "configure"):
@@ -265,6 +304,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 world.set_auto_speak(bool(data.get("enabled", False)))
             elif typ == "set_voice":  # the one switch: on = you say the cards, off = Tower sends them by data link
                 world.set_voice(bool(data.get("enabled", False)))
+                if data.get("enabled") and SYNTH:
+                    asyncio.get_running_loop().run_in_executor(None, _wake_asr, "voice on")
             elif typ == "set_next_readback":  # script the next pilot reply: correct, wrong_value, wrong_aircraft, ...
                 world.set_next_readback(str(data.get("mode", "random")))
             elif typ == "confirm_heard":  # said-vs-card conflict: the controller meant what Tower heard
@@ -281,7 +322,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
             elif typ == "remove_disruption":
                 world.remove_disruption(str(data.get("id", "")))
             elif typ == "speak_card":
-                asyncio.create_task(world.speak_card(str(data.get("id", ""))))
+                _spawn(world.speak_card(str(data.get("id", ""))), "card")
             elif typ == "set_sliders":
                 world.set_sliders(data.get("buffer_nm"), data.get("error_rate"), data.get("noise"))
             elif typ == "set_speed":

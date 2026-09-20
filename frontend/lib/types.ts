@@ -122,6 +122,8 @@ export interface AircraftState {
   is_intruder: boolean;
   /** What kind of disruption an intruder is: fighter, drone, balloon, emergency, unknown. */
   threat?: PointKind | null;
+  /** "360 left", "hold right": circling on the controller's word instead of navigating */
+  manoeuvre?: string | null;
   t: number;
   /** Real-world position, degrees. Present from backends with a GeoFrame (phase 2 onward). */
   lat?: number;
