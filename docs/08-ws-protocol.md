@@ -12,7 +12,7 @@ Every message is one JSON object `{"type": ..., "payload": {...}, "t": <sim seco
 
 | type | payload | when |
 |---|---|---|
-| `state` | `{scenario, lifecycle, speed, world_id, scenarios: ScenarioInfo[], live_regions: {key, label}[], tower_enabled, auto_speak, t, waypoints: Waypoint[], zones: Zone[], sector_nm, buffer_nm, error_rate, noise, watching}` | on connect, on every lifecycle change, and whenever a setting changes |
+| `state` | `{scenario, lifecycle, speed, world_id, scenarios: ScenarioInfo[], live_regions: {key, label}[], tower_enabled, auto_speak, speak_replies, t, waypoints: Waypoint[], zones: Zone[], sector_nm, buffer_nm, error_rate, noise, watching}` | on connect, on every lifecycle change, and whenever a setting changes |
 | `radar` | `{aircraft: AircraftState[], zones?: Zone[], clock_speed}` | once per second, **and at once when an aircraft accepts a spoken instruction**, so the cleared heading and level show without waiting for the clock. `AircraftState.manoeuvre` is "360 left", "hold right" or null. `clock_speed` is the speed the clock is really running at: with voice on it drops to 1 whenever a card needs saying or an exchange is in progress, and returns to `state.speed` after. `zones` is present while any zone is drifting or swelling and replaces `state.zones`. An intruder's `AircraftState` carries `threat`: fighter, drone, balloon, emergency or unknown |
 | `plan` | `Plan` | after initial planning and every replan |
 | `plan_update` | `{changed: string[], reason, trigger}` | with every replan |
@@ -29,6 +29,7 @@ Every message is one JSON object `{"type": ..., "payload": {...}, "t": <sim seco
 | `stats` | `{tier1_latency_s, transmissions, matches, alerts}` | rolling |
 | `agent_reply` | `{text, actions: string[]}` | after the world-builder agent handles a request |
 | `notice` | `{text, level: "info"\|"warn"\|"error"}` | an action was refused or something failed, for example the radio keyed before Start |
+| `dictation` | `{channel: "radio"\|"agent", text, final: bool, t_audio_s}` | what the mic is hearing while push-to-talk is held. A non-final partial about every 1.2 s of audio (one beam, the whole clip so far; each replaces the last; none past 20 s of audio). On `ptt_stop` exactly one `final: true` with the transcript that is about to go on air or to squack, sent **before** its `transcript` or `agent_reply`. The final is always the last dictation event for its channel: a partial that would land after it is dropped. The screen shows the partial in the command bar and holds the final for 1.5 s |
 
 ## Client to server, JSON
 
@@ -47,6 +48,7 @@ Every message is one JSON object `{"type": ..., "payload": {...}, "t": <sim seco
 | `{"type":"set_speed","speed"}` | sim seconds per real second, clamped to 0.25 to 120. The screen offers 1, 5, 20, 60 |
 | `{"type":"set_tower","enabled"}` | Tower on or off. Off means readbacks are not checked and the plane flies what the pilot said |
 | `{"type":"set_auto_speak","enabled"}` | the agent speaks instruction cards itself |
+| `{"type":"set_speak_replies","enabled"}` | squack says its answers on the frequency as well as sending `agent_reply` (`state.speak_replies`, default on; env `SQUACK_SPEAK=0` starts it off). Voice: `SQUACK_VOICE_ID` on ElevenLabs, a fixed macOS voice otherwise |
 | `{"type":"add_disruption","kind","x_nm"?,"y_nm"?}` | drop a disruption. `kind` is fighter, drone, balloon, emergency, unknown, storm, closed, rocket, or `random`. With no position, or for `random`, Tower puts it on the path of a flight a few minutes ahead. `intruder` still works and means fighter. A position outside the sector is refused with a `notice` **`target`: a callsign ("disrupt this flight").** Tower then chooses the position itself: on that flight's planned path, ahead of it, far enough to be avoided and near enough to matter. `x_nm`/`y_nm` are ignored. For `emergency` the target is the flight that declares it |
 | `{"type":"remove_disruption","id"}` | take one out by hand. An emergency aircraft cannot be removed: it is a real flight |
 | `{"type":"speak_card","id"}` | speak one card by TTS now |
@@ -185,7 +187,7 @@ TRD 07. Every tick after `sim.step`, the backend rolls the whole sky forward 120
 
 | Event | Payload | When |
 |---|---|---|
-| `radio_audio` | `{speaker: "pilot"\|"controller", callsign, audio_ref, duration_s}` | a clip is on the air, sent before it is transcribed. Play `GET /audio/<audio_ref>`, one at a time, in order. The human's own mic recording is not sent back |
+| `radio_audio` | `{speaker: "pilot"\|"controller"\|"squack", callsign, audio_ref, duration_s}` | a clip is on the air, sent before it is transcribed. `squack` is its spoken answer to the user (after `agent_reply`; `callsign` is null; the first 240 characters, cut at a sentence end) Play `GET /audio/<audio_ref>`, one at a time, in order. The human's own mic recording is not sent back |
 | `said_check` | `{clearance_id, card_id, callsign, heard, expected, detail}` | what the controller said conflicts with the card. Nothing went to the pilot. The card carries `heard_instead` until it is resolved |
 | `alert_resolved` | `{clearance_id, callsign, by: "correction", seconds}` | the correction was read back right: close that alert |
 

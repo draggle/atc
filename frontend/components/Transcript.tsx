@@ -58,7 +58,8 @@ export default function Transcript() {
           {onAir && (
             <span className="inline-flex items-center gap-1.5 text-ok">
               <span className="dot dot-ok" />
-              {onAir.speaker === "pilot" ? `${onAir.callsign ?? "pilot"} transmitting` : "squack transmitting"}
+              {onAir.speaker === "pilot" ? `${onAir.callsign ?? "pilot"} transmitting`
+                : onAir.speaker === "squack" ? "squack answering" : "squack transmitting"}
             </span>
           )}
           <button

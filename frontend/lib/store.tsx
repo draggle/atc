@@ -6,6 +6,7 @@ import type {
   AgentReply,
   AircraftState,
   AlertPayload,
+  Dictation,
   Disruption,
   InstructionCard,
   Notice,
@@ -108,7 +109,7 @@ export interface TowerState {
   /** card id -> the held clearance, when what you said conflicts with that card */
   held: Record<string, string>;
   /** Who is on the frequency right now (the clip being played), for the pulse on the map. */
-  onAir: { speaker: "pilot" | "controller"; callsign: string | null } | null;
+  onAir: { speaker: "pilot" | "controller" | "squack"; callsign: string | null } | null;
   /** callsign -> what Tower just understood for it ("H270 ↑FL360"), shown on the aircraft for a few seconds */
   acks: Record<string, { text: string; at: number }>;
   showStock: boolean;
@@ -116,6 +117,8 @@ export interface TowerState {
   risk: RiskReport | null;
   /** "A|B" -> that pair's latest numbers and timing, so a cone fades in and outlasts a one-report dip. */
   riskPairs: Record<string, SeenRisk>;
+  /** What the mic is hearing right now (the command bar mirrors it); null DICTATION_HOLD_MS after the final. */
+  dictation: (Dictation & { at: number }) | null;
 }
 
 /** The short form of an instruction, as a radar data block would show it. */
@@ -167,6 +170,7 @@ export const initialState: TowerState = {
   showStock: false,
   risk: null,
   riskPairs: {},
+  dictation: null,
 };
 
 export type Action =
@@ -178,7 +182,7 @@ export type Action =
   | { type: "user_chat"; text: string }
   | { type: "set_sliders"; sliders: Sliders }
   | { type: "set_plan_view"; view: PlanView }
-  | { type: "on_air"; clip: { speaker: "pilot" | "controller"; callsign: string | null } | null }
+  | { type: "on_air"; clip: { speaker: "pilot" | "controller" | "squack"; callsign: string | null } | null }
   | { type: "toggle_stock" }
   | { type: "local_toggle"; key: "tower_enabled" | "auto_speak"; value: boolean }
   | { type: "dismiss_notice"; id: number }
@@ -187,6 +191,8 @@ export type Action =
   /** "take me to it": select, follow, and fly the camera there. An alert card does this. */
   | { type: "focus"; callsign: string }
   | { type: "set_follow"; on: boolean }
+  /** the hold after a dictation final is over; a final younger than the hold is left alone */
+  | { type: "dictation_clear" }
   | { type: "reset" };
 
 const TRANSCRIPT_CAP = 200;
@@ -210,6 +216,8 @@ function differs(a: LonLatAlt[], b: LonLatAlt[]): boolean {
 }
 
 const FLASH_MS = 4000;
+/** A dictation final stays on the command bar this long, then the slice is cleared. */
+export const DICTATION_HOLD_MS = 1500;
 /** Cone hysteresis: shows at 0.05, kept while p_max stays above 0.02, and for this long after it leaves the report. */
 const RISK_SHOW_P = 0.05;
 const RISK_KEEP_P = 0.02;
@@ -466,6 +474,19 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
       return { ...state, chat: [...state.chat, { role: "agent" as const, text: r.text, actions: r.actions, at: Date.now() }].slice(-30) };
     }
 
+    case "dictation": {
+      const d = ev.payload;
+      const now = Date.now();
+      // A partial that arrives after its final is stale (the backend drops them, but the order on the wire is the rule).
+      if (!d.final && state.dictation?.final && state.dictation.channel === d.channel) return state;
+      const next = { ...state, dictation: { ...d, at: now } };
+      // Spoken to squack: the line joins the chat exactly as if it had been typed. The backend sends the request.
+      if (d.final && d.channel === "agent" && d.text.trim()) {
+        next.chat = [...state.chat, { role: "user" as const, text: d.text, at: now }].slice(-30);
+      }
+      return next;
+    }
+
     default:
       return state;
   }
@@ -503,6 +524,8 @@ export function reducer(state: TowerState, action: Action): TowerState {
       return { ...state, selected: action.callsign, follow: true, focusSeq: state.focusSeq + 1 };
     case "set_follow":
       return { ...state, follow: action.on };
+    case "dictation_clear":
+      return state.dictation?.final && Date.now() - state.dictation.at >= DICTATION_HOLD_MS ? { ...state, dictation: null } : state;
     case "reset":
       return { ...initialState, connection: state.connection };
   }

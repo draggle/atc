@@ -8,7 +8,7 @@
 import { HTTP_URL } from "./ws";
 
 export interface RadioClip {
-  speaker: "pilot" | "controller";
+  speaker: "pilot" | "controller" | "squack";
   callsign: string | null;
   audio_ref: string;
   duration_s?: number;

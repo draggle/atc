@@ -12,19 +12,27 @@ export default function PushToTalk() {
   const { send } = useClient();
   const { sim } = useTowerState();
   const nextReadback = sim?.next_readback ?? "random";
+  const speakReplies = sim?.speak_replies ?? true;
   const [radioMuted, setRadioMuted] = useState(false);
   useEffect(() => setRadioMuted(radio?.muted ?? false), []);
 
   return (
     <section className="panel p-3 shrink-0">
-      <div className="flex items-baseline justify-between mb-2.5">
-        <h2 className="text-[13px] font-semibold text-fg">Demo</h2>
+      <div className="flex items-baseline gap-3 mb-2.5">
+        <h2 className="text-[13px] font-semibold text-fg mr-auto">Demo</h2>
         <button
           onClick={() => { const m = !radioMuted; setRadioMuted(m); radio?.setMuted(m); }}
           title={radioMuted ? "The frequency is muted. Click to hear every transmission." : "Every transmission is played as it happens. Click to mute."}
           className={`text-[11px] underline decoration-dotted underline-offset-4 hover:text-fg ${radioMuted ? "text-muted" : "text-ok"}`}
         >
           {radioMuted ? "frequency muted" : "frequency on"}
+        </button>
+        <button
+          onClick={() => send({ type: "set_speak_replies", enabled: !speakReplies })}
+          title={speakReplies ? "squack says its answers on the frequency. Click to keep them on the card only." : "squack answers in text only. Click to hear it on the frequency."}
+          className={`text-[11px] underline decoration-dotted underline-offset-4 hover:text-fg ${speakReplies ? "text-ok" : "text-muted"}`}
+        >
+          {speakReplies ? "squack speaks" : "squack silent"}
         </button>
       </div>
       <div className="text-[11px] text-muted mb-2">Talk from the bar at the bottom: hold Space for the radio, Shift+Space for squack.</div>
