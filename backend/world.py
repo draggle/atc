@@ -79,6 +79,7 @@ FROZEN_MANUAL_S = 25.0  # voice on: long enough to say a card and hear it back, 
 FROZEN_AUTO_S = 10.0  # Auto with Tower's voice on
 FROZEN_LINK_S = 0.0  # Auto, silent: the reroute is on the flight deck in the same second
 REPLAN_ACTIVE_S = 15.0  # how often every path is re-checked while a disruption is in the sector
+CARD_HOLD_S = 12.0  # real seconds a new card to say keeps the clock at 1x; then the chosen speed is back
 INTERPRET_TIMEOUT_S = 6.0  # the interpreter agent gets this long; after that the controller is told to say it again
 UNSURE_CONF = 0.6  # below this Tower doubts its own ears, and a clash with the card is settled in the card's favour
 TURN_BACK_RETRY_S = 5.0  # a flight at its expected turn-back point is looked at this often until it can go direct
@@ -161,6 +162,12 @@ class World:
         self._turn_back_t: dict[str, float] = {}  # callsign -> when its turn back was last looked at
         self._tasks: set[asyncio.Task[Any]] = set()  # pilot replies in flight: kept so they are not collected
         self._undo: dict[str, dict[str, Any]] = {}  # callsign -> what it was cleared to do before the last instruction
+        # The clock and the cards (see talking): when each card first needed saying, in real
+        # seconds, and when the controller last pressed a speed button. `_real` is the clock
+        # used for both, so a test can move time.
+        self._hold_since: dict[tuple[str, str], float] = {}
+        self._released_real = 0.0
+        self._real: Callable[[], float] = time.monotonic
         self._voice_since = 0.0
         self.human_on_mic = False  # the controller is holding the mic: Tower keeps quiet
         self.auto_voice = False  # Auto speaks one exchange at a time. Off: every instruction by data link
@@ -237,6 +244,7 @@ class World:
         self.card_t.clear()
         self._voice_card, self.human_on_mic, self.datalink_sent = None, False, 0
         self._turn_back_t.clear(); self._undo.clear()
+        self._hold_since.clear(); self._released_real = 0.0
         self.held.clear(); self.alerted.clear(); self.correcting.clear()
         self.next_readback = "random"
         self.rerouted, self.reaction_s, self._react, self.in_zone_now = set(), None, None, 0
@@ -292,7 +300,12 @@ class World:
     def radar_payload(self, states: list[AircraftState] | None = None) -> dict[str, Any]:
         states = self.sim.aircraft() if states is None else states
         out = {"aircraft": self._with_latlon([a.model_dump() for a in states]), "t": self.sim.t,
-               "watching": self.watching(), "clock_speed": self.clock_speed()}
+               "watching": self.watching(), "clock_speed": self.clock_speed(),
+               # why the clock is at 1x when a faster one was chosen: "radio", "card" (with the real
+               # seconds left before the chosen speed is back), or nothing
+               "clock_why": ("" if self.auto_speak or self.speed <= 1.0 else
+                             "radio" if self.on_the_radio() else "card" if self.card_hold_s() > 0 else ""),
+               "clock_hold_s": round(self.card_hold_s(), 1)}
         if any(z.gs_kt or z.swell_nm_per_min for z in self.sim.zones):
             out["zones"] = self._with_latlon([z.model_dump() for z in self.sim.zones])  # they move
         return out
@@ -498,7 +511,12 @@ class World:
         return True
 
     def set_speed(self, speed: float) -> None:
+        """The speed buttons. Pressing one always takes effect: whatever cards were holding the
+        clock at 1x stop holding it ("I have seen them, go"). A card that turns up later gets its
+        own few seconds. Only an exchange actually in progress still runs at 1x, because speech
+        takes real time."""
         self.speed = float(min(120.0, max(0.25, speed)))
+        self._released_real = self._real()
         self.emit_state()
 
     def notice(self, text: str, level: str = "info") -> None:
@@ -545,25 +563,52 @@ class World:
         """How fast the clock really runs right now.
 
         Voice off: whatever speed was chosen. Voice on: speech takes real seconds, so the clock
-        drops to 1x by itself whenever there is something to say or somebody is talking, and
-        runs at the chosen speed in between. A spoken reroute is two instructions several
-        minutes of flying apart: without this a short demo is mostly waiting.
+        drops to 1x by itself while somebody is talking, and for a few seconds when a new card
+        turns up, and runs at the chosen speed otherwise. A spoken reroute is two instructions
+        several minutes of flying apart: without this a short demo is mostly waiting.
         """
         if self.auto_speak or self.speed <= 1.0:
             return self.speed
         return 1.0 if self.talking() else self.speed
 
-    def talking(self) -> bool:
-        """Voice on: is the frequency in use, or is an instruction waiting to be said?"""
+    def on_the_radio(self) -> bool:
+        """An exchange is really in progress: the key is down, Tower is speaking, an instruction is
+        out and its readback is not in yet, or a pilot is about to key up."""
         if self.human_on_mic or self._speaking or self.held:
             return True
         now = self.sim.t
         if any(c.status == "open" and now - c.issued_at < c.timeout_s for c in self.core.store.all_open()):
-            return True  # an exchange in progress: instruction issued, readback not yet in
-        if any(t <= now + 3.0 for t, _ in self.pending):
-            return True  # a pilot is about to key up
-        return any(c.status in ("pending", "error") and not c.minor and c.callsign in self.sim.active
-                   and (c.origin != "initial" or c.cause or c.emergency) for c in self.cards.values())
+            return True
+        return any(t <= now + 3.0 for t, _ in self.pending)
+
+    def card_hold_s(self) -> float:
+        """Real seconds for which a card to say still keeps the clock at 1x. 0: none does.
+
+        A card used to hold the clock until it was said. But the controller outranks the card: it
+        may be ignored, or answered with something else, and then the clock sat at 1x for ever
+        and the speed buttons looked dead. Now a card gets CARD_HOLD_S from the moment it first
+        needs saying, which is time to see it and key the mic. After that, or as soon as a speed
+        button is pressed, the chosen speed is back and the card simply waits on the list.
+        """
+        now = self._real()
+        live: set[tuple[str, str]] = set()
+        left = 0.0
+        for c in self.cards.values():
+            if not (c.status in ("pending", "error") and not c.minor and c.callsign in self.sim.active
+                    and (c.origin != "initial" or c.cause or c.emergency)):
+                continue
+            key = (c.id, c.status)
+            live.add(key)
+            since = self._hold_since.setdefault(key, now)
+            if since > self._released_real:
+                left = max(left, CARD_HOLD_S - (now - since))
+        for key in [k for k in self._hold_since if k not in live]:
+            del self._hold_since[key]
+        return max(0.0, left)
+
+    def talking(self) -> bool:
+        """Voice on: should the clock be at 1x? The frequency is in use, or a card has just turned up."""
+        return self.on_the_radio() or self.card_hold_s() > 0.0
 
     def set_next_readback(self, mode: str) -> None:
         """Script the next pilot reply so a catch can be shown on cue. One shot, then back to random."""

@@ -142,9 +142,13 @@ export default function TopBar() {
       {sim && (sim.voice ?? !sim.auto_speak) && (sim.speed ?? 1) > 1 && sim.lifecycle === "running" && (
         <span
           className={`px-2 py-1 rounded-md border text-[11px] font-medium ${(sim.clock_speed ?? 1) <= 1 ? "border-ok/50 bg-ok/10 text-ok" : "border-line bg-panel-2 text-muted"}`}
-          title="With voice on, the clock runs at your chosen speed between instructions and drops to 1x by itself whenever a card is waiting or somebody is talking."
+          title="With voice on the clock runs at your chosen speed, drops to 1x while somebody is talking, and for a few seconds when a new card turns up. Press any speed button to go at once."
         >
-          {(sim.clock_speed ?? 1) <= 1 ? "1x: something to say" : `${sim.speed}x until the next instruction`}
+          {(sim.clock_speed ?? 1) > 1
+            ? `${sim.speed}x`
+            : sim.clock_why === "radio"
+              ? "1x: on the radio"
+              : `1x: new card · ${sim.speed}x in ${Math.max(1, Math.ceil(sim.clock_hold_s ?? 0))} s (or press a speed)`}
         </span>
       )}
 
