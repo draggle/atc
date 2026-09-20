@@ -4,7 +4,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, type ReactNode }
 import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { TowerStoreProvider, useTowerDispatch, useTowerState } from "@/lib/store";
-import { connectTower, type TowerClient } from "@/lib/ws";
+import { connectTower, hostedWithoutBackend, type TowerClient } from "@/lib/ws";
 import { radio } from "@/lib/radio";
 import type { ClientMessage } from "@/lib/types";
 import TopBar from "./TopBar";
@@ -35,7 +35,9 @@ export const useClient = () => useContext(ClientCtx);
 function ClientProvider({ children }: { children: ReactNode }) {
   const dispatch = useTowerDispatch();
   const params = useSearchParams();
-  const forceMock = params.get("mock") === "1";
+  // ?mock=1 always. A hosted copy with no backend configured too, unless ?live=1 asks for one.
+  const forceMock = params.get("mock") === "1"
+    || (params.get("live") !== "1" && typeof window !== "undefined" && hostedWithoutBackend(window.location.hostname));
   const ref = useRef<TowerClient | null>(null);
 
   useEffect(() => {
