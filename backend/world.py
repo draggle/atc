@@ -77,6 +77,7 @@ FROZEN_MANUAL_S = 25.0  # voice on: long enough to say a card and hear it back, 
 FROZEN_AUTO_S = 10.0  # Auto with Tower's voice on
 FROZEN_LINK_S = 0.0  # Auto, silent: the reroute is on the flight deck in the same second
 REPLAN_ACTIVE_S = 15.0  # how often every path is re-checked while a disruption is in the sector
+INTERPRET_TIMEOUT_S = 6.0  # the interpreter agent gets this long; after that the controller is told to say it again
 UNSURE_CONF = 0.6  # below this Tower doubts its own ears, and a clash with the card is settled in the card's favour
 TURN_BACK_RETRY_S = 5.0  # a flight at its expected turn-back point is looked at this often until it can go direct
 ROUTE_MIN_OFFSET_NM = 1.0  # a planned path this close to a straight line is just "direct"
@@ -1251,7 +1252,12 @@ class World:
         guessed = ext is not None and ext.transmission_id == tx.id and ext.method == "llm" and card is None
         human = card is None
         if human and not opened:
-            self._explain_unheard(tx)
+            opened = await self._interpret(tx)
+            if opened is None:  # an aside ("unable"), already dealt with
+                return
+            ext = self.core.last_extraction  # the agent's reading, if it had one
+            if not opened:
+                self._explain_unheard(tx)
         for c in opened:
             self.clearance_meta[c.id] = {"issued_real": time.monotonic(), "issued_sim": self.sim.t}
             if guessed and conf < GUESS_MIN_CONF:
@@ -1299,7 +1305,10 @@ class World:
                         self.notice(f"{c.callsign} is doing what you said ({detail} was on the card). Tower is planning round it.", "info")
                         this_card = None
                     if verdict == "partial":
-                        self.notice(f"That was part of the card for {c.callsign}. Still to say: {detail}.", "info")
+                        if {i.type for i in c.items} & {i.type for i in this_card.items}:
+                            self.notice(f"That was part of the card for {c.callsign}. Still to say: {detail}.", "info")
+                        # else: nothing to do with the card at all (a heading, and the card is a
+                        # routing). The controller's own instruction; the card is still advice.
                         this_card = None  # the card stays open for the rest
             if this_card is not None:
                 this_card.via = this_card.via or "human"
@@ -1308,6 +1317,39 @@ class World:
             # A pilot who heard the same garble asks for it again. Flying a guess put an aircraft on
             # heading 021.
             self._schedule_pilot(c, heard_ok=(conf >= 0.5 and not guessed))
+
+    async def _interpret(self, tx: Transmission) -> list[OpenClearance] | None:
+        """Nothing the grammar or the patterns know, but it was addressed to an aircraft: ask the
+        interpreter agent what was meant. Off the clock, in a thread, capped, so the radar never
+        waits for it. Returns the clearances it opened, [] for none, None if it ended in an aside."""
+        ext = self.core.last_extraction
+        agent = self.core.interpreter
+        cs = ext.callsign if ext is not None and ext.transmission_id == tx.id else None
+        if cs is None or cs not in self.sim.active or not agent.available or len(tx.text_norm.split()) < 3:
+            return []
+        self.notice(f"{cs}: working out what you meant…", "info")
+        states = self.sim.aircraft()
+        me = next(s for s in states if s.callsign == cs)
+        fixes = {n: (w.x_nm, w.y_nm) for n, w in self.sim.waypoints.items() if w.kind != "hidden"}
+        try:
+            items, why = await asyncio.wait_for(
+                asyncio.to_thread(agent.interpret, tx.text_norm, me, fixes, list(self.sim.zones), states), INTERPRET_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            self.notice(f"{cs}: Tower could not work that out in time. Say it again, or use standard phraseology.", "warn")
+            return []
+        if not items:
+            if why:
+                self.notice(f"{cs}: {why}", "warn")
+            return []
+        async with self._lock:
+            events = self.core.open_interpreted(tx, cs, items)
+        for e in events:
+            if e["type"] == "aside":
+                await self._aside(e["payload"])
+                return None
+        self._emit_core_events(events)
+        self.emit(event("transcript", self._tx_payload(tx), t=self.sim.t))  # the line again, now with its callsign and reading
+        return [OpenClearance.model_validate(e["payload"]) for e in events if e["type"] == "clearance_opened"]
 
     async def _aside(self, p: dict[str, Any]) -> None:
         """Two things a controller says that are not clearances: "disregard" and the impossible."""

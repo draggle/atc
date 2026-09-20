@@ -156,3 +156,70 @@ def test_unable_changes_nothing_and_disregard_puts_it_back():
     say(w, f"{C.say_callsign(cs)}, disregard")
     assert (a.target_hdg, a.target_alt, list(a.route)) == before
     assert not w.core.store.open_clearances(cs)  # and no readback is owed on a withdrawn instruction
+
+
+# --------------------------------------------------------------------------- the interpreter agent
+
+class _Call:
+    def __init__(self, name, **arguments):
+        self.id, self.name, self.arguments = "t1", name, arguments
+
+
+class _FakeModel:
+    """Stands in for the model on Baseten: answers with tool calls, records what it was shown."""
+    is_mock = False
+
+    def __init__(self, *calls):
+        self.calls, self.seen = list(calls), []
+
+    def chat(self, messages, tools=None, tool_choice=None, max_tokens=300):
+        import json
+        self.seen.append(json.loads(messages[-1]["content"]))
+        return type("R", (), {"tool_calls": self.calls, "content": None})()
+
+
+def test_what_the_patterns_cannot_place_goes_to_the_agent_with_the_picture():
+    from tower.interpreter import Interpreter
+    w, events = make()
+    asyncio.run(w.tick(300.0))
+    w.add_disruption("storm")
+    cs = next(iter(w.sim.active))
+    a = w.sim.active[cs]
+    model = _FakeModel(_Call("fly_heading", heading_deg=300, turn="left"), _Call("change_level", level_ft=37000))
+    w.core.interpreter = Interpreter(model)
+    say(w, f"{C.say_callsign(cs)}, take it round the north side of that weather and get above it")
+    shown = model.seen[0]
+    assert shown["aircraft"]["callsign"] == cs and shown["zones"] and shown["fixes"]  # it was given the picture
+    assert {"bearing_to_centre", "nm_to_centre", "radius_nm"} <= set(shown["zones"][0])
+    assert a.target_hdg == 300.0 and a.target_alt == 37000.0  # and what it answered was flown
+    pilot = [t["payload"]["text_norm"] for t in events if t["type"] == "transcript" and t["payload"]["speaker"] == "pilot"]
+    assert pilot and "300" in pilot[-1]  # read back as standard phraseology, and checked
+    assert not [e for e in events if e["type"] == "alert"]
+    assert w.core.last_extraction.method in ("agent", "grammar", "freeform")
+
+
+def test_the_agent_can_only_say_unable_or_use_the_controls():
+    from tower.interpreter import Interpreter
+    w, events = make()
+    cs = next(iter(w.sim.active))
+    a = w.sim.active[cs]
+    before = (a.target_hdg, a.target_alt, list(a.route))
+    w.core.interpreter = Interpreter(_FakeModel(_Call("unable", reason="an airliner cannot land on a lake")))
+    say(w, f"{C.say_callsign(cs)}, put it down on the lake please")
+    assert (a.target_hdg, a.target_alt, list(a.route)) == before
+    assert any("unable" in e["payload"].get("text", "").lower() for e in events if e["type"] == "notice")
+    # a fix that does not exist, a heading that is not one: dropped, nothing is issued
+    w.core.interpreter = Interpreter(_FakeModel(_Call("direct_to", fix="NARNIA"), _Call("fly_heading", heading_deg="that way")))
+    say(w, f"{C.say_callsign(cs)}, send it over towards narnia somewhere")
+    assert (a.target_hdg, a.target_alt, list(a.route)) == before
+
+
+def test_standard_phraseology_never_waits_for_the_agent():
+    from tower.interpreter import Interpreter
+    w, _ = make()
+    cs = next(iter(w.sim.active))
+    model = _FakeModel(_Call("unable", reason="should not be asked"))
+    w.core.interpreter = Interpreter(model)
+    say(w, f"{C.say_callsign(cs)}, turn left heading two seven zero")
+    say(w, f"{C.say_callsign(cs)}, turn around")
+    assert model.seen == []  # grammar and patterns answered: no model call, no wait

@@ -13,7 +13,7 @@ One FastAPI process holding five services: simulator, planner, AI pilots, Tower 
 - **The plane obeys the pilot's readback, not the controller's clearance.**
 - The planner is search and geometry only. It never plans below 5 NM and 1,000 ft. The slider changes only the extra buffer.
 - Replanning freezes the next 60 to 90 seconds of every path and disturbs as few flights as possible.
-- Tier 1 is a fixed pipeline. Grammar parser first, one structured-output LLM call only as fallback. Target under 2 s per transmission.
+- Tier 1 is a fixed pipeline. Plain-English patterns and the grammar parser first, the interpreter agent only when both find nothing, and never inside the lock. Target: about 1 s from the controller's key release to the aircraft acting.
 - The normalizer is pure Python and deterministic, with unit tests.
 - Snap callsigns to the simulator's active list, and pass that list to Whisper as a prompt.
 - Never alert on a mismatch if the expected value appears in any of the top 5 speech hypotheses. Send it to the resolver.
