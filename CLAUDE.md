@@ -117,7 +117,7 @@ These are proposals. If the team decides otherwise, change them here so every Cl
 
 ```bash
 cd backend && uv venv .venv && uv pip install -e ".[dev]"   # once
-cd backend && .venv/bin/pytest -q                              # 330 tests
+cd backend && .venv/bin/pytest -q                              # 335 tests
 cd backend && .venv/bin/uvicorn app:app --port 8000            # backend, starts idle: load and Start from the screen
 cd frontend && npm install && npm run dev                      # screen at http://localhost:3000, mock mode if no backend
 cd frontend && NEXT_DIST_DIR=.next-verify npm run build        # production build. NEVER plain `npm run build` while `npm run dev` is running: it overwrites .next and the dev page loses its CSS
