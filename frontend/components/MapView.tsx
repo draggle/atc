@@ -17,7 +17,7 @@ import type { Layer, PickingInfo } from "@deck.gl/core";
 import type { Map as MapLibreMap, StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
-import { alertFor, highlightMap, snapshotClock, useTowerDispatch, useTowerState, visibleRisk } from "@/lib/store";
+import { alertFor, highlightMap, useTowerDispatch, useTowerState, visibleRisk } from "@/lib/store";
 import { DEFAULT_FRAME, destinationPoint, latLonToNm, nmToLatLon, type FrameLike } from "@/lib/geo";
 import { latLonOf, shown, type Shown } from "@/lib/interp";
 import { describeIssue, flightLevel, type IssueFix } from "@/lib/issue";
@@ -253,14 +253,18 @@ export default function MapView() {
   const state = useTowerState();
   const dispatch = useTowerDispatch();
   const { send } = useClient();
-  const { sim, tracks, plan, planView, flashUntil, disruptions, watching, selected, follow, ghosts, simClock, onAir, acks } = state;
+  const { sim, tracks, plan, planView, view, flashUntil, disruptions, watching, selected, follow, ghosts, simClock, onAir, acks } = state;
   const talking = onAir?.callsign ?? null;
 
   const mapRef = useRef<MapRef | null>(null);
   const [mapStyle, setMapStyle] = useState<string | StyleSpecification>(BASEMAP);
   const [loaded, setLoaded] = useState(false);
   const [now, setNow] = useState(() => performance.now());
-  const [exaggeration, setExaggeration] = useState(6);
+  // Altitude exaggeration and tilt / top down are set from the settings sheet (store.view).
+  const exaggeration = view.exaggeration;
+  const topDown = view.topDown;
+  const topDownRef = useRef(topDown);
+  topDownRef.current = topDown;
   const [dropMode, setDropMode] = useState<DropMode>("off");
   const [menuOpen, setMenuOpen] = useState(false);
   const [fontReady, setFontReady] = useState(false);
@@ -314,8 +318,13 @@ export default function MapView() {
   // A new world: drop the old trails and frame the new sector.
   useEffect(() => {
     trails.current.clear();
-    if (loaded) fit();
+    if (loaded) fit(topDownRef.current ? 0 : 52, topDownRef.current ? 0 : -14);
   }, [sim?.world_id, loaded, fit]);
+
+  // Tilt or top down, chosen in the settings sheet: reframe the sector that way.
+  useEffect(() => {
+    if (loaded) fit(topDown ? 0 : 52, topDown ? 0 : -14);
+  }, [topDown]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // No globe projection. With the deck.gl overlay it drops every aircraft icon, label and ring and
   // leaves only the lines, and at the scale of one sector the Earth looks flat anyway.
@@ -1027,7 +1036,6 @@ export default function MapView() {
   }, []);
 
   const kinds = (sim?.disruption_kinds?.length ? sim.disruption_kinds : KINDS).filter((k) => k.menu !== false);
-  const conesNow = state.scoreboard?.cones_now ?? risks.length;
   const active = Object.values(disruptions).filter((d) => d.active !== false);
 
   // Text chips are the shared .btn: a hairline, muted until chosen. .btn is unlayered CSS, so the
@@ -1035,15 +1043,6 @@ export default function MapView() {
   const ON = { color: "var(--fg)", borderColor: "rgba(236, 236, 236, 0.6)" } as const;
   /** An active disruption's id: red for a thing in the sky, amber for one of ours in trouble, white for a volume. */
   const disruptionTone = (d: Disruption) => (d.kind === "emergency" ? "text-warn" : d.shape === "point" ? "text-bad" : "text-fg");
-  /** Legend swatches, drawn as CSS so they match the layers exactly. */
-  const swatch = (kind: "solid" | "dashed" | "dotted" | "ring" | "wedge", color: string, opacity = 1) =>
-    kind === "ring" ? (
-      <span className="inline-block h-2.5 w-2.5 rounded-full border-[1.5px] shrink-0" style={{ borderColor: color, opacity }} />
-    ) : kind === "wedge" ? (
-      <span className="inline-block h-0 w-0 shrink-0" style={{ borderLeft: "10px solid transparent", borderBottom: `9px solid ${color}`, opacity }} />
-    ) : (
-      <span className="inline-block w-5 shrink-0 border-t" style={{ borderColor: color, borderTopStyle: kind, borderTopWidth: kind === "solid" ? 1.5 : 1, opacity }} />
-    );
 
   return (
     <div className={`absolute inset-0 ${dropMode !== "off" ? "cursor-crosshair" : ""}`}>
@@ -1074,7 +1073,7 @@ export default function MapView() {
 
       {/* Disrupt: one control. Random puts something where it will matter; Choose lets you place a kind. */}
       {/* z-10: the deck.gl overlay canvas paints above unstacked siblings, so traffic drew over these panels */}
-      <div className="pointer-events-none absolute z-10 left-2 top-[68px] bottom-[330px] w-[336px] flex flex-col gap-2 overflow-y-auto scroll-thin">
+      <div className="pointer-events-none absolute z-10 left-2 top-[52px] bottom-[196px] w-[336px] flex flex-col gap-2 overflow-y-auto scroll-thin">
       <div className="glass pointer-events-auto px-2.5 py-2">
         <div className="flex items-center gap-2">
           <span className="eyebrow">Disrupt</span>
@@ -1135,64 +1134,6 @@ export default function MapView() {
       <FlightStrip />
       </div>
 
-      {/* view */}
-      <div className="glass absolute z-10 left-2 bottom-[196px] flex flex-col gap-2 px-2.5 py-2 w-[320px]">
-        <div className="flex items-center gap-2">
-          <span className="eyebrow">View</span>
-          <button className="btn" onClick={() => fit(52, -14)}>Tilt</button>
-          <button className="btn" onClick={() => fit(0, 0)}>Top down</button>
-        </div>
-        {/* Which lines to draw. Lives here, with the other view controls, so the top bar stays on one row. */}
-        <div className="flex items-center gap-2">
-          <span className="eyebrow">Lines</span>
-          <div className="seg">
-          {(["today", "tower", "both", "changed"] as const).map((v) => (
-            <button
-              key={v}
-              aria-pressed={planView === v}
-              title={{ today: "Only the routes as filed, flown or projected", tower: "Only squack's paths", both: "Original routes underneath, squack's paths on top", changed: "Only the flights squack has moved, with what they were going to fly" }[v]}
-              onClick={() => dispatch({ type: "set_plan_view", view: v })}
-            >
-              {{ today: "Original", tower: "squack", both: "Both", changed: "Changed" }[v]}
-            </button>
-          ))}
-          </div>
-        </div>
-        <label className="flex items-center gap-2 text-[11px] text-muted">
-          <span className="eyebrow w-[70px]">Altitude</span>
-          <input type="range" min={1} max={14} step={1} value={exaggeration} onChange={(e) => setExaggeration(Number(e.target.value))} className="flex-1" />
-          <span className="font-mono w-7 text-right text-muted">{exaggeration}x</span>
-        </label>
-        {/* Legend: one swatch and one word per line, the swatches drawn in the layers' own colours. */}
-        <ul className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-muted pt-0.5">
-          <li className="flex items-center gap-2">{swatch("dashed", "#fff", 0.35)}{sim?.source === "real" ? (sim.meta?.live ? "projected" : "flown") : "standard"}</li>
-          <li className="flex items-center gap-2">{swatch("solid", "#fff", 0.85)}squack</li>
-          <li className="flex items-center gap-2">{swatch("solid", "var(--warn)")}rerouted</li>
-          <li className="flex items-center gap-2">{swatch("dotted", "#fff", 0.3)}was going to fly</li>
-          <li className="flex items-center gap-2">{swatch("ring", "var(--bad)")}alert</li>
-          <li className="flex items-center gap-2">{swatch("ring", "var(--warn)")}checking</li>
-          <li className="flex items-center gap-2">{swatch("ring", "#fff", 0.5)}watching</li>
-          <li className="flex items-center gap-2">
-            {swatch("wedge", "var(--bad)", 0.7)}predicted conflict
-            {conesNow > 0 && <span className="ml-auto font-mono tabular-nums text-bad">{conesNow}</span>}
-          </li>
-        </ul>
-        <p className="text-[11px] text-muted">Drag to pan, scroll to zoom, right-drag to tilt and rotate.</p>
-        {sim?.source === "real" && sim.meta?.live && state.connection === "mock" ? (
-          <p className="text-[11px] text-muted border-t border-line pt-1.5">
-            Mock snapshot: scripted traffic, not the real sky. Start the backend for a live one.
-          </p>
-        ) : sim?.source === "real" && sim.meta?.live ? (
-          <p className="text-[11px] text-muted border-t border-line pt-1.5">
-            Real flights, one snapshot{snapshotClock(sim.meta.snapshot_utc) && ` taken ${snapshotClock(sim.meta.snapshot_utc)}`}, flown by the simulator from there.
-            {sim.meta.fallback === "saved_snapshot" && " The live feed was unavailable, so this is the saved snapshot from that time."} Dashed lines are each flight&apos;s track projected to the region boundary. Flight data: adsb.lol (ODbL, CC0).{sim.waypoints?.some((w) => w.kind === "gate") && " Gate names are ours."}
-          </p>
-        ) : sim?.source === "real" && (
-          <p className="text-[11px] text-muted border-t border-line pt-1.5">
-            Real flights, {sim.meta?.date} {String(sim.meta?.hour_utc ?? 0).padStart(2, "0")}:00 UTC. Dashed lines are the tracks actually flown. Flight data: adsb.lol (ODbL, CC0). Gate names are ours.
-          </p>
-        )}
-      </div>
     </div>
   );
 }

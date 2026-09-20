@@ -93,6 +93,10 @@ export interface TowerState {
   notices: ActiveNotice[];
   /** the setup panel is open */
   setupOpen: boolean;
+  /** the settings sheet (gear, top right) is open */
+  settingsOpen: boolean;
+  /** How the map is drawn. Which lines is `planView`. Shared by the settings sheet and the map. */
+  view: ViewSettings;
   /** callsign with its flight strip open */
   selected: string | null;
   /** the camera follows the selected aircraft */
@@ -157,6 +161,8 @@ export const initialState: TowerState = {
   chat: [],
   notices: [],
   setupOpen: false,
+  settingsOpen: false,
+  view: { topDown: false, exaggeration: 6 },
   selected: null,
   follow: false,
   focusSeq: 0,
@@ -187,6 +193,9 @@ export type Action =
   | { type: "local_toggle"; key: "tower_enabled" | "auto_speak"; value: boolean }
   | { type: "dismiss_notice"; id: number }
   | { type: "set_setup_open"; open: boolean }
+  | { type: "set_settings_open"; open: boolean }
+  /** a partial patch: `{ topDown: true }` or `{ exaggeration: 8 }` */
+  | { type: "set_view"; view: Partial<ViewSettings> }
   | { type: "select"; callsign: string | null }
   /** "take me to it": select, follow, and fly the camera there. An alert card does this. */
   | { type: "focus"; callsign: string }
@@ -199,6 +208,13 @@ const TRANSCRIPT_CAP = 200;
 const GHOST_MS = 30000; // how long the old path stays on screen after a reroute
 
 export type PlanView = "today" | "tower" | "both" | "changed";
+
+export interface ViewSettings {
+  /** camera straight down (pitch 0) instead of the tilted default */
+  topDown: boolean;
+  /** altitude exaggeration, 1 to 14 */
+  exaggeration: number;
+}
 
 export interface Ghost {
   callsign: string;
@@ -518,6 +534,10 @@ export function reducer(state: TowerState, action: Action): TowerState {
       return { ...state, notices: state.notices.filter((n) => n.id !== action.id) };
     case "set_setup_open":
       return { ...state, setupOpen: action.open };
+    case "set_settings_open":
+      return { ...state, settingsOpen: action.open };
+    case "set_view":
+      return { ...state, view: { ...state.view, ...action.view } };
     case "select":
       return { ...state, selected: action.callsign, follow: action.callsign ? state.follow : false };
     case "focus":
@@ -527,7 +547,7 @@ export function reducer(state: TowerState, action: Action): TowerState {
     case "dictation_clear":
       return state.dictation?.final && Date.now() - state.dictation.at >= DICTATION_HOLD_MS ? { ...state, dictation: null } : state;
     case "reset":
-      return { ...initialState, connection: state.connection };
+      return { ...initialState, connection: state.connection, view: state.view };
   }
 }
 
