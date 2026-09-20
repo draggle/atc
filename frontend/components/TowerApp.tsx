@@ -17,6 +17,7 @@ import PushToTalk from "./PushToTalk";
 import SetupPanel from "./SetupPanel";
 import Notices from "./Notices";
 import BootScreen from "./BootScreen";
+import CommandBar from "./CommandBar";
 
 // MapLibre and deck.gl need a browser: no server rendering for the map.
 const MapView = dynamic(() => import("./MapView"), {
@@ -86,7 +87,7 @@ function Screen() {
         <SlidersPanel />
       </div>
 
-      <div className="absolute left-2 bottom-2 z-10 h-[180px] w-[min(calc(100vw-412px),760px)]">
+      <div className="absolute left-2 bottom-2 z-10 h-[180px] w-[min(calc(50vw-372px),420px)]">
         <Transcript />
       </div>
 
@@ -98,6 +99,7 @@ function Screen() {
         </div>
       )}
 
+      <CommandBar />
       <SetupPanel />
       <Notices />
       <BootScreen />
