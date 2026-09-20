@@ -56,7 +56,7 @@ Three terminals. Python 3.11 or newer, Node 20 or newer, `uv`, `ffmpeg`.
 # 1. backend
 cd backend
 uv venv .venv && uv pip install -e ".[dev]"
-.venv/bin/pytest -q                      # 398 tests
+.venv/bin/pytest -q                      # 412 tests
 .venv/bin/uvicorn app:app --port 8000    # first start downloads whisper base.en, about 150 MB
 
 # 2. frontend
@@ -82,6 +82,7 @@ Environment variables, all optional, in `.env` (copy `.env.example`):
 | `ASR_LOCAL_MODEL` | faster-whisper size or a CTranslate2 directory, default `base.en`. Also what the app falls back to, per transmission, when the Baseten model cannot be reached. Deployment: `training/BASETEN.md` |
 | `CHECKER_MODEL_URL` | Cross-encoder endpoint, see `training/serve_checker.py`. Without it, rules only |
 | `ELEVENLABS_API_KEY` | Pilot voices. Without it, macOS `say` |
+| `ELASTIC_URL`, `ELASTIC_API_KEY` | Elasticsearch as the resolver's searchable memory: every transmission, clearance, verdict and radar frame is indexed live and the agent's tools search it (BM25, geo, time series, fuzzy fix names). Without them, in-memory lists. See `docs/11-elastic-memory.md`; prove it with `python tools/elastic_check.py` |
 | `TOWER_SCENARIO`, `TOWER_AUTOSTART=1`, `TOWER_SIM_SPEED`, `TOWER_SYNTHESIZE=0` | Preload a scenario to ready, also start it (headless runs), initial clock speed, disable audio entirely |
 
 Other commands:
@@ -131,6 +132,7 @@ Hack the North requires attribution. Keep this current.
 - Speech tooling: faster-whisper and CTranslate2, silero-vad, Hugging Face transformers and datasets, jiwer
 - Voices: macOS `say`; ElevenLabs client written
 - Infrastructure: Baseten training and inference (job configs written; nothing submitted yet)
-- Backend: FastAPI, Pydantic, numpy, scipy, rapidfuzz, OpenAI Python SDK
+- Backend: FastAPI, Pydantic, numpy, scipy, rapidfuzz, OpenAI Python SDK, Elasticsearch Python client
+- Search: [Elastic Cloud Serverless](https://www.elastic.co/) holds the resolver's searchable memory when configured
 - Frontend: Next.js, React, Tailwind CSS
 - Research this design follows: HAAWAII readback error detection (DLR, NATS, Isavia), SCOPE, the Idiap virtual simulation pilot. Links in `docs/07-build-spec.md`

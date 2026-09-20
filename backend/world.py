@@ -55,6 +55,7 @@ from sim.engine import Simulator
 from sim.monitor import SeparationMonitor
 from tower.asr import ASR, build_prompt, dataset_normalize, get_asr
 from tower.audio import float_to_wav, read_wav
+from tower.memory import Memory, memory_from_env
 from tower.normalize import ICAO_TO_TELEPHONY, normalize
 from tower.pipeline import TowerCore
 
@@ -111,15 +112,19 @@ def scenario_catalog() -> list[dict[str, Any]]:
 
 class World:
     def __init__(self, emit: Emit, *, synthesize: bool = True, asr: ASR | None = None,
-                 realtime: bool = True) -> None:
-        self.emit = emit
+                 realtime: bool = True, memory: Memory | None = None) -> None:
+        # Every event passes through the searchable memory (Elasticsearch when configured) on its
+        # way out, so the resolver can search what the screen has seen. See tower/memory.py.
+        self.memory: Memory = memory if memory is not None else memory_from_env()
+        self._emit_out = emit
+        self.emit = self._emit
         self.synthesize = synthesize
         self.realtime = realtime
         self.asr: ASR | None = asr
         self.tts = TTS() if synthesize else None
         self.scenario: Scenario | None = None
         self.sim = Simulator()
-        self.core = TowerCore()
+        self.core = TowerCore(memory=self.memory)
         self.fleet = PilotFleet(error_rate=0.1, seed=0, tts=self.tts, synthesize=synthesize)
         self.monitor = SeparationMonitor()
         self.plan: Plan | None = None
@@ -197,7 +202,12 @@ class World:
         self.errors_injected = self.errors_caught = 0
         self.scenario = sc
         self.sim = Simulator(sc)
-        self.core = TowerCore(waypoints={w.name: (w.x_nm, w.y_nm) for w in sc.waypoints if w.kind != "hidden"})
+        self.memory.new_session(sc.name)
+        self.core = TowerCore(waypoints={w.name: (w.x_nm, w.y_nm) for w in sc.waypoints if w.kind != "hidden"},
+                              memory=self.memory)
+        if self.memory.enabled:
+            self.memory.index_waypoints(self._with_latlon([w.model_dump() for w in sc.waypoints
+                                                           if w.kind != "hidden"]))
         self.fleet = PilotFleet(error_rate=self.error_rate, seed=sc.seed, tts=self.tts,
                                 synthesize=self.synthesize)
         self.monitor = SeparationMonitor()
@@ -230,6 +240,13 @@ class World:
             self._add_card(card)
         self.emit(event("radar", self.radar_payload(), t=0.0))
         self.emit_scoreboard()
+
+    def _emit(self, ev: dict[str, Any]) -> None:
+        try:
+            self.memory.observe(ev)
+        except Exception:  # noqa: BLE001 - memory never breaks the event path
+            log.exception("memory.observe failed")
+        self._emit_out(ev)
 
     # ------------------------------------------------------------------ geography
 
@@ -297,6 +314,7 @@ class World:
             "speed": self.speed,
             "lifecycle": self.lifecycle,
             "world_id": self.world_id,
+            "memory": self.memory.label if self.memory.enabled else None,
             "scenarios": scenario_catalog(),
             "live_regions": REGIONS.catalog(),  # live mode needs no files, so it is offered even with no replays
             "watching": self.watching(),

@@ -32,6 +32,18 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "parameters": {"type": "object", "properties": {"callsign": {"type": "string"}},
                        "required": ["callsign"]}}},
     {"type": "function", "function": {
+        "name": "nearby_aircraft",
+        "description": "Radar search: every other aircraft within radius_nm of this callsign right now, with distance. Use it to check whether a similar callsign or a conflicting aircraft is close.",
+        "parameters": {"type": "object", "properties": {"callsign": {"type": "string"},
+                                                        "radius_nm": {"type": "number", "default": 30}},
+                       "required": ["callsign"]}}},
+    {"type": "function", "function": {
+        "name": "aircraft_track",
+        "description": "Radar history: what this aircraft's altitude and heading did over the last N seconds (trend, start and end values). Use it to see whether the aircraft is already flying the expected value or the heard one.",
+        "parameters": {"type": "object", "properties": {"callsign": {"type": "string"},
+                                                        "seconds": {"type": "number", "default": 30}},
+                       "required": ["callsign"]}}},
+    {"type": "function", "function": {
         "name": "sanity_check",
         "description": "Whether an item value is plausible: altitude in range, valid frequency, real waypoint, valid runway.",
         "parameters": {"type": "object", "properties": {
@@ -112,6 +124,9 @@ class ResolverTools:
     aircraft_state: Callable[[str], AircraftState | None] | None = None
     waypoints: set[str] = field(default_factory=set)
     sanity_check: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    nearby_aircraft: Callable[[str, float], list[dict[str, Any]]] | None = None
+    aircraft_track: Callable[[str, float], dict[str, Any] | None] | None = None
+    source: str = "in-memory"  # where the evidence comes from, shown in the trace
 
     def execute(self, name: str, args: dict[str, Any]) -> Any:
         """Run a non-terminal tool. Returns JSON-serializable data."""
@@ -128,14 +143,33 @@ class ResolverTools:
                 return None
             s = self.aircraft_state(args.get("callsign", ""))
             return s.model_dump() if s is not None else None
+        if name == "nearby_aircraft":
+            if not self.nearby_aircraft:
+                return []
+            return list(self.nearby_aircraft(args.get("callsign", ""), float(args.get("radius_nm", 30) or 30)))
+        if name == "aircraft_track":
+            if not self.aircraft_track:
+                return None
+            return self.aircraft_track(args.get("callsign", ""), float(args.get("seconds", 30) or 30))
         if name == "sanity_check":
             fn = self.sanity_check or (lambda item: default_sanity_check(item, self.waypoints))
             return fn(args)
         return {"error": f"unknown tool {name}"}
 
 
-def summarize(name: str, result: Any) -> str:
-    """One line for the resolver_step event."""
+def summarize(name: str, result: Any, source: str | None = None) -> str:
+    """One line for the resolver_step event. `source` names where the evidence came from
+    (for example "Elasticsearch") for the tools that search the frequency memory."""
+    line = _summarize(name, result)
+    if source and source != "in-memory" and name in SEARCH_TOOLS:
+        return f"[{source}] {line}"
+    return line
+
+
+SEARCH_TOOLS = {"frequency_history", "nearby_aircraft", "aircraft_track", "sanity_check"}
+
+
+def _summarize(name: str, result: Any) -> str:
     if name == "relisten":
         hyps = result or []
         return f"{len(hyps)} hypotheses: " + " | ".join(str(h) for h in hyps[:5])
@@ -143,7 +177,24 @@ def summarize(name: str, result: Any) -> str:
         cs = [a.get("callsign", "?") for a in (result or [])]
         return f"{len(cs)} on frequency: {', '.join(cs)}"
     if name == "frequency_history":
-        return f"{len(result or [])} prior exchanges"
+        rows = result or []
+        if not rows:
+            return "no prior exchanges"
+        top = rows[0]
+        best = f": best match \"{top.get('text', '')[:60]}\"" if top.get("score") is not None else ""
+        return f"{len(rows)} prior exchanges{best}"
+    if name == "nearby_aircraft":
+        rows = result or []
+        if not rows:
+            return "nobody within range"
+        return f"{len(rows)} within range: " + ", ".join(
+            f"{a.get('callsign')} {a.get('distance_nm')} NM" for a in rows[:4])
+    if name == "aircraft_track":
+        if not result:
+            return "no radar history"
+        return (f"{result.get('trend')} over {result.get('seconds')} s: "
+                f"{result.get('alt_start_ft')} to {result.get('alt_end_ft')} ft, "
+                f"hdg {int(result.get('hdg_start_deg', 0)):03d} to {int(result.get('hdg_end_deg', 0)):03d}")
     if name == "aircraft_state":
         if not result:
             return "no radar track"
