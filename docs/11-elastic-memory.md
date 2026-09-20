@@ -6,6 +6,18 @@ Written Saturday Sept 19, 2026, for the Elastic "Find the Signal" sponsor prize.
 
 Tower's resolver agent already investigates messy readbacks with tools: re-listen, who is on frequency, what was this aircraft told, what is it doing on radar. Before this change those tools read Python lists inside the process. Now every transmission, clearance, verdict, resolver step and radar frame is streamed into Elasticsearch as it happens, and the tools *search* it: BM25 text search over the radio log, a geo query for nearby aircraft, a time-series query for what the plane did, and a fuzzy match for misheard fix names. The agent's trace on screen names the source, for example `[Elasticsearch] descending over 20 s: 25000 to 24200 ft`. Without `ELASTIC_URL` nothing changes: the app runs exactly as before on the in-memory path.
 
+## What works, verified Sunday morning Sept 20 on a laptop
+
+- [x] Backend connects to the Serverless project at startup and logs `Elasticsearch memory on ...`
+- [x] Every radar frame, radio message, clearance, verdict and resolver step is written live (`_bulk` returns 200 about once a second while the sim runs)
+- [x] `tools/elastic_check.py`: all four searches answer correctly on the real cluster (BM25 ranking, geo distance, altitude trend over time, fuzzy fix name)
+- [x] `tools/elastic_demo.py`: 19 resolver steps, 3 of them Elasticsearch searches, 9 alerts, with the real Baseten resolver and ElevenLabs pilot voices through Whisper
+- [x] The real model chose the searches itself, for example `aircraft_track(DAL789, 30 s)` on a 0.44-confidence readback
+- [x] Kibana Discover shows the same steps in `tower-resolver_steps` and the radio log in `tower-transmissions`
+- [x] With `ELASTIC_URL` unset the app is unchanged: 287 tests pass either way
+- [ ] Not yet seen in a browser: an amber card with a `[Elasticsearch]` line in its expanded trace. The data is there (the demo script reads the same events the screen does), but nobody has watched it on `localhost:3000` yet
+- [ ] Not built: a top-bar badge saying Elastic is connected, and a Kibana dashboard
+
 ## What the prize asks for, and where each thing is
 
 | Elastic asked for | Where it is |
