@@ -31,6 +31,7 @@ import importlib
 
 C = importlib.import_module("planner.cards")
 PL = importlib.import_module("planner.plan")
+RISK = importlib.import_module("planner.risk")
 from planner.conflicts import closest_approach
 from schemas import (
     AircraftState,
@@ -85,6 +86,12 @@ ROUTE_MIN_OFFSET_NM = 1.0  # a planned path this close to a straight line is jus
 AUTO_EXCHANGE_S = 12.0  # a spoken instruction and its readback, roughly
 AUTO_EXCHANGE_TIMEOUT_S = 30.0  # stop waiting for a readback that never came
 CARD_VERIFY_S = 30.0  # a matched clearance with no radar alert for this long is "verified"
+# Monte Carlo conflict prediction (TRD 07). Thresholds live in planner/risk.py.
+RISK_REPLAN_EVERY_S = 20.0  # one risk replan per pair per this long
+RISK_FAST_CADENCE_S = 2.0  # above 1x the prediction runs every this many sim seconds, not every step
+RISK_EMIT_EVERY_S = 1.0  # the risk event goes out at most this often
+RISK_N_MAX = 256
+RISK_N_MIN = 32
 
 Emit = Callable[[dict[str, Any]], None]
 
@@ -176,6 +183,17 @@ class World:
         self.live_loading = False  # a live snapshot is being fetched (sim/live.py); a second request is ignored
         self._lock = asyncio.Lock()
         self._speaking: set[str] = set()  # cards Tower is saying right now, see speak_card
+        # Monte Carlo conflict prediction (TRD 07). risk_predict is an attribute so tests and the
+        # integrator can inject a stub while planner/risk.py is being written.
+        self.risk_predict: Callable[..., Any] = RISK.predict
+        self.risk: Any = RISK.RiskReport()
+        self._risk_n = RISK_N_MAX  # rollouts per call, adapted to the measured cost
+        self._risk_seen: dict[frozenset[str], dict[str, Any]] = {}  # pair -> over, replanned_t, los_at
+        self._risk_t = -1e9  # sim time of the last prediction
+        self._risk_emit_t = -1e9  # sim time of the last risk event
+        self._risk_prev_empty = True  # the previous report had no pairs: nothing to clear on screen
+        self.conflicts_predicted = 0
+        self.conflicts_resolved = 0
         AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------ setup
@@ -225,6 +243,10 @@ class World:
         self.zone_incursions = set()
         self.disruptions.clear()
         self.disruption_count = 0
+        self._risk_seen.clear()
+        self._risk_t = self._risk_emit_t = -1e9
+        self._risk_prev_empty = True
+        self.conflicts_predicted = self.conflicts_resolved = 0
         self.buffer_nm = sc.separation_buffer_nm
         self.noise = sc.noise_level
         self.baseline = baseline
@@ -234,6 +256,9 @@ class World:
         self.planned_miles_saved = self.baseline.total_distance_nm - self.plan.total_distance_nm
         self.planned_time_saved_s = self.baseline.total_time_s - self.plan.total_time_s
         self.last_replan_t = 0.0
+        # Score the initial plan once so its cards carry a confidence. No trigger here: nothing moves
+        # until start(), and a risk replan of a plan nobody has seen would be a plan nobody can follow.
+        self.risk = self._run_predict(self.sim.aircraft(), adapt=False)
         self.emit_state()
         self.emit_plan(self.plan, trigger="initial")
         for card in C.cards_from_plan(self.plan, None, now_t=0.0, states=self.sim.aircraft()):
@@ -366,6 +391,9 @@ class World:
             tier1_latency_s=(round(float(np.mean(self.tier1_latencies)), 2) if self.tier1_latencies else None),
             rerouted=len(self.rerouted), reaction_s=self.reaction_s, datalink_sent=self.datalink_sent,
             in_zone_now=self.in_zone_now, zone_incursions=len(self.zone_incursions),
+            conflicts_predicted=self.conflicts_predicted, conflicts_resolved=self.conflicts_resolved,
+            futures_per_s=(round(float(self.risk.futures_per_s)) if self.risk.n_rollouts else None),
+            cones_now=len(self.risk.pairs),
         )
 
     def _emit_core_events(self, events: list[dict[str, Any]]) -> None:
@@ -414,6 +442,8 @@ class World:
     # ------------------------------------------------------------------ cards
 
     def _add_card(self, card: InstructionCard) -> None:
+        if card.confidence is None:
+            self._score_card(card)
         self.cards[card.id] = card
         self.card_t[card.id] = self.sim.t
         if not card.minor:  # a minor shortcut is never shown: see InstructionCard.minor
@@ -602,6 +632,9 @@ class World:
                             self.core.store.get(cid).callsign if self.core.store.get(cid) else ""):
                         self._set_card_status(cid, "verified")
                         del self.matched_at[cid]
+                # Predicted risk first: a risk replan resets last_replan_t, so the periodic check
+                # below does not plan the same second twice.
+                self._risk_step(now, states)
                 # Re-check often while anything unusual is going on, in either mode. Never while the
                 # controller is mid-sentence: a card must not change under the words being read.
                 busy = bool(self.disruptions) or any(a.target_hdg is not None and not a.is_intruder
@@ -779,8 +812,13 @@ class World:
     # ------------------------------------------------------------------ planning
 
     def _replan(self, trigger: str, disruption: Disruption | None = None,
-                release: set[str] | None = None, why: str = "", repin: set[str] | None = None) -> list[str]:
-        """Repair the plan and issue the cards. Returns the callsigns that got a new instruction."""
+                release: set[str] | None = None, why: str = "", repin: set[str] | None = None,
+                rescore: bool = False) -> list[str]:
+        """Repair the plan and issue the cards. Returns the callsigns that got a new instruction.
+
+        rescore: run the risk prediction again on the new plan before the cards are made, so their
+        confidence reflects the risk left after this replan rather than the risk that triggered it.
+        """
         if self.plan is None or self.scenario is None:
             return []
         states = self.sim.aircraft()
@@ -794,6 +832,8 @@ class World:
                                         FROZEN_LINK_S if self._links_only() else FROZEN_AUTO_S))
         self.plan.trigger = trigger
         self.last_replan_t = self.sim.t
+        if rescore:
+            self.risk = self._run_predict(states, adapt=False)
         new_cards = C.cards_from_plan(self.plan, prev, now_t=self.sim.t, states=states, issued=issued)
         new_cards += self._new_followups(states)
         if release:
@@ -821,6 +861,101 @@ class World:
                         del self.cards[c.id]
         self._auto_links()  # in Auto the reroutes leave now, not on the next tick of the clock
         return changed
+
+    # ------------------------------------------------------------------ predicted risk (TRD 07)
+
+    def _run_predict(self, states: list[AircraftState], *, adapt: bool) -> Any:
+        """One call of the risk module on the current plan. adapt: size the next call to this one's cost."""
+        if self.plan is None:
+            return RISK.RiskReport()
+        paths = {p.callsign: p for p in self.plan.paths}
+        seed = (self.scenario.seed if self.scenario is not None else 0) + int(self.sim.t)
+        t0 = time.perf_counter()
+        try:
+            report = self.risk_predict(states, paths, self.sim.zones, self.sim.t, n=self._risk_n, seed=seed)
+        except Exception:  # noqa: BLE001 - a prediction that fails must not stop the clock
+            log.exception("risk.predict failed")
+            return RISK.RiskReport(n_rollouts=0)
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        if adapt:
+            # Above 1x a tick is a quarter of a second and the planner needs most of it. Measured on
+            # the real Europe hour (about 60 aircraft) at 20x: with 150 ms allowed here the tick ran
+            # to a median of 140 ms and 320 ms at the 95th percentile, over its 250 ms, and the clock
+            # fell behind. 40 ms settles at 64 rollouts there, which is still 1.6 % per future
+            # against a 30 % threshold.
+            fast = self.clock_speed() > 1.0
+            budget_ms = 25.0 if len(states) <= 15 else (40.0 if fast else 150.0)
+            if elapsed_ms > budget_ms:
+                self._risk_n = max(RISK_N_MIN, self._risk_n // 2)
+            elif elapsed_ms < budget_ms / 2:
+                self._risk_n = min(RISK_N_MAX, self._risk_n * 2)
+        return report
+
+    def _risk_step(self, now: float, states: list[AircraftState]) -> None:
+        """Every step at 1x, every RISK_FAST_CADENCE_S above: predict, count, replan, emit."""
+        cadence = 0.0 if self.clock_speed() <= 1.0 else RISK_FAST_CADENCE_S
+        if now - self._risk_t + 1e-9 < cadence:
+            return
+        self._risk_t = now
+        self.risk = self._run_predict(states, adapt=True)
+        due: list[tuple[str, str]] = []
+        p_now: dict[frozenset[str], float] = {}
+        for p in self.risk.pairs:
+            key = frozenset((p.a, p.b))
+            p_now[key] = float(p.p_max)
+            st = self._risk_seen.setdefault(key, {"over": False, "replanned_t": -1e9, "los_at": 0})
+            if p.p_max >= RISK.REPLAN_P:
+                if not st["over"]:
+                    st["over"] = True
+                    st["los_at"] = self.monitor.losses
+                    self.conflicts_predicted += 1
+                if now - st["replanned_t"] >= RISK_REPLAN_EVERY_S and not self.human_on_mic:
+                    due.append((p.a, p.b))
+        for key, st in self._risk_seen.items():
+            if st["over"] and p_now.get(key, 0.0) < RISK.SHOW_P:
+                st["over"] = False
+                # "No loss of separation for this pair meanwhile" is approximated as no new loss of
+                # separation anywhere since the pair crossed the threshold: the monitor counts
+                # losses in total, and a second pair losing separation in the same window is rare.
+                if self.monitor.losses == st["los_at"]:
+                    self.conflicts_resolved += 1
+        if due:
+            for a, b in due:
+                self._risk_seen[frozenset((a, b))]["replanned_t"] = now
+            trigger = f"risk {due[0][0]}/{due[0][1]}" if len(due) == 1 else f"risk {len(due)} pairs"
+            self._replan(trigger, repin={cs for pair in due for cs in pair}, rescore=True)
+        empty = not self.risk.pairs
+        if now - self._risk_emit_t >= RISK_EMIT_EVERY_S and not (empty and self._risk_prev_empty):
+            self._risk_emit_t = now
+            self.emit(event("risk", self._risk_payload(self.risk), t=now))
+        self._risk_prev_empty = empty
+
+    @staticmethod
+    def _risk_payload(report: Any) -> dict[str, Any]:
+        """Plain JSON only: the report may hold numpy scalars, and the sender must not depend on a default hook."""
+        pairs = []
+        for p in report.pairs:
+            pairs.append({
+                "a": str(p.a), "b": str(p.b), "p_max": float(p.p_max),
+                "t_first_s": (None if p.t_first_s is None else float(p.t_first_s)),
+                "eta_s": float(p.eta_s), "min_sep_nm_p5": float(p.min_sep_nm_p5),
+                "curve": [[float(t), float(v)] for t, v in p.curve],
+                "cpa_xy": [float(p.cpa_xy[0]), float(p.cpa_xy[1])],
+                "spread_a_nm": float(p.spread_a_nm), "spread_b_nm": float(p.spread_b_nm),
+            })
+        return {"pairs": pairs, "horizon_s": float(report.horizon_s), "n_rollouts": int(report.n_rollouts),
+                "elapsed_ms": round(float(report.elapsed_ms), 2), "futures_per_s": float(report.futures_per_s)}
+
+    def _score_card(self, card: InstructionCard) -> None:
+        """confidence = (1 - risk_after) x margin_factor, from the current report and the card's path."""
+        risk_after = 0.0
+        for p in self.risk.pairs:
+            if card.callsign in (p.a, p.b):
+                risk_after = max(risk_after, float(p.p_max))
+        path = next((p for p in self.plan.paths if p.callsign == card.callsign), None) if self.plan else None
+        margin = RISK.margin_factor(path.cost, path.runner_up_cost) if path is not None else 1.0
+        card.risk_after = round(risk_after, 3)
+        card.confidence = round(min(0.99, max(0.05, (1.0 - risk_after) * margin)), 3)
 
     def _unsaid_headings(self) -> dict[str, float]:
         """Voice on: callsign -> the heading on its card that nobody has said yet.

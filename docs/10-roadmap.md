@@ -261,6 +261,35 @@ Placing a storm or a launch "on a path" by hand usually missed, and it looked as
 
 **Four kinds on the menu**, storm, rocket launch, fighter, emergency (`disruptions.MENU_KINDS`, `menu` in `state.disruption_kinds`). Drone, balloon, unknown and closed airspace stay in the table and the headset agent can still ask for them.
 
+### Phase 6g. Seeing conflicts before they exist. Sunday
+
+The planner's conflict test is exact and blind: it asks whether the plan, flown perfectly, keeps 5 NM and 1,000 ft. It says nothing about a pilot who acknowledged and has not turned yet, a slow turn, a storm drifting into a path, or a wrong heading that will not be a conflict for another minute. Those were caught by the 15 s or 60 s periodic replan, or by the loss of separation itself. TRD 07 has the spec.
+
+**What it is.** Every tick after `sim.step`, `backend/planner/risk.py` rolls the whole sky forward 120 s a few hundred times with noise (compliance delay 0 to 15 s, ground speed ±3 percent, heading σ 2 degrees, climb and descent rate ±20 percent, zone drift ±15 degrees, all seeded) and counts how often each nearby pair would lose separation at the same 5 s sample. Pure numpy, no World imports, positions as one `(n, aircraft, samples, 3)` array, pairs pruned to those within 60 NM and 4,000 ft now. It is Monte Carlo over disturbances feeding the deterministic planner, not MCTS over actions: the risk decides *when* to replan, the existing planner decides *what*.
+
+**Thresholds.** `REPLAN_P` 0.30: any pair at or above it, with its first crossing inside the horizon, calls `_replan("risk A/B")` at once, rate-limited to one risk replan per pair per 20 s. `SHOW_P` 0.05: the display floor; pairs below it are not in the report. Both live in `risk.py` and nowhere else.
+
+**Budget.** 256 rollouts by default, floor 32. The count halves when the last call ran over its budget (25 ms at 12 aircraft, 150 ms at 100) and doubles back up when it ran under half, so the clock loop never stalls on the 150-flight Europe scenario. Above 1x the prediction runs every 2 s of sim time, not every tick.
+
+**Confidence.** Every card now carries `confidence = (1 - risk_after) × margin_factor`, clamped to [0.05, 0.99]. `risk_after` is the residual `p_max` on the pairs the card's aircraft is in, re-scored on the new plan before the card goes out. `margin_factor` is 1 when the chosen path beat the runner-up candidate by 20 percent or more of its cost, falling linearly to 0.5 when they tied (`PlannedPath.runner_up_cost`). Shown, not acted on: gating below a threshold is TRD 06 item A3. The strip shows both terms, "risk after 0.03, margin 1.0", so the number can be explained when a judge asks.
+
+**What the judge sees.** A translucent red wedge between two aircraft before anything is wrong, labelled "LoS 42% · 71 s", its width the p5 to p95 lateral spread of the rollouts at the closest approach, brightening as the probability rises and gone when the replan clears it. A confidence on every card and strip. Three new scoreboard tiles: conflicts predicted, resolved before they happened, and futures simulated per second, the last one measured from `n_rollouts × aircraft / elapsed` that tick. The slide says "a few hundred futures a tick", never "thousands" unless the counter does.
+
+Measured Sunday 00:40 on the demo laptop: 2.3 ms and about 545,000 futures per second with 5 airborne (demo), 61 ms and about 273,000 with 65 airborne (Europe replay), n=256. Live scoreboard during a run: 200,000 to 450,000. In a head-on test with Voice off the periodic replan vectored the pair apart before risk reached 0.30, which is the planner working; the risk trigger earns its keep when a hazard develops faster than the 15 s check, and that case has not been watched live yet..
+
+- [ ] Drop a storm on `demo`: the cone appears before the replan fires, and clears after it
+- [ ] Force a wrong heading toward another aircraft: the risk replan fires earlier than the periodic check would have
+- [x] Confidence shown on every card and strip, in [0.05, 0.99] (seen live: 0.99 on directs, 0.5 on a tied candidate)
+- [x] Futures per second on the scoreboard is the measured number for this laptop, not a constant
+- [x] 437 tests pass, including `test_risk.py` and `test_world_risk.py`
+
+**Integration pass after merging main (Sunday, early).** Main merged into this branch with no conflicts; 438 backend tests, production build clean. What the PR had not measured:
+- **Scale.** Tick cost with the prediction on, real Europe hour: 33 aircraft 23 ms at 1x and 65 ms at 20x; about 60 aircraft 57 ms at 1x, and at 20x a median of 141 ms with 318 ms at the 95th percentile, over the 250 ms a tick has above 1x, so the clock fell behind. The prediction's budget above 1x is now 40 ms (it was 150 ms whatever the clock was doing); it settles at 64 to 128 rollouts there and the same run is 69 ms median, 248 ms at the 95th percentile, which is the periodic replan, not the prediction.
+- **It never speaks with voice off.** Demo, dense and the real Europe hour with four disruptions each: no pair ever reached the 5 % display floor. Tower's plan keeps everyone 8 NM apart and data link applies it in the same second, so there is nothing left to predict. Cones are a voice-on thing.
+- **Voice on is where it earns its place.** With cards left unsaid, pairs appear and climb to 100 % (demo: 4 pairs, 5 predicted; dense: 3 pairs, 7 predicted), which is the conflict the unsaid card was for. For the pitch: leave the DAL789/UAL210 card unsaid, watch the wedge grow, say the card, watch it clear.
+- **No extra churn.** One controller saying one card every 14 s after a storm: still one heading and one back-on-course card per flight, no loss of separation, nobody in the storm. Voice off stress run (six disruptions, four scenarios): same numbers as before the merge.
+- The whole test suite now takes about 2.5 minutes instead of 35 s, because every tick of every world in every test runs the prediction. `World.risk_predict` is injectable if that becomes a nuisance.
+
 ### Phase 7. Scale and robustness. About 2 hours
 - [ ] Planner: initial plan for 150 flights in under 5 seconds, replans inside their budget. If not, cap the scenario and say so
 - [ ] The investigating agent runs off the clock's critical path so the map never freezes while it thinks

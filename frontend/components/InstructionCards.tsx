@@ -8,6 +8,21 @@ import { useClient } from "./TowerApp";
 
 const VISIBLE_CAP = 4;
 
+/** "confidence 0.91" with a short bar: how sure Tower is of this instruction (TRD 07). Muted: it informs, it does not shout. */
+export function Confidence({ value, riskAfter, className = "" }: { value: number | null | undefined; riskAfter?: number | null; className?: string }) {
+  if (typeof value !== "number") return null;
+  const pct = Math.max(0, Math.min(1, value)) * 100;
+  return (
+    <span className={`inline-flex items-center gap-1.5 whitespace-nowrap text-[10px] font-mono text-muted ${className}`} title="(1 - residual risk) x how clearly this beat the runner-up">
+      <span className="inline-block h-1 w-9 rounded bg-line overflow-hidden align-middle">
+        <span className="block h-full bg-muted/70" style={{ width: `${pct}%` }} />
+      </span>
+      confidence {value.toFixed(2)}
+      {typeof riskAfter === "number" && <span className="text-muted/70">· risk after {riskAfter.toFixed(2)}</span>}
+    </span>
+  );
+}
+
 const STATUS: Record<CardStatus, { label: string; cls: string; bar: string }> = {
   pending: { label: "pending", cls: "border-line", bar: "bg-muted" },
   spoken: { label: "spoken, awaiting readback", cls: "border-accent/50", bar: "bg-accent" },
@@ -51,7 +66,10 @@ function Card({ card, arrivedT, simT, auto, onFrequency, running, held, tag }: {
         </span>
       </div>
       <p className="mt-1.5 text-[15px] leading-snug">&ldquo;{card.phrase}&rdquo;</p>
-      <p className="mt-1 text-xs text-muted">{card.reason}</p>
+      <div className="mt-1 flex items-baseline justify-between gap-2">
+        <p className="text-xs text-muted">{card.reason}</p>
+        <Confidence value={card.confidence} className="shrink-0" />
+      </div>
       {(card.status === "pending" || card.status === "spoken") && (
         <div className="mt-2 h-0.5 rounded bg-line overflow-hidden">
           <div className={`h-full ${urgent ? "bg-bad" : "bg-accent"}`} style={{ width: `${frac * 100}%`, transition: "width 1s linear" }} />

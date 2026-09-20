@@ -17,11 +17,11 @@ import type { Layer, PickingInfo } from "@deck.gl/core";
 import type { StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
-import { alertFor, highlightMap, snapshotClock, useTowerDispatch, useTowerState } from "@/lib/store";
+import { alertFor, highlightMap, snapshotClock, useTowerDispatch, useTowerState, visibleRisk } from "@/lib/store";
 import { DEFAULT_FRAME, destinationPoint, latLonToNm, nmToLatLon, type FrameLike } from "@/lib/geo";
 import { latLonOf, shown, type Shown } from "@/lib/interp";
 import { describeIssue, flightLevel, type IssueFix } from "@/lib/issue";
-import type { Disruption, DisruptionKind, DisruptionKindInfo, PlannedPath, Zone } from "@/lib/types";
+import type { Disruption, DisruptionKind, DisruptionKindInfo, PlannedPath, RiskPair, Zone } from "@/lib/types";
 import FlightStrip from "./FlightStrip";
 import { useClient } from "./TowerApp";
 
@@ -72,6 +72,7 @@ const C = {
   wrong: [255, 77, 94, 255] as RGBA,
   warn: [255, 176, 46, 255] as RGBA,
   pill: [6, 9, 14, 235] as RGBA,
+  risk: [255, 77, 94] as [number, number, number],
 };
 
 const FT_TO_M = 0.3048;
@@ -93,6 +94,11 @@ function clearedLine(p: { hdg_deg: number; target_hdg_deg: number | null; alt_ft
   if (Math.abs(p.target_alt_ft - p.alt_ft) > 150) out.push(`${p.target_alt_ft > p.alt_ft ? "↑" : "↓"}${String(Math.round(p.target_alt_ft / 100)).padStart(3, "0")}`);
   return out.join(" ");
 }
+/** Hover text for a predicted-conflict wedge. */
+function riskTip(p: RiskPair): string {
+  const eta = p.t_first_s ?? p.eta_s;
+  return `${p.a} / ${p.b}: predicted conflict\nLoS ${Math.round(p.p_max * 100)}% in ${Math.round(eta)} s\nmin separation (p5) ${p.min_sep_nm_p5.toFixed(1)} NM`;
+}
 /** Length of the cleared / read-back heading vectors. */
 const HDG_VECTOR_NM = 25;
 /** Focus fly-in: how close, how long, and the part of the screen the panels leave free (the top is deeper because altitude lifts everything). */
@@ -109,6 +115,34 @@ const mercator = (lon: number, lat: number): [number, number] => [
 const ISSUE_CHARS = Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)).join("") + "·…";
 
 type IssueSeg = { path: [number, number, number][]; color: RGBA; width: number };
+/** One aircraft's half of a predicted conflict: a wedge from where it is to the closest-approach point. */
+type RiskCone = { key: string; callsign: string; pair: RiskPair; fade: number; polygon: [number, number, number][] };
+type RiskLabel = { key: string; pair: RiskPair; fade: number; position: [number, number, number]; text: string };
+/** Cone width, NM: half-width at the aircraft, and the least half-width at the CPA (the rollouts' spread when wider). */
+const CONE_HALF_AT_AIRCRAFT_NM = 0.5;
+const CONE_MIN_HALF_AT_CPA_NM = 1.5;
+
+/**
+ * The wedge as a 4-point polygon in lon/lat: narrow at the aircraft, as wide as the rollouts spread
+ * at the closest approach. The bearing is taken in the sector frame (both ends are known there),
+ * the corners are placed on the sphere so the shape is right at any latitude.
+ */
+function coneAt(frame: FrameLike, from: { lat: number; lon: number; x_nm: number; y_nm: number }, cpaNm: [number, number], spreadNm: number, z: number): [number, number, number][] {
+  const [cpaLat, cpaLon] = nmToLatLon(frame, cpaNm[0], cpaNm[1]);
+  const [fx, fy] = latLonToNm(frame, from.lat, from.lon);
+  const bearing = (Math.atan2(cpaNm[0] - fx, cpaNm[1] - fy) * 180) / Math.PI;
+  const halfCpa = Math.max(CONE_MIN_HALF_AT_CPA_NM, spreadNm);
+  const corner = (lat: number, lon: number, side: number, half: number): [number, number, number] => {
+    const [la, lo] = destinationPoint(lat, lon, bearing + side * 90, half);
+    return [lo, la, z];
+  };
+  return [
+    corner(from.lat, from.lon, -1, CONE_HALF_AT_AIRCRAFT_NM),
+    corner(cpaLat, cpaLon, -1, halfCpa),
+    corner(cpaLat, cpaLon, 1, halfCpa),
+    corner(from.lat, from.lon, 1, CONE_HALF_AT_AIRCRAFT_NM),
+  ];
+}
 type IssueMark = { position: [number, number, number]; color: RGBA; radius: number };
 type IssueTag = { position: [number, number, number]; text: string; color: RGBA; offset: [number, number]; anchor: "start" | "middle" | "end" };
 const TRAIL_POINTS = 48;
@@ -437,6 +471,23 @@ export default function MapView() {
     [sim?.zones, frame, zOf],
   );
 
+  // Predicted conflicts (TRD 07): two wedges per pair, rebuilt from the interpolated aircraft each
+  // frame so they stay attached, and a label at the closest approach. The store decides which
+  // pairs are on screen and how faded; this only draws them.
+  const risks = visibleRisk(state, now);
+  const riskCones: RiskCone[] = [];
+  const riskLabels: RiskLabel[] = [];
+  for (const { key, pair, fade } of risks) {
+    const pa = planes.find((p) => p.callsign === pair.a);
+    const pb = planes.find((p) => p.callsign === pair.b);
+    if (!pa || !pb) continue;
+    riskCones.push({ key: `${key}:a`, callsign: pair.a, pair, fade, polygon: coneAt(frame, pa, pair.cpa_xy, pair.spread_a_nm, zOf(pa.alt_ft)) });
+    riskCones.push({ key: `${key}:b`, callsign: pair.b, pair, fade, polygon: coneAt(frame, pb, pair.cpa_xy, pair.spread_b_nm, zOf(pb.alt_ft)) });
+    const [lat, lon] = nmToLatLon(frame, pair.cpa_xy[0], pair.cpa_xy[1]);
+    const eta = pair.t_first_s ?? pair.eta_s;
+    riskLabels.push({ key, pair, fade, position: [lon, lat, zOf((pa.alt_ft + pb.alt_ft) / 2)], text: `LoS ${Math.round(pair.p_max * 100)}% · ${Math.round(eta)} s` });
+  }
+
   // Busy sky: one line per aircraft, full data block only for the ones that matter right now.
   const dense = planes.length > 22;
   const important = (p: Shown) => p.callsign === selected || !!highlights[p.callsign] || watching.includes(p.callsign) || p.is_intruder;
@@ -596,6 +647,40 @@ export default function MapView() {
       capRounded: true,
       jointRounded: true,
       updateTriggers: { getColor: [flashSlot, selected, avoidKey], getWidth: [flashSlot, selected] },
+    }),
+
+    // Where two flights may lose separation inside the next two minutes, and how sure the rollouts are.
+    new PolygonLayer<RiskCone>({
+      id: "risk-cones",
+      data: riskCones,
+      getPolygon: (d) => d.polygon,
+      filled: true,
+      stroked: true,
+      extruded: false,
+      getFillColor: (d) => [...C.risk, Math.round(255 * (0.1 + 0.35 * d.pair.p_max) * d.fade)] as RGBA,
+      getLineColor: (d) => [...C.risk, Math.round(255 * Math.min(1, 0.35 + 0.6 * d.pair.p_max) * d.fade)] as RGBA,
+      getLineWidth: 1,
+      lineWidthUnits: "pixels",
+      pickable: true,
+      parameters: ALWAYS_ON_TOP,
+      updateTriggers: { getPolygon: [now, exaggeration], getFillColor: now, getLineColor: now },
+    }),
+    new TextLayer<RiskLabel>({
+      id: "risk-labels",
+      data: riskLabels,
+      getPosition: (d) => d.position,
+      getText: (d) => d.text,
+      getSize: 11,
+      getColor: (d) => [...C.risk, Math.round(255 * d.fade)] as RGBA,
+      getTextAnchor: "middle",
+      getAlignmentBaseline: "center",
+      characterSet: ISSUE_CHARS,
+      fontFamily: fontReady ? '"B612 Mono", ui-monospace, monospace' : "ui-monospace, monospace",
+      fontSettings: { sdf: true },
+      outlineWidth: 4,
+      outlineColor: C.ink,
+      parameters: ALWAYS_ON_TOP,
+      updateTriggers: { getPosition: [now, exaggeration], getText: now, getColor: now },
     }),
 
     // The shadow of a reroute: the path the flight was on, and a ghost still flying it, fading out.
@@ -916,13 +1001,16 @@ export default function MapView() {
       ? `${o.callsign}  ${o.actype ?? ""}\nFL${Math.round((o.alt_ft ?? 0) / 100)}  ${Math.round(o.gs_kt ?? 0)} kt  hdg ${Math.round(o.hdg_deg ?? 0)}`
       : info.layer?.id === "zones"
         ? `${z.label || z.kind}  ${z.id}\n${Math.round(z.radius_nm)} NM radius, ${levelsOf(z)}`
-        : (o.name ?? "");
+        : info.layer?.id === "risk-cones"
+          ? riskTip((info.object as RiskCone).pair)
+          : (o.name ?? "");
     return text
       ? { text, style: { background: "rgba(8,11,17,0.92)", color: "#dbe3ec", border: "1px solid rgba(70,200,255,0.25)", borderRadius: "6px", fontFamily: "var(--font-mono)", fontSize: "11px", padding: "6px 8px", whiteSpace: "pre" } }
       : null;
   }, []);
 
   const kinds = (sim?.disruption_kinds?.length ? sim.disruption_kinds : KINDS).filter((k) => k.menu !== false);
+  const conesNow = state.scoreboard?.cones_now ?? risks.length;
   const active = Object.values(disruptions).filter((d) => d.active !== false);
 
   const chip = (active: boolean, tone: "accent" | "bad" | "violet" = "accent") => {
@@ -1052,6 +1140,10 @@ export default function MapView() {
           <span><span style={{ color: "rgb(255,77,94)" }}>◯</span> alert</span>
           <span><span style={{ color: "rgb(255,176,46)" }}>◯</span> checking</span>
           <span><span style={{ color: "rgb(34,211,238)" }}>◯</span> watching</span>
+          <span>
+            <span style={{ color: "rgb(255,77,94)" }}>◢</span> red wedge = predicted conflict
+            {conesNow > 0 && <span className="ml-1.5 rounded border border-bad/50 bg-bad/10 px-1 py-px text-bad">{conesNow} predicted</span>}
+          </span>
         </div>
         <div className="flex items-center gap-1.5">
           <span className="eyebrow w-[70px]">2 fingers</span>

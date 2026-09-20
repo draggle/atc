@@ -17,12 +17,13 @@ def _fmt(v, nd=2):
 
 
 def print_table(res: dict) -> None:
-    cols = ["arm", "LoS", "flt h", "LoS/h", "closest", "p5", "p50", "miles", "vs fixed %", "err inj", "err caught"]
+    cols = ["arm", "LoS", "flt h", "LoS/h", "closest", "p5", "p50", "miles", "vs fixed %", "err inj", "err caught", "predicted", "resolved"]
     rows = []
     for arm, a in res["arms"].items():
         rows.append([arm, a["los_total"], _fmt(a["flight_hours"]), _fmt(a["los_per_flight_hour"], 3),
                      _fmt(a["closest_min_nm"]), _fmt(a["closest_p5_nm"]), _fmt(a["closest_p50_nm"]),
-                     _fmt(a["miles_mean"], 0), _fmt(a["miles_vs_baseline_pct"]), a["errors_injected"], a["errors_caught"]])
+                     _fmt(a["miles_mean"], 0), _fmt(a["miles_vs_baseline_pct"]), a["errors_injected"], a["errors_caught"],
+                     a.get("conflicts_predicted", 0), a.get("conflicts_resolved", 0)])
     widths = [max(len(str(r[i])) for r in [cols] + rows) for i in range(len(cols))]
     line = "  ".join(c.ljust(w) for c, w in zip(cols, widths))
     print(f"{res['scenario']}: {res['n_runs']} runs, error rate {res['error_rate']}, buffer {res['buffer_nm']} NM, plan conflicts {res['plan_conflicts']}")

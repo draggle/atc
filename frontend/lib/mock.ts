@@ -28,6 +28,7 @@ import type {
   Transmission,
   Waypoint,
   PointKind,
+  RiskPair,
   Zone,
 } from "./types";
 
@@ -138,6 +139,10 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
     mean_alert_latency_s: null,
     transmissions: 0,
     tier1_latency_s: 1.3,
+    conflicts_predicted: 0,
+    conflicts_resolved: 0,
+    futures_per_s: null,
+    cones_now: 0,
   };
   const cards = new Map<string, InstructionCard>();
   /** Callsigns radar verification is watching after a matched readback. */
@@ -181,6 +186,7 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
     scenario,
     tower_enabled: towerEnabled,
     auto_speak: autoSpeak,
+    voice: !autoSpeak,
     t: simT,
     waypoints: WAYPOINTS.map((w) => ({ ...w, ...ll(w.x_nm, w.y_nm) })),
     zones: zones.map((z) => ({ ...z, ...ll(z.x_nm, z.y_nm) })),
@@ -334,6 +340,29 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
   };
   const scoreboard = () => send({ type: "scoreboard", payload: score, t: simT });
 
+  // ---------------------------------------------------------------- predicted conflicts (TRD 07)
+  /** One pair's risk report at probability p. The CPA is the midpoint of both flights 90 s ahead, so the wedges track them. */
+  const risk = (a: string, b: string, p: number) => {
+    const fa = flights.find((f) => f.callsign === a);
+    const fb = flights.find((f) => f.callsign === b);
+    if (!fa || !fb) return;
+    const ahead = (f: Flight, s: number) => { const d = (f.gs / 3600) * s; return [f.x + Math.sin((f.hdg * Math.PI) / 180) * d, f.y + Math.cos((f.hdg * Math.PI) / 180) * d] as [number, number]; };
+    const [ax, ay] = ahead(fa, 90);
+    const [bx, by] = ahead(fb, 90);
+    const eta = 90;
+    const curve: [number, number][] = [];
+    for (let t = 0; t <= 120; t += 5) curve.push([t, Math.round(p * Math.max(0, 1 - Math.abs(t - eta) / 45) * 100) / 100]);
+    const pairs: RiskPair[] = p >= 0.05 ? [{
+      a, b, p_max: p, t_first_s: p >= 0.3 ? eta - 30 : p >= 0.15 ? eta - 15 : eta, eta_s: eta,
+      min_sep_nm_p5: Math.round((6.5 - 4 * p) * 10) / 10, curve, cpa_xy: [(ax + bx) / 2, (ay + by) / 2],
+      spread_a_nm: 1.5 + 2.5 * p, spread_b_nm: 1.2 + 2 * p,
+    }] : [];
+    const n = 256;
+    const elapsed = 18 + flights.length * 0.9;
+    send({ type: "risk", payload: { pairs, horizon_s: 120, n_rollouts: n, elapsed_ms: elapsed, futures_per_s: Math.round((n * flights.length) / (elapsed / 1000)) }, t: simT });
+    score = { ...score, futures_per_s: Math.round((n * flights.length) / (elapsed / 1000)), cones_now: pairs.length };
+  };
+
   // ------------------------------------------------------------------ scripted stories
   let gen = 0;
 
@@ -399,8 +428,17 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
         urgency_s: 90,
         status: "pending",
         clearance_id: null,
+        cause: "DAL88",
+        confidence: 0.91,
+        risk_after: 0.03,
       }),
     );
+    // The rollouts see ACA123 and DAL88 closing: the cone grows until the descent is read back, then clears.
+    const conflict: [number, number][] = [[1500, 0.1], [2500, 0.22], [3500, 0.38], [4500, 0.52], [5500, 0.6], [6600, 0.58]];
+    for (const [ms, p] of conflict) after(ms, () => risk("ACA123", "DAL88", p));
+    after(3500, () => { score = { ...score, conflicts_predicted: (score.conflicts_predicted ?? 0) + 1 }; scoreboard(); });
+    after(7600, () => risk("ACA123", "DAL88", 0.12));
+    after(8600, () => { risk("ACA123", "DAL88", 0); score = { ...score, conflicts_resolved: (score.conflicts_resolved ?? 0) + 1 }; scoreboard(); });
     after(3000, () =>
       card({
         id: `c${g}-2`,
@@ -411,6 +449,8 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
         urgency_s: 150,
         status: "pending",
         clearance_id: null,
+        confidence: 0.88,
+        risk_after: 0.01,
       }),
     );
     happyPath(`c${g}-1`, 4500);
@@ -426,6 +466,8 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
         urgency_s: 45,
         status: "pending",
         clearance_id: null,
+        confidence: 0.76,
+        risk_after: 0.08,
       }),
     );
     after(13500, () => {
@@ -467,6 +509,8 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
         urgency_s: 70,
         status: "pending",
         clearance_id: null,
+        confidence: 0.83,
+        risk_after: 0.05,
       }),
     );
     after(22500, () => {
@@ -592,6 +636,8 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
           urgency_s: 30 + i * 20,
           status: "pending",
           clearance_id: null,
+          confidence: i === 0 ? 0.79 : 0.72,
+          risk_after: i === 0 ? 0.06 : 0.09,
         });
       });
     });

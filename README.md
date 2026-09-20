@@ -26,6 +26,7 @@ Built overnight Sept 19 to 20 on branch `joey/overnight-build`. Everything below
 | Training: data prep on the real public dataset, Whisper fine-tune, WER eval, checker data generation, cross-encoder train and serve, Baseten job configs | Scripts done and smoke-tested; laptop runs only | `training/`, `training/RUNS.md` |
 | Whisper fine-tuned | Laptop run done: tuned tiny beats stock small on real clips. Baseten H100 run not started, no key | `training/RUNS.md`, `docs/trd/02-models-and-baseten.md` |
 | Real ADS-B traffic, replay comparison | Not started | `docs/trd/03-planner-data-eval.md` |
+| Monte Carlo risk prediction: cones before a conflict, risk-triggered replan, confidence on cards | Done: risk event, cones, confidence on cards, scoreboard tiles | `backend/planner/risk.py`, `docs/trd/07-monte-carlo-spec.md` |
 | ElevenLabs voices, demo script, backup video, Devpost | Not started | `docs/trd/04-screen-pilots-demo.md` |
 
 **The voice loop is real.** Tower speaks a card through macOS speech, passes it through a radio filter, and hears it with Whisper. The AI pilot answers through its own voice and radio filter, and Whisper hears that too. Tower never reads the pilot's text. Round trip on this laptop is about 4 seconds.
@@ -47,6 +48,7 @@ All measured by us on this laptop. Say which is which on stage.
 | **Fine-tuned Whisper, same 300 real held-out clips** | **tuned tiny 0.217** vs stock tiny 1.18, stock base 1.11, stock small 0.69 | whisper-tiny, 11k real clips, 1,200 steps, 62 min on the laptop GPU. `training/results/wer_comparison.json`, `training/RUNS.md`. Beats all three stock sizes on real radio and is the fastest |
 | Fine-tuned Whisper on the synthetic pilot voices | Worse than stock base.en ("air china" for "air canada") | Domain shift: the dataset is European radio, the demo voices are macOS `say`. Tier 1 stays on stock base.en locally; the tuned model is the real-clip comparison. Fix is TRD 02 task 4, mixing simulator audio into training |
 | Tier 1 latency | about 0.8 s after speech recognition, 1.2 to 1.5 s for local Whisper per clip | Live session |
+| Conflict prediction, futures simulated per second | about 545,000 with 5 aircraft, about 273,000 with 65, 256 rollouts, 120 s horizon; live scoreboard 200k to 450k | `backend/planner/risk.py`, TRD 07, measured on the laptop |
 
 ## Run it
 
@@ -56,7 +58,7 @@ Three terminals. Python 3.11 or newer, Node 20 or newer, `uv`, `ffmpeg`.
 # 1. backend
 cd backend
 uv venv .venv && uv pip install -e ".[dev]"
-.venv/bin/pytest -q                      # 415 tests
+.venv/bin/pytest -q                      # 438 tests
 .venv/bin/uvicorn app:app --port 8000    # first start downloads whisper base.en, about 150 MB
 
 # 2. frontend

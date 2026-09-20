@@ -13,3 +13,8 @@ def test_three_run_monte_carlo():
     assert arms["tower_on"]["errors_caught"] == arms["tower_on"]["errors_injected"]
     assert arms["tower_off"]["errors_caught"] == 0
     assert arms["tower_on"]["miles_mean"] < arms["fixed"]["miles_mean"]
+    # TRD 07: the risk counters exist on every arm and only the tower_on arm predicts
+    for a in arms.values():
+        assert a["conflicts_predicted"] >= a["conflicts_resolved"] >= 0
+        assert a["scoreboard"]["conflicts_predicted"] == a["conflicts_predicted"]
+    assert arms["fixed"]["conflicts_predicted"] == 0 and arms["tower_off"]["conflicts_predicted"] == 0

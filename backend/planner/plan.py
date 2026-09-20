@@ -100,6 +100,7 @@ class _Result:
     changes: list[str]
     conflicts_with: list[str]
     via: list[tuple[float, float]] = field(default_factory=list)
+    runner_up_cost: float | None = None  # the next candidate that also cleared, for the card's confidence
 
 
 # --------------------------------------------------------------------------- helpers
@@ -567,13 +568,15 @@ def _plan_one(fl: _Flight, grid: Grid, zones: list[Zone], buffer_nm: float, with
                 if through is None or inside < through[0]:
                     through = (inside, c)
         ranked.sort(key=lambda c: c.cost)
-        for c in ranked:
+        for ci, c in enumerate(ranked):
             m = grid.conflicts(c.samples)
             if not m.any():
+                runner_up = next((max(o.cost, 0.0) for o in ranked[ci + 1:]
+                                  if not grid.conflicts(o.samples).any()), None)
                 if c.tag != "keep":
                     c = _tighten(fl, c, grid, zones)
                 return _Result(c.samples, max(c.cost, 0.0), [x for x in c.changes if not x.startswith("unresolved")],
-                               [], [c.dog] if c.dog else [])
+                               [], [c.dog] if c.dog else [], runner_up_cost=runner_up)
             n = int(m.sum())
             if least is None or n < least[0]:
                 least = (n, c, [grid.names[i] for i in np.where(m.any(axis=1))[0]])
@@ -625,7 +628,10 @@ def _finish(results: dict[str, _Result], flights: list[_Flight], buffer_nm: floa
             continue
         r = results[fl.callsign]
         cost = r.cost if r.cost < 1e6 else r.cost - 1e6
-        paths.append(to_planned_path(fl.callsign, r.samples, cost, r.changes, r.via))
+        path = to_planned_path(fl.callsign, r.samples, cost, r.changes, r.via)
+        if "runner_up_cost" in PlannedPath.model_fields:  # lands with the schema change (TRD 07)
+            path.runner_up_cost = r.runner_up_cost
+        paths.append(path)
         intruder_conf += sum(1 for w in r.conflicts_with if any(f.callsign == w and f.is_intruder for f in flights))
     conflicts = len(pairwise_conflicts(paths, HARD_SEP_NM + max(0.0, buffer_nm), HARD_SEP_FT)) + intruder_conf
     return Plan(
