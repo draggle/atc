@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useReducer, type Dispatch, type ReactNode } from "react";
+import { radio } from "./radio";
 import type {
   AgentReply,
   AircraftState,
@@ -23,6 +24,8 @@ export type Connection = "connecting" | "live" | "mock" | "closed";
 
 export interface ActiveAlert extends AlertPayload {
   received_at: number; // ms wall clock
+  /** Set when the controller's correction was read back right: the alert is closed. */
+  resolved?: { by: "correction"; seconds: number; at: number };
 }
 
 export interface ChatLine {
@@ -82,6 +85,8 @@ export interface TowerState {
   selected: string | null;
   /** the camera follows the selected aircraft */
   follow: boolean;
+  /** bumps on every "focus": the map flies to the selected aircraft when it changes */
+  focusSeq: number;
   sliders: Sliders;
   /** Which lines the map draws: the original routes, Tower's, both, or only flights Tower moved. */
   planView: PlanView;
@@ -89,6 +94,10 @@ export interface TowerState {
   ghosts: Record<string, Ghost>;
   /** Last radar frame's sim time and when it arrived, so anything can be placed at "sim now". */
   simClock: { t: number; at: number };
+  /** card id -> the held clearance, when what you said conflicts with that card */
+  held: Record<string, string>;
+  /** Who is on the frequency right now (the clip being played), for the pulse on the map. */
+  onAir: { speaker: "pilot" | "controller"; callsign: string | null } | null;
   showStock: boolean;
 }
 
@@ -115,10 +124,13 @@ export const initialState: TowerState = {
   setupOpen: false,
   selected: null,
   follow: false,
+  focusSeq: 0,
   sliders: { buffer_nm: 3, error_rate: 0.1, noise: 0.2 },
   planView: "both",
   ghosts: {},
   simClock: { t: 0, at: 0 },
+  held: {},
+  onAir: null,
   showStock: false,
 };
 
@@ -126,14 +138,19 @@ export type Action =
   | { type: "event"; event: TowerEvent }
   | { type: "connection"; connection: Connection }
   | { type: "dismiss_alert"; clearance_id: string }
+  /** a radar watch ran its course with nothing to report: take its card down */
+  | { type: "stop_resolving"; clearance_id: string }
   | { type: "user_chat"; text: string }
   | { type: "set_sliders"; sliders: Sliders }
   | { type: "set_plan_view"; view: PlanView }
+  | { type: "on_air"; clip: { speaker: "pilot" | "controller"; callsign: string | null } | null }
   | { type: "toggle_stock" }
   | { type: "local_toggle"; key: "tower_enabled" | "auto_speak"; value: boolean }
   | { type: "dismiss_notice"; id: number }
   | { type: "set_setup_open"; open: boolean }
   | { type: "select"; callsign: string | null }
+  /** "take me to it": select, follow, and fly the camera there. An alert card does this. */
+  | { type: "focus"; callsign: string }
   | { type: "set_follow"; on: boolean }
   | { type: "reset" };
 
@@ -160,6 +177,7 @@ function differs(a: LonLatAlt[], b: LonLatAlt[]): boolean {
 const FLASH_MS = 4000;
 
 let noticeSeq = 0;
+let staleBackendWarned = false;
 
 /** Drop everything that belonged to the previous world. Settings and chat survive. */
 function clearWorld(state: TowerState): TowerState {
@@ -171,6 +189,8 @@ function clearWorld(state: TowerState): TowerState {
     plan: null,
     flashUntil: {},
     ghosts: {},
+    held: {},
+    onAir: null,
     cards: [],
     cardT: {},
     clearances: {},
@@ -198,11 +218,20 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
       const base = prevWorld !== undefined && nextWorld !== undefined && prevWorld !== nextWorld ? clearWorld(state) : state;
       // A freshly loaded world closes the setup panel; an idle backend opens it.
       const setupOpen = ev.payload.lifecycle === "idle" ? true : nextWorld !== prevWorld ? false : base.setupOpen;
+      // A backend started before the Voice switch existed ignores it: the switch then looks as if it
+      // works and snaps back on the next state message. Say so once, instead of leaving it a mystery.
+      let notices = base.notices;
+      if (ev.payload.voice === undefined && ev.payload.lifecycle !== undefined && !staleBackendWarned) {
+        staleBackendWarned = true;
+        noticeSeq += 1;
+        notices = [...notices, { id: noticeSeq, at: Date.now(), level: "warn" as const,
+          text: "The backend is older than this screen, so the Voice switch and other new controls will not stick. Restart it: Ctrl+C in its terminal, then run uvicorn again." }].slice(-4);
+      }
       // The backend lists the disruptions still active, so a reconnect or a reload restores them.
       const disruptions = ev.payload.disruptions
         ? Object.fromEntries(ev.payload.disruptions.map((d) => [d.id, d]))
         : base.disruptions;
-      return { ...base, sim: ev.payload, watching: ev.payload.watching ?? base.watching, setupOpen, disruptions };
+      return { ...base, sim: ev.payload, watching: ev.payload.watching ?? base.watching, setupOpen, disruptions, notices };
     }
 
     case "notice": {
@@ -226,7 +255,8 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
       const t = Array.isArray(ev.payload) ? (list[0]?.t ?? state.sim?.t ?? 0) : (ev.payload.t ?? state.sim?.t ?? 0);
       const simClock = { t, at: now };
       const zones = Array.isArray(ev.payload) ? undefined : ev.payload.zones; // drifting storms
-      const sim = state.sim ? { ...state.sim, t, ...(zones ? { zones } : {}) } : state.sim;
+      const clock = Array.isArray(ev.payload) ? undefined : ev.payload.clock_speed;
+      const sim = state.sim ? { ...state.sim, t, ...(zones ? { zones } : {}), ...(clock !== undefined ? { clock_speed: clock } : {}) } : state.sim;
       const watching = Array.isArray(ev.payload) ? state.watching : (ev.payload.watching ?? state.watching);
       return { ...state, aircraft, tracks, sim, watching, simClock };
     }
@@ -266,6 +296,10 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
       if (ev.payload.status === "superseded") {
         return { ...state, cards: state.cards.filter((c) => c.id !== ev.payload.id) };
       }
+      if (!ev.payload.heard_instead && state.held[ev.payload.id]) {
+        const { [ev.payload.id]: _cleared, ...held } = state.held; // said again properly, or sent as heard
+        state = { ...state, held };
+      }
       const idx = state.cards.findIndex((c) => c.id === ev.payload.id);
       const cards = idx >= 0 ? state.cards.map((c, i) => (i === idx ? ev.payload : c)) : [...state.cards, ev.payload];
       const cardT = ev.payload.id in state.cardT ? state.cardT : { ...state.cardT, [ev.payload.id]: ev.t };
@@ -273,8 +307,30 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
     }
 
     case "clearance_opened":
-    case "clearance_updated":
-      return upsertClearance(state, ev.payload);
+    case "clearance_updated": {
+      // The resolver is done with a clearance once it leaves "open". Without an alert (it dismissed
+      // the doubt, or the readback matched after all) nothing else ends the CHECKING card, and it
+      // span for ever. A radar watch is the exception: that card counts itself down.
+      let next = upsertClearance(state, ev.payload);
+      const id = ev.payload.id;
+      // The controller said the correction and the pilot read it back right: that settles every
+      // standing alert about the same instruction to the same aircraft. It used to stay until
+      // dismissed by hand, which read as "Tower did not hear my correction".
+      if (ev.payload.status === "matched" && next.alerts.length > 0) {
+        const settled = new Set((ev.payload.items ?? []).map((i) => `${i.type}:${String(i.value).toUpperCase()}`));
+        const alerts = next.alerts.filter((a) => {
+          if (a.resolved) return true; // already closed as "corrected": it shows that for a moment, then goes
+          if (a.clearance_id === id) return false;
+          const cs = a.callsign ?? callsignForClearance(next, a.clearance_id);
+          if (cs !== ev.payload.callsign || a.expected.length === 0) return true;
+          return !a.expected.every((i) => settled.has(`${i.type}:${String(i.value).toUpperCase()}`));
+        });
+        if (alerts.length !== next.alerts.length) next = { ...next, alerts };
+      }
+      const watching = (state.steps[id] ?? []).at(-1)?.tool === "watch";
+      if (ev.payload.status === "open" || watching || !next.resolving.includes(id)) return next;
+      return { ...next, resolving: next.resolving.filter((r) => r !== id) };
+    }
 
     case "transcript": {
       const transcript = [...state.transcript, ev.payload].slice(-TRANSCRIPT_CAP);
@@ -299,6 +355,19 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
         ...state.alerts.filter((a) => a.clearance_id !== id),
       ].slice(0, 6);
       return { ...state, alerts, resolving };
+    }
+
+    case "radio_audio":
+      radio?.play(ev.payload); // the clip goes on the air now; its transcript follows a moment later
+      return state;
+
+    case "said_check":
+      return { ...state, held: { ...state.held, [ev.payload.card_id]: ev.payload.clearance_id } };
+
+    case "alert_resolved": {
+      const alerts = state.alerts.map((a) =>
+        a.clearance_id === ev.payload.clearance_id ? { ...a, resolved: { by: ev.payload.by, seconds: ev.payload.seconds, at: Date.now() } } : a);
+      return { ...state, alerts };
     }
 
     case "disruption": {
@@ -331,12 +400,16 @@ export function reducer(state: TowerState, action: Action): TowerState {
       return applyEvent(state, action.event);
     case "connection":
       return { ...state, connection: action.connection };
+    case "stop_resolving":
+      return { ...state, resolving: state.resolving.filter((r) => r !== action.clearance_id) };
     case "dismiss_alert":
       return { ...state, alerts: state.alerts.filter((a) => a.clearance_id !== action.clearance_id) };
     case "user_chat":
       return { ...state, chat: [...state.chat, { role: "user" as const, text: action.text, at: Date.now() }].slice(-30) };
     case "set_sliders":
       return { ...state, sliders: action.sliders };
+    case "on_air":
+      return { ...state, onAir: action.clip };
     case "set_plan_view":
       return { ...state, planView: action.view };
     case "toggle_stock":
@@ -349,6 +422,8 @@ export function reducer(state: TowerState, action: Action): TowerState {
       return { ...state, setupOpen: action.open };
     case "select":
       return { ...state, selected: action.callsign, follow: action.callsign ? state.follow : false };
+    case "focus":
+      return { ...state, selected: action.callsign, follow: true, focusSeq: state.focusSeq + 1 };
     case "set_follow":
       return { ...state, follow: action.on };
     case "reset":
@@ -368,10 +443,17 @@ export function highlightMap(state: TowerState): Record<string, "alert" | "resol
     if (cs) out[cs] = "resolving";
   }
   for (const a of state.alerts) {
+    if (a.resolved) continue; // corrected and read back right: the red ring comes off the aircraft
     const cs = a.callsign ?? callsignForClearance(state, a.clearance_id);
     if (cs) out[cs] = "alert";
   }
   return out;
+}
+
+/** The newest alert standing against this aircraft, if any. `alerts` is newest first. */
+export function alertFor(state: TowerState, callsign: string | null): ActiveAlert | undefined {
+  if (!callsign) return undefined;
+  return state.alerts.find((a) => (a.callsign ?? callsignForClearance(state, a.clearance_id)) === callsign);
 }
 
 export function callsignForClearance(state: TowerState, clearanceId: string): string | null {

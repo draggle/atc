@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTowerDispatch, useTowerState } from "@/lib/store";
 import { startCapture, type Capture } from "@/lib/audio";
+import { radio } from "@/lib/radio";
 import type { PttChannel } from "@/lib/types";
 import { useClient } from "./TowerApp";
 
@@ -14,7 +15,10 @@ function isTyping(el: EventTarget | null): boolean {
 
 export default function PushToTalk() {
   const { send, sendBinary } = useClient();
-  const { chat, connection } = useTowerState();
+  const { chat, connection, sim } = useTowerState();
+  const nextReadback = sim?.next_readback ?? "random";
+  const [radioMuted, setRadioMuted] = useState(false);
+  useEffect(() => setRadioMuted(radio?.muted ?? false), []);
   const dispatch = useTowerDispatch();
   const [active, setActive] = useState<PttChannel | null>(null);
   const [level, setLevel] = useState(0);
@@ -139,6 +143,32 @@ export default function PushToTalk() {
         <div className="flex flex-col gap-1">
           <button {...holdProps("radio")} className="px-2 py-1 rounded text-xs border border-ok/50 text-ok bg-ok/10 select-none touch-none">Hold: radio</button>
           <button {...holdProps("agent")} className="px-2 py-1 rounded text-xs border border-accent/50 text-accent bg-accent/10 select-none touch-none">Hold: headset</button>
+        </div>
+      </div>
+
+      {/* Script the next pilot reply, so a catch happens on cue instead of by chance. One shot. */}
+      <div className="mt-2">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[10px] uppercase tracking-wider text-muted">Next readback</span>
+          <button
+            onClick={() => { const m = !radioMuted; setRadioMuted(m); radio?.setMuted(m); }}
+            title={radioMuted ? "The frequency is muted. Click to hear every transmission." : "Every transmission is played as it happens. Click to mute."}
+            className={`text-[10px] px-2 py-0.5 rounded border ${radioMuted ? "border-line text-muted" : "border-ok/40 text-ok bg-ok/10"}`}
+          >
+            {radioMuted ? "frequency muted" : "frequency on"}
+          </button>
+        </div>
+        <div className="grid grid-cols-5 gap-1">
+          {([["random", "By chance"], ["correct", "Correct"], ["wrong_value", "Wrong value"], ["wrong_aircraft", "Wrong plane"], ["missing_readback", "No reply"]] as const).map(([mode, label]) => (
+            <button
+              key={mode}
+              onClick={() => send({ type: "set_next_readback", mode })}
+              title={mode === "random" ? "Use the pilot error slider" : "Applies to the next instruction only, then goes back to chance"}
+              className={`px-1 py-1 rounded border text-[10px] leading-tight ${nextReadback === mode ? (mode === "random" || mode === "correct" ? "border-accent/50 text-accent bg-accent/15" : "border-bad/50 text-bad bg-bad/15") : "border-line text-muted bg-panel-2 hover:text-fg"}`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
       </div>
 

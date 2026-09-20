@@ -611,6 +611,12 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
         send({ type: "state", payload: stateEvent(), t: simT });
         return;
       case "set_auto_voice":
+      case "set_next_readback":
+      case "confirm_heard":
+        return;
+      case "set_voice":
+        autoSpeak = !msg.enabled;
+        send({ type: "state", payload: stateEvent(), t: simT });
         return;
       case "set_auto_speak":
         autoSpeak = msg.enabled;

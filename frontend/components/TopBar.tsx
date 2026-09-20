@@ -101,21 +101,35 @@ export default function TopBar() {
           send({ type: "set_tower", enabled: v });
         }}
       />
-      {/* Who issues the instructions. The switch is the controller's, at any moment. */}
+      {/* A backend started before the current screen ignores its newer controls, which then look as if
+          they work and snap back. Say so where it cannot be missed, for as long as it is true. */}
+      {sim && sim.lifecycle !== undefined && sim.voice === undefined && (
+        <span
+          className="px-2 py-1 rounded-md border border-bad/60 bg-bad/15 text-bad text-[11px] font-semibold"
+          title="This backend process was started before the Voice switch and card tags were added. Stop it (Ctrl+C, or: lsof -ti:8000 | xargs kill) and start uvicorn again."
+        >
+          BACKEND OUT OF DATE · restart it
+        </span>
+      )}
+
+      {/* The one switch, and it is the controller's at any moment.
+          Off: Tower sends every instruction by data link, instantly. The path demo.
+          On: the real loop. You say each card, the pilot reads it back, Tower checks both. */}
       <div
-        className="flex rounded-md border border-line overflow-hidden text-xs"
-        title="Manual: Tower proposes each instruction and you say it. Auto: Tower says them itself, one at a time, and sends the rest by data link. Hold the mic in Auto and Tower waits for you."
+        className="flex items-center rounded-md border border-line overflow-hidden text-xs"
+        title="Voice off: Tower sends every instruction by data link the instant the plan changes. Voice on: you say each instruction, the pilot reads it back, and our Whisper model checks both. Voice runs at 1x."
       >
-        {([["Manual", false], ["Auto", true]] as const).map(([label, auto]) => {
-          const on = (sim?.auto_speak ?? false) === auto;
+        <span className="px-2 py-1 text-muted bg-panel-2 border-r border-line">Voice</span>
+        {([["Off", false], ["On", true]] as const).map(([label, on]) => {
+          const active = (sim?.voice ?? !(sim?.auto_speak ?? false)) === on;
           return (
             <button
               key={label}
               onClick={() => {
-                dispatch({ type: "local_toggle", key: "auto_speak", value: auto });
-                send({ type: "set_auto_speak", enabled: auto });
+                dispatch({ type: "local_toggle", key: "auto_speak", value: !on });
+                send({ type: "set_voice", enabled: on });
               }}
-              className={`px-3 py-1 font-medium transition-colors ${on ? (auto ? "bg-warn/20 text-warn" : "bg-accent/20 text-accent") : "bg-panel-2 text-muted hover:text-fg"}`}
+              className={`px-3 py-1 font-medium transition-colors ${active ? (on ? "bg-ok/20 text-ok" : "bg-warn/20 text-warn") : "bg-panel-2 text-muted hover:text-fg"}`}
             >
               {label}
             </button>
@@ -123,15 +137,19 @@ export default function TopBar() {
         })}
       </div>
 
-      {(sim?.auto_speak ?? false) && (
-        <button
-          onClick={() => send({ type: "set_auto_voice", enabled: !(sim?.auto_voice ?? false) })}
-          title="Off: every instruction goes by data link the instant the plan changes. On: Tower also talks one aircraft round at a time, which takes real seconds."
-          className={`px-2.5 py-1 rounded-md border text-xs font-medium transition-colors ${sim?.auto_voice ? "bg-warn/15 text-warn border-warn/40" : "bg-panel-2 text-muted border-line hover:text-fg"}`}
+      {/* Voice on at a fast clock: it slows itself to 1x while there is something to say. Show which. */}
+      {sim && (sim.voice ?? !sim.auto_speak) && (sim.speed ?? 1) > 1 && sim.lifecycle === "running" && (
+        <span
+          className={`px-2 py-1 rounded-md border text-[11px] font-medium ${(sim.clock_speed ?? 1) <= 1 ? "border-ok/50 bg-ok/10 text-ok" : "border-line bg-panel-2 text-muted"}`}
+          title="With voice on, the clock runs at your chosen speed between instructions and drops to 1x by itself whenever a card is waiting or somebody is talking."
         >
-          Voice <span className="font-mono">{sim?.auto_voice ? "ON" : "OFF"}</span>
-        </button>
+          {(sim.clock_speed ?? 1) <= 1 ? "1x: something to say" : `${sim.speed}x until the next instruction`}
+        </span>
       )}
+
+      {/* Auto with Tower's own voice is paused while we get the human side right: Auto is silent
+          (data link) and the spoken loop is Manual. The backend still supports it: send
+          {type: "set_auto_voice", enabled: true} to bring it back, and restore this switch. */}
 
       <div className="h-6 w-px bg-line" />
 

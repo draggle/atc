@@ -237,6 +237,14 @@ class InstructionCard(BaseModel):
     # A shortcut that saves too little to be worth a transmission. Never shown or spoken. In silent
     # Auto it still goes out by data link, which costs nobody anything, so the aircraft is on its line.
     minor: bool = False
+    # Set when the controller said something that conflicts with this card. The pilot was not told.
+    heard_instead: str | None = None
+    # Why this card exists, so the screen can say so. origin: "initial" (the plan made when the
+    # world loaded), "replan" (something changed), "followup" (dogleg done, go direct), "release"
+    # (the disruption is gone). cause: what it clears: a disruption id or another callsign.
+    origin: Literal["initial", "replan", "followup", "release"] = "replan"
+    cause: str | None = None
+    emergency: bool = False
 
 
 DisruptionKind = Literal["fighter", "drone", "balloon", "emergency", "unknown", "storm", "closed", "rocket",
@@ -300,6 +308,9 @@ EventType = Literal[
     "transcript", "clearance_opened", "clearance_updated", "alert", "resolver_step", "stats",
     "radar", "plan", "plan_update", "instruction_card", "disruption", "scoreboard",
     "agent_reply", "state", "notice",
+    "radio_audio",  # a clip is on the frequency right now: play it. Sent before it is transcribed
+    "said_check",  # what the controller said does not match the card: nothing went to the pilot
+    "alert_resolved",  # a wrong readback was corrected and read back right
 ]
 
 

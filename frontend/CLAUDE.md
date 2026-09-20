@@ -16,8 +16,9 @@ Calm and quiet. Tower says nothing unless it has something worth saying, and it 
 - **Disrupt.** One control, top left of the map. Random asks the backend to put something where it will matter; Choose lists the kinds from `state.disruption_kinds` and the next map click places one. Active disruptions are chips with minutes left and a remove button. A disruption event with `active: false` removes it. Zones are extruded between `floor_ft` and `ceiling_ft`, and the radar frame carries fresh `zones` while one is moving.
 - **Flight strip.** `components/FlightStrip.tsx`: everything Tower knows about the selected aircraft, with follow-camera.
 - **Plan toggle.** Fixed routes versus Tower's plan, with a savings counter.
+- **The instruction panel has two jobs and two layouts.** Voice on: "Say these", a to-do list of cards for flights on frequency, most urgent first, the top one ringed. Voice off: "Sent by Tower", a log, newest first, because nothing there needs a human. In both, cards for flights that have not entered the sector collapse into one line, and every card carries a tag saying why it exists (Initial plan, Reroute · STORM1, Conflict · callsign, Emergency, Back on course, All clear), built from the card's `origin`, `cause` and `emergency`.
 - **Instruction cards.** One per instruction Tower wants issued: the phrase to say, a one-line reason, and urgency. States are pending, spoken, validated, verified, and error. Push-to-talk to speak a card.
-- **Alert.** A red card with expected versus heard, error type, confidence, a play button for the clip, and the correction to say.
+- **Alert.** A red card with expected versus heard, error type, confidence, a play button for the clip, and the correction to say. Click the card (or Enter on it; Space stays push-to-talk) to `focus` the aircraft: the camera flies in and follows, the flight strip opens with the same issue block on top, and the map draws the issue from `lib/issue.ts`: cyan is what was cleared, red is what was read back or is being flown. Level: rings on the stem. Fix: lines to each fix. Heading: two vectors. Anything else: the label alone.
 - **Agent trace.** Expandable steps the resolver took and what it found. This is the Rox demo.
 - **Transcript.** Speaker tag, callsign, text, and a confidence bar, with the stock versus tuned toggle.
 - **Scoreboard.** Miles and time saved, losses of separation, errors caught, response times. Only numbers we measured.
@@ -26,6 +27,8 @@ Calm and quiet. Tower says nothing unless it has something worth saying, and it 
 ## Look
 
 Night operations room. Near-black ink, one cool signal colour for Tower's plan (`--accent`), one warm annunciator colour for anything that changed (`--warn`), red only for something wrong. Type is B612 and B612 Mono, the faces Airbus designed for cockpit displays. Floating panels use `.panel` or `.glass`; do not put `position` in those classes, it overrides Tailwind's `absolute`. The basemap is context, not content: keep it dimmer than the traffic.
+
+No globe projection: with the deck.gl overlay it drops every aircraft icon, label and ring and leaves only the lines. The toggle was removed after it blanked the traffic mid-test.
 
 Pinned: `maplibre-gl@5`. Version 6 fails to load its worker under Next.js dev.
 

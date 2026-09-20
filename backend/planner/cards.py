@@ -187,11 +187,18 @@ def _changes(path: PlannedPath) -> list[Change]:
 
 
 def cards_from_plan(plan: Plan, previous_plan: Plan | None = None, now_t: float = 0.0,
-                    states: list[AircraftState] | None = None) -> list[InstructionCard]:
+                    states: list[AircraftState] | None = None,
+                    issued: dict[str, float] | None = None) -> list[InstructionCard]:
     """One card per flight whose plan changed (relative to previous_plan, or to nothing).
 
     Entry delays produce no card: they are applied upstream, not on frequency.
     Cards are sorted by urgency: seconds until the change must be flying.
+
+    `issued` is the heading on each flight's card that is still waiting to be said. While it
+    waits the plan is worked out again every few seconds and creeps a degree or two each time;
+    measured against the previous plan no step is ever big enough to count, and the card on the
+    screen falls further and further behind. Measured against the card, it is replaced as soon
+    as it is really out of date.
     """
     prev = {p.callsign: {c.key for c in _changes(p)} for p in previous_plan.paths} if previous_plan else {}
     prev_hdg = {p.callsign: [float(c.value) for c in _changes(p) if c.kind == "heading"]
@@ -200,15 +207,25 @@ def cards_from_plan(plan: Plan, previous_plan: Plan | None = None, now_t: float 
     cards: list[InstructionCard] = []
 
     def is_new(callsign: str, c: Change) -> bool:
-        if c.key in prev.get(callsign, set()):
+        waiting = (issued or {}).get(callsign) if c.kind == "heading" else None
+        if waiting is None and c.key in prev.get(callsign, set()):
             return False
         if c.kind == "heading" and not (c.extra or {}).get("emergency"):
             # A heading within a few degrees of the one already issued is the same instruction.
-            return not any(abs((float(c.value) - h + 180) % 360 - 180) <= SAME_HEADING_DEG for h in prev_hdg.get(callsign, []))
+            known = [waiting] if waiting is not None else prev_hdg.get(callsign, [])
+            return not any(abs((float(c.value) - h + 180) % 360 - 180) <= SAME_HEADING_DEG for h in known)
         return True
 
+    def already_flying(callsign: str, c: Change) -> bool:
+        """Direct to the fix it is already going direct to. The follow-up card got it there; the
+        plan catching up with that a moment later is not a second instruction."""
+        s = st.get(callsign)
+        return (c.kind == "direct" and s is not None and s.target_hdg_deg is None
+                and [w.upper() for w in s.route] == [str(c.value).upper()])
+
     for path in plan.paths:
-        changes = [c for c in _changes(path) if c.kind != "delay" and is_new(path.callsign, c)]
+        changes = [c for c in _changes(path) if c.kind != "delay" and is_new(path.callsign, c)
+                   and not already_flying(path.callsign, c)]
         # A shortcut that saves next to nothing is not worth a transmission. Real cruise traffic
         # already flies nearly straight, so without this the controller drowns in "saves 0 NM"
         # cards. A direct is still issued when it comes with another change (it is then part of a
@@ -232,32 +249,47 @@ def cards_from_plan(plan: Plan, previous_plan: Plan | None = None, now_t: float 
             id=f"card-{path.callsign}-{int(now_t)}-{'-'.join(sorted(k for k, _ in (c.key for c in changes)))}",
             callsign=path.callsign, items=items, phrase=phrase_for(path.callsign, items),
             reason=reason_for(primary, path.callsign), urgency_s=urgency, minor=minor,
+            origin="initial" if previous_plan is None else "replan",
+            cause=None if primary.kind == "direct" else (primary.reason_who if primary.reason_who != "traffic" else None),
+            emergency=bool((primary.extra or {}).get("emergency")),
         ))
     cards.sort(key=lambda c: c.urgency_s)
     return cards
 
 
-def followup_cards(plan: Plan, states: list[AircraftState], now_t: float) -> list[InstructionCard]:
-    """'Direct <exit>' cards for flights on a dogleg heading that have reached the dogleg point."""
+def turning(plan: Plan) -> set[str]:
+    """Callsigns whose planned path still holds a heading instruction."""
+    return {p.callsign for p in plan.paths if any(c.kind == "heading" for c in _changes(p))}
+
+
+def followup_cards(plan: Plan, states: list[AircraftState], now_t: float,
+                   causes: dict[str, str] | None = None) -> list[InstructionCard]:
+    """The second card of a spoken reroute: "proceed direct <exit>", the moment it is safe.
+
+    By voice a reroute is a heading now and a direct later. For a flight on an assigned heading
+    the planner first asks whether going direct is clear from where the aircraft is this second
+    (plan._hold_heading). When it is, the plan for that flight holds no heading any more, and that
+    is the signal here. The card is never offered ahead of time: an instruction worked out for a
+    point further on is wrong for an aircraft that is told, and turns, before it gets there.
+    Until then `path.via` holds the expected turn-back point, which is what the map draws.
+    `causes` is callsign -> what its heading was for ("STORM1"), for the card's tag and reason.
+    """
     st = {s.callsign: s for s in states}
     out = []
     for path in plan.paths:
         s = st.get(path.callsign)
-        if s is None or s.target_hdg_deg is None:
+        if s is None or s.is_intruder or s.target_hdg_deg is None or not s.route:
             continue
-        for c in _changes(path):
-            if c.kind != "heading" or not (c.extra or {}).get("then_direct"):
-                continue
-            arr = samples_array(path)
-            if arr.shape[0] < 3:
-                continue
-            k = _dogleg_index(arr)
-            if math.hypot(arr[k, 1] - s.x_nm, arr[k, 2] - s.y_nm) <= DOGLEG_CAPTURE_NM or now_t >= arr[k, 0] + 60:
-                item = Item(type="route", value=c.extra["then_direct"], unit=None, action="direct")
-                out.append(InstructionCard(
-                    id=f"card-{path.callsign}-{int(now_t)}-direct", callsign=path.callsign, items=[item],
-                    phrase=phrase_for(path.callsign, [item]), reason="Dogleg complete, resume direct routing.",
-                    urgency_s=0.0))
+        if any(c.kind == "heading" for c in _changes(path)):
+            continue  # still holding the heading: turning back now would not be clear
+        who = (causes or {}).get(path.callsign) or ""
+        exit_name = s.route[-1]
+        item = Item(type="route", value=exit_name, unit=None, action="direct")
+        clear = f"Clear of {who}. " if who else ""
+        out.append(InstructionCard(
+            id=f"card-{path.callsign}-{int(now_t)}-direct", callsign=path.callsign, items=[item],
+            phrase=phrase_for(path.callsign, [item]), reason=f"{clear}Back on course, direct {exit_name}.",
+            urgency_s=0.0, origin="followup", cause=who or None))
     return out
 
 
@@ -280,7 +312,7 @@ def release_cards(plan: Plan, states: list[AircraftState], released: set[str], n
         item = Item(type="route", value=s.route[-1], unit=None, action="direct")
         out.append(InstructionCard(
             id=f"card-{path.callsign}-{int(now_t)}-release", callsign=path.callsign, items=[item],
-            phrase=phrase_for(path.callsign, [item]), reason=why, urgency_s=0.0))
+            phrase=phrase_for(path.callsign, [item]), reason=why, urgency_s=0.0, origin="release"))
     return out
 
 

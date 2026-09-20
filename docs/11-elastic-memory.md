@@ -14,7 +14,7 @@ Tower's resolver agent already investigates messy readbacks with tools: re-liste
 - [x] `tools/elastic_demo.py`: 19 resolver steps, 3 of them Elasticsearch searches, 9 alerts, with the real Baseten resolver and ElevenLabs pilot voices through Whisper
 - [x] The real model chose the searches itself, for example `aircraft_track(DAL789, 30 s)` on a 0.44-confidence readback
 - [x] Kibana Discover shows the same steps in `tower-resolver_steps` and the radio log in `tower-transmissions`
-- [x] With `ELASTIC_URL` unset the app is unchanged: 287 tests pass either way
+- [x] With `ELASTIC_URL` unset the app is unchanged: 368 tests pass either way
 - [ ] Not yet seen in a browser: an amber card with a `[Elasticsearch]` line in its expanded trace. The data is there (the demo script reads the same events the screen does), but nobody has watched it on `localhost:3000` yet
 - [ ] Not built: a top-bar badge saying Elastic is connected, and a Kibana dashboard
 
@@ -72,7 +72,7 @@ If the cluster is unreachable at start, the app logs one warning and runs withou
 | `backend/pyproject.toml` | `elasticsearch>=8.15` |
 | `.env.example`, `README.md`, `CLAUDE.md` | The two variables, this doc in the map |
 
-Every existing test still passes: 287 in `backend/` (273 before this branch).
+Every existing test still passes: 368 in `backend/` after merging main on Sunday morning (354 on main, 14 new here).
 
 ## Merging notes
 

@@ -25,6 +25,9 @@ export interface TowerClient {
 const EVENT_TYPES = new Set<string>([
   "transcript", "clearance_opened", "clearance_updated", "alert", "resolver_step", "stats",
   "radar", "plan", "plan_update", "instruction_card", "disruption", "scoreboard", "agent_reply", "state", "notice",
+  // Anything not listed here is dropped without a word. A new backend event needs a line here,
+  // in EventMap (lib/types.ts), and in the reducer (lib/store.tsx).
+  "radio_audio", "said_check", "alert_resolved",
 ]);
 
 function parseEvent(raw: string): TowerEvent | null {
