@@ -75,6 +75,19 @@ const C = {
 };
 
 const FT_TO_M = 0.3048;
+/** "Understood" on the aircraft: how long the chip stays, and the last part of that it fades over. */
+const ACK_SHOWS_MS = 7000;
+const ACK_FADES_MS = 1500;
+/** The cleared-heading vector drawn from an aircraft on an assigned heading: this many minutes of flight. */
+const CLEARED_VECTOR_MIN = 2.5;
+const angleBetween = (a: number, b: number) => Math.abs(((a - b + 540) % 360) - 180);
+/** Cleared heading and level as a radar data block shows them, only while they differ from what is flown. */
+function clearedLine(p: { hdg_deg: number; target_hdg_deg: number | null; alt_ft: number; target_alt_ft: number }): string {
+  const out: string[] = [];
+  if (p.target_hdg_deg != null) out.push(`H${String(Math.round(p.target_hdg_deg) % 360 || 360).padStart(3, "0")}`);
+  if (Math.abs(p.target_alt_ft - p.alt_ft) > 150) out.push(`${p.target_alt_ft > p.alt_ft ? "↑" : "↓"}${String(Math.round(p.target_alt_ft / 100)).padStart(3, "0")}`);
+  return out.join(" ");
+}
 /** Length of the cleared / read-back heading vectors. */
 const HDG_VECTOR_NM = 25;
 /** Focus fly-in: how close, how long, and the part of the screen the panels leave free (the top is deeper because altitude lifts everything). */
@@ -183,7 +196,7 @@ export default function MapView() {
   const state = useTowerState();
   const dispatch = useTowerDispatch();
   const { send } = useClient();
-  const { sim, tracks, plan, planView, flashUntil, disruptions, watching, selected, follow, ghosts, simClock, onAir } = state;
+  const { sim, tracks, plan, planView, flashUntil, disruptions, watching, selected, follow, ghosts, simClock, onAir, acks } = state;
   const talking = onAir?.callsign ?? null;
 
   const mapRef = useRef<MapRef | null>(null);
@@ -693,6 +706,24 @@ export default function MapView() {
       parameters: ALWAYS_ON_TOP,
     }),
 
+    // Where an aircraft on an assigned heading is going to point: drawn the instant the heading is
+    // accepted, amber while it is still turning onto it, cyan once it is there. A turn at 1.5
+    // degrees a second takes half a minute to see; this takes no time at all.
+    new LineLayer({
+      id: "cleared-vectors",
+      data: planes.filter((p) => !p.is_intruder && p.target_hdg_deg != null),
+      getSourcePosition: (p: Shown) => [p.lon, p.lat, zOf(p.alt_ft)],
+      getTargetPosition: (p: Shown) => {
+        const [lat, lon] = destinationPoint(p.lat, p.lon, p.target_hdg_deg ?? p.hdg_deg, (p.gs_kt * CLEARED_VECTOR_MIN) / 60);
+        return [lon, lat, zOf(p.alt_ft)];
+      },
+      getColor: (p: Shown) => (angleBetween(p.hdg_deg, p.target_hdg_deg ?? p.hdg_deg) > 3 ? C.warn : ([70, 200, 255, 140] as RGBA)),
+      getWidth: (p: Shown) => (angleBetween(p.hdg_deg, p.target_hdg_deg ?? p.hdg_deg) > 3 ? 2.5 : 1.5),
+      widthUnits: "pixels",
+      parameters: ALWAYS_ON_TOP,
+      updateTriggers: { getSourcePosition: [now, exaggeration], getTargetPosition: [now, exaggeration], getColor: now, getWidth: now },
+    }),
+
     new ScatterplotLayer({
       id: "rings",
       data: planes.filter((p) => highlights[p.callsign] || watching.includes(p.callsign) || p.callsign === selected || p.callsign === talking),
@@ -743,7 +774,7 @@ export default function MapView() {
             ? `${p.callsign} MAYDAY\nFL${String(Math.round(p.alt_ft / 100)).padStart(3, "0")} ↓ ${Math.round(p.gs_kt)}`
             : dense && !important(p)
               ? `${p.callsign} ${String(Math.round(p.alt_ft / 100)).padStart(3, "0")}`
-              : `${p.callsign}\nFL${String(Math.round(p.alt_ft / 100)).padStart(3, "0")} ${Math.round(p.gs_kt)}`,
+              : `${p.callsign}\nFL${String(Math.round(p.alt_ft / 100)).padStart(3, "0")} ${Math.round(p.gs_kt)}${!p.is_intruder && clearedLine(p) ? `\n${clearedLine(p)}` : ""}`,
       getSize: (p: Shown) => (dense && !important(p) ? 9.5 : 11),
       getColor: (p: Shown) => (p.is_intruder ? tintOf(p) : dense && !important(p) ? ([200, 210, 222, 190] as RGBA) : ([224, 232, 242, 245] as RGBA)),
       getPixelOffset: [20, -4],
@@ -755,7 +786,29 @@ export default function MapView() {
       outlineWidth: 4,
       outlineColor: C.ink,
       parameters: ALWAYS_ON_TOP,
-      updateTriggers: { getPosition: exaggeration, getText: [dense, selected, highlights, watching], getSize: [dense, selected, highlights], getColor: [dense, selected, highlights] },
+      updateTriggers: { getPosition: exaggeration, getText: [dense, selected, highlights, watching, now], getSize: [dense, selected, highlights], getColor: [dense, selected, highlights] },
+    }),
+
+    // What Tower just understood, on the aircraft itself, the moment the key is released. Green
+    // pill, a few seconds, then it fades: the first answer to "did it hear me?".
+    new TextLayer({
+      id: "acks",
+      data: planes.filter((p) => acks[p.callsign] && now - acks[p.callsign].at < ACK_SHOWS_MS),
+      getPosition: (p: Shown) => [p.lon, p.lat, zOf(p.alt_ft)],
+      getText: (p: Shown) => `✓ ${acks[p.callsign].text}`,
+      getSize: 13,
+      getColor: (p: Shown) => [6, 9, 14, Math.round(255 * Math.min(1, (ACK_SHOWS_MS - (now - acks[p.callsign].at)) / ACK_FADES_MS))] as RGBA,
+      background: true,
+      getBackgroundColor: (p: Shown) => [52, 211, 153, Math.round(240 * Math.min(1, (ACK_SHOWS_MS - (now - acks[p.callsign].at)) / ACK_FADES_MS))] as RGBA,
+      backgroundPadding: [7, 4],
+      getPixelOffset: [0, -30],
+      getTextAnchor: "middle",
+      getAlignmentBaseline: "center",
+      fontFamily: fontReady ? '"B612 Mono", ui-monospace, monospace' : "ui-monospace, monospace",
+      fontWeight: 700,
+      characterSet: "auto",
+      parameters: ALWAYS_ON_TOP,
+      updateTriggers: { getPosition: exaggeration, getText: [acks], getColor: now, getBackgroundColor: now },
     }),
 
     new TextLayer<IssueTag>({

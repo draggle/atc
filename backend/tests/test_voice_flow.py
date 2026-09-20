@@ -430,3 +430,29 @@ def test_the_sender_survives_an_event_it_cannot_send():
         return alive
     assert asyncio.run(go())
 
+
+
+# --------------------------------------------------------------------------- responsiveness
+
+def test_the_aircraft_turns_when_the_pilot_keys_up_not_when_the_voice_is_ready():
+    """Making the pilot's voice takes one to three seconds (a network call to the voice service).
+    The aircraft used to wait for it. Now the reply is decided, flown, and only then spoken."""
+    w, events = make()
+    cs = next(iter(w.sim.active))
+    pilot = w.fleet.get(cs)
+    seen: dict = {}
+    real = pilot.voice_it
+
+    def voice_it(resp, clearance):
+        seen["target_when_voice_starts"] = w.sim.active[cs].target_hdg
+        seen["radar_frames_before_voice"] = sum(1 for e in events if e["type"] == "radar"
+                                                and any(a["callsign"] == cs and a["target_hdg_deg"] == 270.0
+                                                        for a in e["payload"]["aircraft"]))
+        return real(resp, clearance)
+
+    pilot.voice_it = voice_it
+    w.set_next_readback("correct")
+    asyncio.run(w.controller_text(f"{C.say_callsign(cs)}, turn left heading two seven zero"))
+    run(w, 3)
+    assert seen["target_when_voice_starts"] == 270.0  # already turning before a sound is made
+    assert seen["radar_frames_before_voice"] >= 1  # and the screen was told at once, not on the next tick

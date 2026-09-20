@@ -9,6 +9,7 @@
 /** "datalink": an instruction Tower sent as text in Auto mode. Nothing was spoken. */
 export type Speaker = "controller" | "pilot" | "unknown" | "datalink";
 export type ItemType =
+  | "manoeuvre"
   | "altitude"
   | "heading"
   | "speed"

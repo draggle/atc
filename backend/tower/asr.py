@@ -182,11 +182,14 @@ class LocalWhisper:
         return text, lp
 
     def transcribe(
-        self, samples_or_path, prompt: str | None = None, extra_hypotheses: bool | None = None, raw_prompt: bool = False
+        self, samples_or_path, prompt: str | None = None, extra_hypotheses: bool | None = None, raw_prompt: bool = False,
+        fast: bool = False,
     ) -> ASRResult:
         t0 = time.perf_counter()
         samples = _load_samples(samples_or_path)
         prompt = full_prompt(prompt, raw_prompt)
+        if fast:
+            extra_hypotheses = False  # one decode, no alternatives: see BasetenWhisper.transcribe
         text, lp = self._decode(samples, prompt, 0.0)
         n_best = [text]
         temps = self.n_best_temperatures if extra_hypotheses is None else (
@@ -210,6 +213,9 @@ class LocalWhisper:
 # ---------------------------------------------------------------------------
 # Baseten
 # ---------------------------------------------------------------------------
+
+
+FAST_BEAMS = int(os.environ.get("ASR_CONTROLLER_BEAM", "1"))  # beam width for the controller's voice
 
 
 class BasetenWhisper:
@@ -257,6 +263,17 @@ class BasetenWhisper:
                 delay = min(delay * 2, 8.0)
         raise RuntimeError(f"Baseten ASR failed after {self.max_retries} attempts: {last_exc!r}")
 
+    def warm(self) -> None:
+        """Open the connection now. Called when the controller presses the key, a few seconds before
+        there is anything to send: the link to Baseten goes idle between transmissions, and setting
+        it up again (DNS, TCP, TLS) was 0.4 s of every one. Touches no GPU: a GET on the predict
+        URL is answered by the front door."""
+        try:
+            self._client.get(self.url, headers={"Authorization": f"Api-Key {self.api_key}"} if self.api_key else {},
+                             timeout=3.0)
+        except Exception:  # a warm-up that fails costs nothing
+            pass
+
     @staticmethod
     def _extract(data: dict) -> tuple[str, float | None, list[str]]:
         if isinstance(data, dict) and "model_output" in data:  # some Truss wrappers nest it
@@ -279,14 +296,19 @@ class BasetenWhisper:
             n_best = [str(x if isinstance(x, str) else x.get("text", "")).strip() for x in data["n_best"]]
         return text, lp, n_best
 
-    def transcribe(self, samples_or_path, prompt: str | None = None, raw_prompt: bool = False) -> ASRResult:
+    def transcribe(self, samples_or_path, prompt: str | None = None, raw_prompt: bool = False,
+                   fast: bool = False) -> ASRResult:
+        """`fast` is for the controller's own voice: one beam, one hypothesis, about 0.3 s instead
+        of 0.8 s. The alternatives matter for judging a pilot's readback (the n-best rule), not for
+        hearing the person at the desk, and that half second is the wait before anything moves."""
         t0 = time.perf_counter()
         samples = _load_samples(samples_or_path)
+        beams, hyps = (FAST_BEAMS, 1) if fast else (self.beam_size, self.n_best)
         body = {
             "audio": base64.b64encode(wav_bytes(samples, SR)).decode(),
             "prompt": full_prompt(prompt, raw_prompt) or "",
-            "beam_size": self.beam_size,
-            "n_best": self.n_best,  # training/serve_asr returns real beam alternatives with scores
+            "beam_size": beams,
+            "n_best": hyps,  # training/serve_asr returns real beam alternatives with scores
             "language": "en",
         }
         data = self._post(body)
@@ -328,6 +350,10 @@ class WithFallback:
             self._fallback = self._make_fallback()
         return self._fallback
 
+    def warm(self) -> None:
+        if time.monotonic() >= self._skip_until and hasattr(self.primary, "warm"):
+            self.primary.warm()
+
     def transcribe(self, samples_or_path, prompt: str | None = None, **kw) -> ASRResult:
         samples = _load_samples(samples_or_path)
         if time.monotonic() >= self._skip_until:
@@ -337,7 +363,7 @@ class WithFallback:
                 self.failures += 1
                 self._skip_until = time.monotonic() + self.cooldown_s
                 log.warning("Baseten ASR failed (%s). Local model for the next %.0f s.", exc, self.cooldown_s)
-        return self._local().transcribe(samples, prompt)
+        return self._local().transcribe(samples, prompt, **({"fast": True} if kw.get("fast") else {}))
 
 
 # ---------------------------------------------------------------------------
@@ -356,13 +382,32 @@ class StockAndTuned:
         self.tuned = tuned
         self.stock = stock
 
-    def transcribe(self, samples_or_path, prompt: str | None = None) -> ASRResult:
-        """Both models hear the clip at the same time, so the comparison costs no extra wait."""
+    def warm(self) -> None:
+        if hasattr(self.tuned, "warm"):
+            self.tuned.warm()
+
+    def transcribe(self, samples_or_path, prompt: str | None = None, fast: bool = False,
+                   on_stock=None) -> ASRResult:
+        """Both models hear the clip at the same time, so the comparison costs no extra wait.
+
+        `fast`: answer the moment the tuned model does. The stock text is for the side-by-side on
+        the screen and nothing waits for it; it is handed to `on_stock(text)` when it arrives.
+        """
         samples = _load_samples(samples_or_path)
+        kw = {"fast": True} if fast else {}
         if self.stock is None:
-            return self.tuned.transcribe(samples, prompt)
+            return self.tuned.transcribe(samples, prompt, **kw)
         pending = _STOCK_POOL.submit(self.stock.transcribe, samples, prompt)
-        res = self.tuned.transcribe(samples, prompt)
+        res = self.tuned.transcribe(samples, prompt, **kw)
+        if fast:
+            if on_stock is not None:
+                def deliver(f) -> None:
+                    try:
+                        on_stock(f.result().text)
+                    except Exception:  # the comparison never matters enough to raise
+                        pass
+                pending.add_done_callback(deliver)
+            return res
         try:
             res.text_stock = pending.result(timeout=STOCK_WAIT_S).text
         except Exception as exc:  # never let the toggle break or slow the main path

@@ -133,10 +133,14 @@ class AIPilot:
         error_type: ErrorType | None = None,
         force_error: bool | None = None,
         waypoints: list[str] | None = None,
+        speak: bool = True,
     ) -> PilotResponse:
         """Respond to a clearance addressed to this pilot.
 
         `waypoints` are the sector's sayable fix names, so a direct can be read back to the wrong one.
+        `speak=False` decides the reply and returns at once, with no audio: the aircraft can start
+        its turn the moment the pilot keys up, and `voice()` makes the sound afterwards. Making the
+        voice first cost one to three seconds in which nothing on the radar moved.
 
         error_type forces a specific taxonomy error; force_error=True/False overrides the
         error_rate coin flip. Both exist for tests and scripted demos.
@@ -151,7 +155,7 @@ class AIPilot:
                 kind="say_again", text=say_again(self.callsign, self.rng), spoken_callsign=self.callsign,
                 noise_level=noise_level,
             )
-            return self._finish(resp, clearance)
+            return self._finish(resp, clearance, speak)
 
         make_error = force_error if force_error is not None else (
             error_type is not None or self.rng.random() < self.error_rate
@@ -169,7 +173,7 @@ class AIPilot:
                 kind="silent", text=None, spoken_callsign=None, spoken_items=[],
                 injected_error=etype, error_description=desc, noise_level=noise_level,
             )
-            return self._finish(resp, clearance)
+            return self._finish(resp, clearance, speak)
 
         if etype == "ack_only":
             text = roger(self.callsign, self.rng)
@@ -181,7 +185,7 @@ class AIPilot:
                 sim_command=cmds[0] if cmds else SimCommand(kind="none"), sim_commands=cmds,
                 noise_level=noise_level,
             )
-            return self._finish(resp, clearance)
+            return self._finish(resp, clearance, speak)
 
         text = build_readback(spoken_cs, spoken_items, self.rng, shorten=self.shorten)
         cmds = items_to_sim_commands(spoken_items)
@@ -193,9 +197,10 @@ class AIPilot:
             sim_command=cmds[0] if cmds else SimCommand(kind="none"), sim_commands=cmds,
             noise_level=noise_level,
         )
-        return self._finish(resp, clearance)
+        return self._finish(resp, clearance, speak)
 
-    def respond_to_correction(self, clearance: OpenClearance, noise_level: float = 0.2) -> PilotResponse:
+    def respond_to_correction(self, clearance: OpenClearance, noise_level: float = 0.2,
+                              speak: bool = True) -> PilotResponse:
         """After the controller corrects us: a full, correct readback with the full callsign."""
         rid = self._next_id(clearance)
         items = [it.model_copy() for it in clearance.items]
@@ -207,7 +212,7 @@ class AIPilot:
             sim_command=cmds[0] if cmds else SimCommand(kind="none"), sim_commands=cmds,
             noise_level=noise_level,
         )
-        return self._finish(resp, clearance)
+        return self._finish(resp, clearance, speak)
 
     def announce(self, text: str, noise_level: float = 0.2) -> PilotResponse:
         """An unprompted call, such as a mayday. Nothing is read back and nothing moves."""
@@ -227,9 +232,15 @@ class AIPilot:
         self._n += 1
         return f"{clearance.id}-{self.callsign}-{self._n}"
 
-    def _finish(self, resp: PilotResponse, clearance: OpenClearance) -> PilotResponse:
+    def _finish(self, resp: PilotResponse, clearance: OpenClearance, speak: bool = True) -> PilotResponse:
         resp.t = time.time()
         resp.voice = self.voice
+        if speak:
+            self.voice_it(resp, clearance)
+        return resp
+
+    def voice_it(self, resp: PilotResponse, clearance: OpenClearance) -> PilotResponse:
+        """The slow half of a reply: synthesize, put it through the radio, log the ground truth."""
         if resp.text and self.synthesize and self.tts is not None:
             self._speak(resp)
         self._log(resp, clearance)

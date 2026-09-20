@@ -100,3 +100,36 @@ def test_fallback_hears_the_transmission_when_the_remote_fails():
     b = asr.transcribe(np.zeros(1600, dtype=np.float32))
     assert a.backend == b.backend == "local" and a.text.startswith("air canada")
     assert Dead.calls == 1  # the second call did not wait on a dead network again
+
+
+def test_fast_mode_is_one_beam_and_does_not_wait_for_the_comparison():
+    """The controller's own voice: greedy decode, and the stock model's version arrives later."""
+    import threading
+
+    import numpy as np
+
+    from tower.asr import ASRResult, BasetenWhisper, StockAndTuned
+
+    sent: list[dict] = []
+    remote = BasetenWhisper("https://example.invalid/predict", api_key="x", beam_size=3, n_best=3)
+    remote._post = lambda body: (sent.append(body) or {"text": "air canada one two three turn left heading two seven zero"})
+    remote.transcribe(np.zeros(1600, dtype=np.float32), "ACA123")
+    remote.transcribe(np.zeros(1600, dtype=np.float32), "ACA123", fast=True)
+    assert (sent[0]["beam_size"], sent[0]["n_best"]) == (3, 3)
+    assert (sent[1]["beam_size"], sent[1]["n_best"]) == (1, 1)
+
+    release = threading.Event()
+    arrived = threading.Event()
+    got: list[str] = []
+
+    class SlowStock:
+        def transcribe(self, samples, prompt=None):
+            release.wait(5)
+            return ASRResult(text="stock version", confidence=0.5, n_best=[], latency_s=0.0, backend="stock")
+
+    both = StockAndTuned(remote, SlowStock())
+    r = both.transcribe(np.zeros(1600, dtype=np.float32), "ACA123", fast=True,
+                        on_stock=lambda t: (got.append(t), arrived.set()))
+    assert r.text.startswith("air canada") and r.text_stock is None and not got  # answered without the comparison
+    release.set()
+    assert arrived.wait(5) and got == ["stock version"]
