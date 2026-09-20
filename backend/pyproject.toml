@@ -28,6 +28,7 @@ dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]  # this checkout first: the venv is an editable install that points at another clone
 asyncio_mode = "auto"
 
 [tool.ruff]

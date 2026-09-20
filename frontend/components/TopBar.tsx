@@ -4,6 +4,7 @@ import { snapshotClock, useTowerDispatch, useTowerState } from "@/lib/store";
 import { useClient } from "./TowerApp";
 import LifecycleControls from "./LifecycleControls";
 import VoiceToggle from "./VoiceToggle";
+import UiModeToggle from "./UiModeToggle";
 
 function fmtClock(t: number): string {
   const s = Math.max(0, Math.floor(t));
@@ -121,6 +122,8 @@ export default function TopBar() {
       </div>
 
       <div className="ml-auto flex items-center gap-1.5 text-xs text-muted">
+        <UiModeToggle />
+        <div className="h-5 w-px bg-line mx-1.5" />
         <i className={`dot ${status.dot}`} />
         <span>{status.text}</span>
       </div>

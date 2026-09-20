@@ -12,9 +12,9 @@ from __future__ import annotations
 import argparse
 import csv
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import Callable, Sequence
 
 from eval.montecarlo import ARMS, run
 from schemas import Scenario
@@ -72,14 +72,24 @@ def _rows_from_result(res: dict, density: float, buffer_nm: float, seconds: floa
 
 def sweep(scenario: Scenario, densities: Sequence[float], buffers: Sequence[float], n_runs: int,
           error_rate: float = 0.02, seed: int = 0, arms: tuple[str, ...] = ARMS,
-          on_point: Callable[[list[SweepRow]], None] | None = None) -> list[SweepRow]:
-    """One `montecarlo.run` per (density, buffer). `seconds` is the wall time of that one call."""
+          on_point: Callable[[list[SweepRow]], None] | None = None,
+          on_run: Callable[[int, int], None] | None = None) -> list[SweepRow]:
+    """One `montecarlo.run` per (density, buffer). `seconds` is the wall time of that one call.
+
+    `on_point(rows)` fires after each point; `on_run(done, total)` after every single run across
+    the whole sweep, so a progress bar can move inside a point too.
+    """
     rows: list[SweepRow] = []
+    total = len(buffers) * len(densities) * n_runs
+    done_before = 0
     for buffer_nm in buffers:
         for density in densities:
             t0 = time.perf_counter()
+            base = done_before
             res = run(scenario, n_runs=n_runs, seed=seed, arms=arms, error_rate=error_rate,
-                      density=density, buffer_nm=buffer_nm)
+                      density=density, buffer_nm=buffer_nm,
+                      on_run=(lambda k, n, b=base: on_run(b + k, total)) if on_run is not None else None)
+            done_before += n_runs
             point = _rows_from_result(res, density, buffer_nm, time.perf_counter() - t0)
             rows.extend(point)
             if on_point is not None:
