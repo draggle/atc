@@ -278,3 +278,62 @@ def test_a_card_for_a_flight_not_yet_in_the_sector_waits():
     asyncio.run(w.speak_card(later.id))
     assert w.cards[later.id].status == "pending"
     assert any("not in the sector yet" in n for n in notices(events))
+
+
+# --------------------------------------------------------------------------- disrupt this flight
+
+def test_a_disruption_aimed_at_a_flight_lands_on_its_path_and_moves_it():
+    """The button on the flight strip. Placing one by hand meant guessing where a path really
+    runs under a tilted, height-exaggerated map, and it usually missed."""
+    import asyncio
+    import math
+
+    from world import World
+
+    for kind in ("storm", "rocket", "fighter"):
+        w = World(lambda e: None, synthesize=False, realtime=False)
+        w.load("demo")
+        w.set_auto_speak(True)
+        w.start()
+        asyncio.run(w.tick(240.0))
+        cs = next(c for c, a in w.sim.active.items() if not a.is_intruder)
+        a = w.sim.active[cs]
+        d = w.add_disruption(kind, target=cs)
+        assert d is not None and cs in w.rerouted, kind
+        if d.shape == "circle":
+            ahead = math.hypot(d.x_nm - a.x, d.y_nm - a.y)
+            assert d.radius_nm + 10 <= ahead <= d.radius_nm + 25  # room to go round, and soon enough to matter
+            bearing = math.degrees(math.atan2(d.x_nm - a.x, d.y_nm - a.y)) % 360
+            assert abs((bearing - a.hdg + 180) % 360 - 180) < 45  # in front of it, not beside or behind
+        deepest = 0.0
+        for _ in range(500):
+            asyncio.run(w.tick(1.0))
+            if cs not in w.sim.active:
+                break
+            for z in w.sim.zones:
+                deepest = max(deepest, z.radius_nm - math.hypot(w.sim.active[cs].x - z.x_nm, w.sim.active[cs].y - z.y_nm))
+        assert deepest <= 0 and w.monitor.losses == 0, kind
+
+
+def test_aimed_at_a_flight_that_is_not_there_says_so_and_a_mayday_is_that_flight():
+    import asyncio
+
+    from world import World
+
+    events: list[dict] = []
+    w = World(events.append, synthesize=False, realtime=False)
+    w.load("demo")
+    w.set_auto_speak(True)
+    w.start()
+    asyncio.run(w.tick(120.0))
+    assert w.add_disruption("storm", target="NOBODY1") is None
+    assert any("not in the sector" in e["payload"]["text"] for e in events if e["type"] == "notice")
+    cs = next(c for c, a in w.sim.active.items() if not a.is_intruder)
+    d = w.add_disruption("emergency", target=cs)
+    assert d is not None and d.id == cs
+
+
+def test_the_menu_is_four_kinds_and_the_table_keeps_all_eight():
+    import disruptions as DZ
+    on_menu = [k["kind"] for k in DZ.catalog() if k["menu"]]
+    assert sorted(on_menu) == ["emergency", "fighter", "rocket", "storm"] and len(DZ.catalog()) == 8

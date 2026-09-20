@@ -30,12 +30,12 @@ type DropMode = "off" | DisruptionKind;
 /** Used until the backend sends its own menu in `state.disruption_kinds` (and by the mock). */
 const KINDS: DisruptionKindInfo[] = [
   { kind: "fighter", label: "Fighter jet", blurb: "Fast, straight through, not talking to anyone.", shape: "point" },
-  { kind: "drone", label: "Drone", blurb: "Slow and small, loitering at cruise level.", shape: "point" },
-  { kind: "balloon", label: "Balloon", blurb: "Drifting with the wind.", shape: "point" },
+  { kind: "drone", label: "Drone", blurb: "Slow and small, loitering at cruise level.", shape: "point", menu: false },
+  { kind: "balloon", label: "Balloon", blurb: "Drifting with the wind.", shape: "point", menu: false },
   { kind: "emergency", label: "Emergency aircraft", blurb: "One of our flights declares a mayday and descends.", shape: "point" },
-  { kind: "unknown", label: "Unknown target", blurb: "No height, no identity. Blocked at every level.", shape: "point" },
+  { kind: "unknown", label: "Unknown target", blurb: "No height, no identity. Blocked at every level.", shape: "point", menu: false },
   { kind: "storm", label: "Storm cell", blurb: "Drifts and swells.", shape: "circle" },
-  { kind: "closed", label: "Closed airspace", blurb: "A block of levels shut for a while.", shape: "circle" },
+  { kind: "closed", label: "Closed airspace", blurb: "A block of levels shut for a while.", shape: "circle", menu: false },
   { kind: "rocket", label: "Rocket launch", blurb: "A tall column, gone in minutes.", shape: "circle" },
 ];
 const ALL_LEVELS_FT = 90000;
@@ -860,7 +860,17 @@ export default function MapView() {
         return true;
       }
       if (dropMode !== "off" && info.coordinate) {
-        const [lon, lat] = info.coordinate as [number, number];
+        // Aircraft and their lines are drawn at height, exaggerated: FL350 at 6x is 64 km up, and
+        // in the tilted view that is about 40 NM up the screen from the ground beneath it. A click
+        // read as a point on the ground therefore put the zone 40 NM from the line that was
+        // clicked. Read it on the level the traffic is drawn at instead.
+        const levels = planesRef.current.filter((p) => !p.is_intruder).map((p) => p.alt_ft).sort((m, n) => m - n);
+        const level = levels.length ? levels[Math.floor(levels.length / 2)] : 0;
+        let [lon, lat] = info.coordinate as [number, number];
+        if (level > 0 && info.viewport) {
+          const at = info.viewport.unproject([info.x, info.y], { targetZ: zOf(level) });
+          if (Number.isFinite(at[0]) && Number.isFinite(at[1])) [lon, lat] = [at[0], at[1]];
+        }
         const [x, y] = latLonToNm(frame, lat, lon);
         send({ type: "add_disruption", kind: dropMode, x_nm: Math.round(x * 10) / 10, y_nm: Math.round(y * 10) / 10 });
         setDropMode("off");
@@ -870,7 +880,7 @@ export default function MapView() {
       if (selected) dispatch({ type: "select", callsign: null });
       return false;
     },
-    [dispatch, dropMode, frame, send, selected],
+    [dispatch, dropMode, frame, send, selected, zOf],
   );
 
   const tooltip = useCallback((info: PickingInfo) => {
@@ -887,7 +897,7 @@ export default function MapView() {
       : null;
   }, []);
 
-  const kinds = sim?.disruption_kinds?.length ? sim.disruption_kinds : KINDS;
+  const kinds = (sim?.disruption_kinds?.length ? sim.disruption_kinds : KINDS).filter((k) => k.menu !== false);
   const active = Object.values(disruptions).filter((d) => d.active !== false);
 
   const chip = (active: boolean, tone: "accent" | "bad" | "violet" = "accent") => {

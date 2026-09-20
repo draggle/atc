@@ -249,6 +249,18 @@ Also fixed on the way: the item validator first rejected heading 000, so a card 
 
 **A false "NOT FLYING THE CLEARANCE" with voice off, fixed.** By data link an aircraft is sent a path ("heading 155 for 8 miles, then direct ESTIR") and flies it, but radar verification was still told to wait for heading 155. On a short leg with a big turn the aircraft never points down the leg: the turn alone needs five or six miles, and it has to start back before the corner. It flew the route exactly, and a minute later was reported for it (2 of 15 reroutes in a six-disruption run). `ConformanceMonitor.watch(..., path=)` now judges a data-link reroute on the line it was sent, as `flyable` draws it: within `PATH_TOLERANCE_NM` (4), confirmed once it is on the line *and going the way the line goes*, reported after 20 s off it. Voice on is unchanged: there the aircraft really is given a heading. The test flies the real simulator through such a jog, asserts the old check raises the false alert, the new one does not, and that an aircraft which really leaves its route is still reported.
 
+### Phase 6f. Disruptions that land where you mean them. Sunday, after midnight
+
+Placing a storm or a launch "on a path" by hand usually missed, and it looked as if Tower had ignored it. Three reasons, the first by far the biggest:
+
+1. **The click was read on the ground; the traffic is drawn in the air.** Aircraft and their lines are drawn at height, exaggerated six times: FL350 is 64 km up, and in the tilted view that is about 40 NM up the screen from the ground beneath it. A click on a line was unprojected to the ground *behind* it, so a 12 to 25 NM zone landed 40 NM from the path that was clicked. Placement now unprojects the click at the level the traffic is drawn at (`viewport.unproject(..., {targetZ})`, median level of the flights on radar). Checked in the browser: a launch clicked on ACA133's line landed 9 NM off its ground track (it used to be about 40), well inside the zone's 20 NM, and ACA133 was rerouted.
+2. A launch lasts 7 to 10 minutes. Put further ahead than the aircraft can reach in that time, the planner rightly ignores it.
+3. Closed airspace blocks only a band of levels, and drones and balloons fly low and slow. Both often affect nobody at cruise.
+
+**Disrupt this flight.** Select an aircraft and the flight strip has four buttons: Storm ahead, Launch ahead, Fighter, Mayday. `{"type":"add_disruption","kind","target":"<callsign>"}` and `World._ahead_of` puts it on that flight's own planned path: a zone centred its radius plus 13 to 22 NM ahead (room to go round it, near enough that the detour starts now, the small end of the kind's size so the way round is short, nobody else underneath if that can be had); an intruder timed to meet the flight four minutes on; a mayday is that flight. Tried on every flight in the demo at three moments, 51 presses: the chosen aircraft was rerouted every time, never entered the zone, no loss of separation. This is the button for the pitch: "watch Delta 789. Storm."
+
+**Four kinds on the menu**, storm, rocket launch, fighter, emergency (`disruptions.MENU_KINDS`, `menu` in `state.disruption_kinds`). Drone, balloon, unknown and closed airspace stay in the table and the headset agent can still ask for them.
+
 ### Phase 7. Scale and robustness. About 2 hours
 - [ ] Planner: initial plan for 150 flights in under 5 seconds, replans inside their budget. If not, cap the scenario and say so
 - [ ] The investigating agent runs off the clock's critical path so the map never freezes while it thinks
