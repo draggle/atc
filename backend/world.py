@@ -62,6 +62,8 @@ log = logging.getLogger("tower.world")
 DATA_DIR = Path(os.environ.get("TOWER_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
 AUDIO_DIR = DATA_DIR / "audio"
 PILOT_DELAY_S = 1.5  # seconds between a clearance and the pilot keying up
+MIN_MIC_S = 0.5  # shorter than this from the mic is a stray key press
+GUESS_MIN_CONF = 0.6  # below this, an instruction only the language model could find is noise
 REPLAN_EVERY_S = 60.0
 # Auto mode. One voice exchange at a time; whatever the voice cannot get to in time goes by data link.
 AUTO_VOICE_MAX_SPEED = 1.5  # faster than this and speech, which takes real seconds, cannot keep up
@@ -156,6 +158,7 @@ class World:
         self._base_scenario: Scenario | None = None  # what reset() returns to
         self.live_loading = False  # a live snapshot is being fetched (sim/live.py); a second request is ignored
         self._lock = asyncio.Lock()
+        self._speaking: set[str] = set()  # cards Tower is saying right now, see speak_card
         AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------ setup
@@ -348,7 +351,8 @@ class World:
                         self.alert_latencies.append(time.monotonic() - meta["issued_real"])
                 elif p.get("result") in ("mismatch", "partial", "missing"):
                     self.false_alarms += 1
-                self._set_card_status(cid, "error")
+                if p.get("result") != "ambiguous":  # "unclear" asks for a confirmation, it accuses nobody
+                    self._set_card_status(cid, "error")
             elif typ == "resolver_step" and not self.tower_enabled:
                 continue
             elif typ == "clearance_updated":
@@ -971,11 +975,15 @@ class World:
         wps = self.spoken_waypoints()
         norm0 = normalize(dataset_normalize(text_raw))
         pref = _route_of(self, norm0)
-        norm = snap_waypoints(norm0, wps, pref)
+        # A pilot's readback is the thing being checked: the hint may rescue a garbled fix, but it
+        # must not turn a clearly different fix into the expected one.
+        hint_first = speaker != "pilot"
+        norm = snap_waypoints(norm0, wps, pref, trust_hint=hint_first)
         return Transmission(id=f"tx-{uuid.uuid4().hex[:8]}", t_start=self.sim.t - duration_s,
                             t_end=self.sim.t, audio_ref=audio_ref, text_raw=text_raw,
                             text_norm=norm, asr_confidence=conf, speaker=speaker,
-                            n_best=[snap_waypoints(normalize(h), wps, pref) for h in (n_best or [])],
+                            n_best=[snap_waypoints(normalize(h), wps, pref, trust_hint=hint_first)
+                                    for h in (n_best or [])],
                             text_stock=text_stock)  # type: ignore[arg-type]
 
     async def _transcribe(self, samples: np.ndarray) -> tuple[str, float, list[str], str | None, float]:
@@ -990,6 +998,8 @@ class World:
         """A controller utterance from the mic: transcribe, then treat as controller text."""
         if not self._radio_open():
             return
+        if len(samples) / sr < MIN_MIC_S:
+            return  # a stray tap of Space, not a transmission (07 section 7.1: drop under 0.5 s)
         ref = f"ctl-{uuid.uuid4().hex[:8]}.wav"
         float_to_wav(AUDIO_DIR / ref, samples, sr)
         text, conf, n_best, stock, lat = await self._transcribe(samples)
@@ -1029,14 +1039,30 @@ class World:
             self.emit(event("clearance_opened", c, t=self.sim.t))
             opened = [c]
             conf = min(conf, 0.5)
+        # Tower only guessed this instruction (the language model filled it in). Decided before any
+        # card is linked below: a card Tower spoke itself is the truth, a card merely pending for the
+        # same aircraft is not.
+        ext = self.core.last_extraction
+        guessed = ext is not None and ext.transmission_id == tx.id and ext.method == "llm" and card is None
         for c in opened:
             self.clearance_meta[c.id] = {"issued_real": time.monotonic(), "issued_sim": self.sim.t}
+            if guessed and conf < GUESS_MIN_CONF:
+                # Speaker bleed, a cough, half a word: the grammar found nothing, the model found an
+                # "instruction", and the speech model itself was unsure. Issue nothing at all.
+                async with self._lock:
+                    closed = self.core.store.resolve(c.id, "uncertain")
+                if closed is not None:
+                    self.emit(event("clearance_updated", closed, t=self.sim.t))
+                self.notice("Tower could not make an instruction out of that transmission, so nothing was issued.", "info")
+                continue
             if card is None:
                 card = self._match_card(c)
             if card is not None:
                 card.via = card.via or "human"
                 self._link_card(card, c.id)
-            self._schedule_pilot(c, heard_ok=(conf >= 0.5))
+            # A pilot who heard the same garble asks for it again. Flying a guess put an aircraft on
+            # heading 021.
+            self._schedule_pilot(c, heard_ok=(conf >= 0.5 and not guessed))
 
     def _trust_the_card(self, card: InstructionCard, events: list[dict[str, Any]]) -> bool:
         """Tower spoke this card itself, so the card is what was said, whatever its own ears heard.
@@ -1086,6 +1112,17 @@ class World:
         if card.callsign not in self.sim.active:
             self.notice(f"{card.callsign} is not in the sector yet. Its instruction waits until it checks in.", "info")
             return
+        # Speaking takes a few real seconds and the card stays "pending" throughout, so a second
+        # press of "Say it" used to transmit the same instruction again.
+        if card_id in self._speaking or card.status != "pending":
+            return
+        self._speaking.add(card_id)
+        try:
+            await self._speak_card(card)
+        finally:
+            self._speaking.discard(card_id)
+
+    async def _speak_card(self, card: InstructionCard) -> None:
         if self.tts is None or self.asr is None and not self.synthesize:
             await self._controller(card.phrase, card=card)
             return
@@ -1113,7 +1150,8 @@ class World:
         if c.callsign not in self.sim.active and not correction:
             return
         pilot = self.fleet.get(c.callsign)
-        kw: dict[str, Any] = {"noise_level": self.noise}
+        # the fix names let a pilot read a direct back to the wrong one
+        kw: dict[str, Any] = {"noise_level": self.noise, "waypoints": self.spoken_waypoints()}
         if correction:
             resp: PilotResponse = await asyncio.to_thread(pilot.respond_to_correction, c, self.noise)
         else:
@@ -1138,6 +1176,14 @@ class World:
         self.tier1_latencies.append(time.perf_counter() - t0)
         self.emit(event("transcript", self._tx_payload(tx), t=self.sim.t))
         if resp.kind == "say_again":
+            # The pilot did not get it and said so. Nothing was read back, so nothing is cleared and
+            # nothing is owed: left open, this timed out 25 s later as "no readback, heard nothing".
+            async with self._lock:
+                closed = self.core.store.resolve(c.id, "uncertain")
+            if closed is not None:
+                self.emit(event("clearance_updated", closed, t=self.sim.t))
+            self._set_card_status(c.id, "pending")  # the card is there to be said again
+            self.notice(f"{c.callsign} asked you to say again. Nothing was read back, so say it again.", "warn")
             return
         self._emit_core_events(events)
         alert = next((e for e in events if e["type"] == "alert"), None)
@@ -1253,14 +1299,22 @@ class World:
 
 
 _DIRECT_RE = re.compile(r"\b(direct(?:\s+to)?)\s+((?:[a-z]+\s?){1,3})")
+# "estir direct": the shortened readback. Only when no fix follows "direct".
+_DIRECT_POST_RE = re.compile(r"\b((?:[a-z]+\s+){1,3})direct\b(?!\s+(?:to\s+)?[A-Za-z]{3,6}\b(?!\s+\d))")
 
 
-def snap_waypoints(text_norm: str, waypoints: list[str], preferred: list[str] | None = None) -> str:
+def snap_waypoints(text_norm: str, waypoints: list[str], preferred: list[str] | None = None,
+                   trust_hint: bool = True) -> str:
     """Stock Whisper never gets made-up fix names right ("ESTIR" -> "at better").
 
     Replace the lowercase words after "direct" with the closest known waypoint. Waypoints on the
     addressed aircraft's own route are preferred with a lower bar, the way a controller would
     assume. Deterministic, so it lives in tier 1. See docs/02-domain.md, waypoints.
+
+    `trust_hint=False` is for a pilot's readback. There the route is what we EXPECT to hear, so
+    trying it first at a bar of 30 turns a wrong fix into the right one ("tulick", cleared PIKAR,
+    became PIKAR) and hides the very error Tower exists to catch. A clear match to any real fix
+    is taken first, and the hint only rescues what matches nothing.
     """
     if not waypoints or "direct" not in text_norm:
         return text_norm
@@ -1272,19 +1326,40 @@ def snap_waypoints(text_norm: str, waypoints: list[str], preferred: list[str] | 
         cands = [heard.replace(" ", "").upper()] + [w.upper() for w in heard.split()]
         return max(fuzz.ratio(c, name) for c in cands)
 
-    def fix(m: "re.Match[str]") -> str:
-        heard = m.group(2).strip()
-        for pool, bar in ((pref, 30.0), (names, 60.0)):
+    def closest(heard: str) -> str | None:
+        pools = ((pref, 30.0), (names, 60.0)) if trust_hint else ((names, 60.0), (pref, 30.0))
+        for pool, bar in pools:
             if not pool:
                 continue
             ranked = sorted(((score(heard, n), n) for n in pool), reverse=True)
             best, runner = ranked[0], (ranked[1] if len(ranked) > 1 else (0.0, ""))
             if best[0] >= bar and (best[0] - runner[0] >= 5 or len(pool) == 1):
-                tail = " " if m.group(2).endswith(" ") else ""
-                return f"{m.group(1)} {best[1]}{tail}"
-        return m.group(0)
+                return best[1]
+        return None
 
-    return _DIRECT_RE.sub(fix, text_norm)
+    def fix(m: "re.Match[str]") -> str:
+        name = closest(m.group(2).strip())
+        if name is None:
+            return m.group(0)
+        tail = " " if m.group(2).endswith(" ") else ""
+        return f"{m.group(1)} {name}{tail}"
+
+    def fix_post(m: "re.Match[str]") -> str:
+        """ "roger estir direct" -> "roger direct ESTIR", the order the parser and checker know."""
+        from tower.parse import COMMAND_KEYWORDS, FILLER, NOT_A_FIX
+        skip = FILLER | set(COMMAND_KEYWORDS) | NOT_A_FIX
+        words = m.group(1).split()
+        kept: list[str] = []
+        while len(words) > 1 and words[0] in skip:
+            kept.append(words.pop(0))  # filler is not part of a fix name: leave it where it was
+        if any(w in skip for w in words):
+            return m.group(0)  # "say again direct", "unable direct": not a fix at all
+        name = closest(" ".join(words))
+        if name is None:
+            return m.group(0)
+        return " ".join([*kept, "direct", name])
+
+    return _DIRECT_POST_RE.sub(fix_post, _DIRECT_RE.sub(fix, text_norm))
 
 
 def _some(names: list[str], limit: int = 4) -> str:
