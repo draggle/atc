@@ -78,7 +78,7 @@ function Screen() {
         <TopBar />
       </div>
 
-      <div className="absolute top-[68px] right-2 bottom-2 z-10 w-[400px] flex flex-col gap-2 overflow-y-auto scroll-thin pr-0.5">
+      <div className="absolute top-[60px] right-2 bottom-2 z-10 w-[380px] flex flex-col gap-2 overflow-y-auto scroll-thin pr-0.5">
         {(alerts.length > 0 || resolving.length > 0) && <AlertCard />}
         <InstructionCards />
         <PushToTalk />
@@ -86,14 +86,14 @@ function Screen() {
         <SlidersPanel />
       </div>
 
-      <div className="absolute left-2 bottom-2 z-10 h-[180px] w-[min(calc(100vw-432px),760px)]">
+      <div className="absolute left-2 bottom-2 z-10 h-[180px] w-[min(calc(100vw-412px),760px)]">
         <Transcript />
       </div>
 
       {(lifecycle === "ready" || lifecycle === "paused" || lifecycle === "ended") && (
-        <div className="pointer-events-none absolute top-[72px] left-1/2 -translate-x-1/2 z-10 glass px-4 py-2 text-sm text-muted">
-          {lifecycle === "ready" && <>World loaded. Look over the plan, then press <span className="text-ok font-medium">Start</span>.</>}
-          {lifecycle === "paused" && <>Paused. Press <span className="text-ok font-medium">Resume</span> to continue.</>}
+        <div className="pointer-events-none absolute top-[60px] left-1/2 -translate-x-1/2 z-10 hint">
+          {lifecycle === "ready" && <>World loaded. Look over the plan, then press <span className="text-fg font-medium">Start</span>.</>}
+          {lifecycle === "paused" && <>Paused. Press <span className="text-fg font-medium">Resume</span> to continue.</>}
           {lifecycle === "ended" && <>Every flight has left the sector. Press <span className="text-fg font-medium">Reset</span> to run it again.</>}
         </div>
       )}
