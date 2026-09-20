@@ -16,8 +16,10 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -59,6 +61,7 @@ from tower.audio import float_to_wav, read_wav
 from tower.memory import Memory, memory_from_env
 from tower.normalize import ICAO_TO_TELEPHONY, normalize
 from tower.pipeline import TowerCore
+from tower.voice import speak_reply
 
 log = logging.getLogger("tower.world")
 
@@ -95,6 +98,9 @@ RISK_FAST_CADENCE_S = 2.0  # above 1x the prediction runs every this many sim se
 RISK_EMIT_EVERY_S = 1.0  # the risk event goes out at most this often
 RISK_N_MAX = 256
 RISK_N_MIN = 32
+# --- squack agent (backend/agent/, docs/trd/08-squack-agent-prd.md) ---
+EVENT_RING = 500  # emitted events kept in World.events for query.timeline
+RING_SKIP = {"radar", "scoreboard", "stats", "risk"}  # streams: nothing a timeline would show
 
 Emit = Callable[[dict[str, Any]], None]
 
@@ -173,6 +179,7 @@ class World:
         self._voice_since = 0.0
         self.human_on_mic = False  # the controller is holding the mic: Tower keeps quiet
         self.auto_voice = False  # Auto speaks one exchange at a time. Off: every instruction by data link
+        self.speak_replies = os.environ.get("SQUACK_SPEAK", "1") != "0"  # squack says its answers on frequency
         self.next_readback = "random"  # or correct, wrong_value, wrong_aircraft, omitted_item, missing_readback
         self.held: dict[str, tuple[OpenClearance, str | None]] = {}  # said-vs-card conflicts awaiting "send as heard"
         self.alerted: dict[str, tuple[str, float]] = {}  # callsign -> (clearance id of the wrong readback, sim time)
@@ -203,6 +210,12 @@ class World:
         self._risk_prev_empty = True  # the previous report had no pairs: nothing to clear on screen
         self.conflicts_predicted = 0
         self.conflicts_resolved = 0
+        # --- squack agent (backend/agent/): the event ring buffer and the agent itself.
+        # squack speaks only when spoken to: there is no wake policy and no unprompted answer.
+        self.events: deque[dict[str, Any]] = deque(maxlen=EVENT_RING)  # the last emitted events, minus streams
+        self._agent: Any = None  # SquackAgent, built on first use so the LLM stays optional
+        self._loop: asyncio.AbstractEventLoop | None = None  # for emits from the agent's thread
+        self._loop_thread: threading.Thread | None = None
         AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------ setup
@@ -281,7 +294,18 @@ class World:
             self.memory.observe(ev)
         except Exception:  # noqa: BLE001 - memory never breaks the event path
             log.exception("memory.observe failed")
+        # --- squack agent: the ring buffer query.timeline reads ---
+        if ev.get("type") not in RING_SKIP:
+            self.events.append(ev)
         self._emit_out(ev)
+
+    def emit_from_thread(self, ev: dict[str, Any]) -> None:
+        """Emit from the agent's worker thread: hand the event to the socket loop if there is one."""
+        loop, owner = self._loop, self._loop_thread
+        if loop is not None and owner is not None and threading.current_thread() is not owner and loop.is_running():
+            loop.call_soon_threadsafe(self._emit, ev)
+        else:
+            self._emit(ev)
 
     # ------------------------------------------------------------------ geography
 
@@ -340,6 +364,7 @@ class World:
             "mode": "auto" if self.auto_speak else "manual",
             "auto_voice": self.auto_voice,
             "voice": not self.auto_speak,
+            "speak_replies": self.speak_replies,
             "clock_speed": self.clock_speed(),
             "next_readback": self.next_readback,
             "t": self.sim.t,
@@ -642,6 +667,11 @@ class World:
         self.auto_voice = bool(enabled)
         if not enabled:
             self._voice_card = None
+        self.emit_state()
+
+    def set_speak_replies(self, enabled: bool) -> None:
+        """Whether squack also says its answers on the frequency (tower/voice.py)."""
+        self.speak_replies = bool(enabled)
         self.emit_state()
 
     def _links_only(self) -> bool:
@@ -1460,8 +1490,12 @@ class World:
             r = await asyncio.to_thread(self.asr.transcribe, samples, prompt)
         return r.text, r.confidence, list(r.n_best), r.text_stock, time.perf_counter() - t0
 
-    async def controller_audio(self, samples: np.ndarray, sr: int = 16000) -> None:
-        """A controller utterance from the mic: transcribe, then treat as controller text."""
+    async def controller_audio(self, samples: np.ndarray, sr: int = 16000,
+                               on_text: Callable[[str], None] | None = None) -> None:
+        """A controller utterance from the mic: transcribe, then treat as controller text.
+
+        `on_text` hears the transcript the moment it exists, before anything is done with it: the
+        command bar's dictation final (app.py) goes out ahead of the transcript line and the pilots."""
         if not self._radio_open():
             return
         if len(samples) / sr < MIN_MIC_S:
@@ -1476,6 +1510,8 @@ class World:
 
         t0 = time.perf_counter()
         text, conf, n_best, stock, lat = await self._transcribe(samples, fast=True, on_stock=stock_heard)
+        if on_text is not None:
+            on_text(text)
         await self._controller(text, audio_ref=ref, conf=conf, n_best=n_best, text_stock=stock,
                                duration_s=len(samples) / sr, asr_latency=lat, late=late)
         log.info("controller: heard in %.2f s, understood %.2f s after the key was released: %r",
@@ -1930,15 +1966,38 @@ class World:
 
     # ------------------------------------------------------------------ world builder agent
 
-    async def agent_audio(self, samples: np.ndarray) -> str:
+    async def agent_audio(self, samples: np.ndarray, on_text: Callable[[str], None] | None = None) -> str:
         text, *_ = await self._transcribe(samples)
+        if on_text is not None:
+            on_text(text)  # the dictation final, before the agent answers
         return await self.agent_request(text)
 
-    async def agent_request(self, text: str) -> str:
+    async def agent_request(self, text: str, history: list[dict[str, Any]] | None = None,
+                            ui_state: dict[str, Any] | None = None) -> str:
         from world_agent import handle  # local import: keeps the LLM optional
-        reply, actions = await handle(self, text)
+        reply, actions = await handle(self, text, history, ui_state)
+        # agent_reply stays for the headset path; the bar reads the `answer` the loop emitted.
         self.emit(event("agent_reply", {"text": reply, "actions": actions}, t=self.sim.t))
+        await speak_reply(self, reply)  # respects self.speak_replies; never raises
         return reply
+
+    # --- squack agent (backend/agent/, docs/trd/08-squack-agent-prd.md) ---------------------------
+
+    def agent(self) -> Any:
+        """The SquackAgent, built once. Its LLM is OpenAI with a key, then Baseten, then the
+        keyword router (`tower.llm.get_agent_llm`)."""
+        if self._agent is None:
+            from agent.loop import SquackAgent
+            from tower.llm import get_agent_llm
+            self._agent = SquackAgent(self, get_agent_llm(), emit=self.emit_from_thread)
+        return self._agent
+
+    def _remember_loop(self) -> None:
+        try:
+            self._loop = asyncio.get_running_loop()
+            self._loop_thread = threading.current_thread()
+        except RuntimeError:
+            self._loop = self._loop_thread = None
 
     # tools the agent can call --------------------------------------------------------------
 

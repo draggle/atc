@@ -16,13 +16,15 @@ of separation, so the batch report and the live scoreboard count the same thing.
 from __future__ import annotations
 
 import random
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
 
-from planner.cards import cards_from_plan, followup_cards, item_to_sim_command, parse_change
 from planner import risk
-from planner.plan import plan as plan_fn, replan
+from planner.cards import cards_from_plan, followup_cards, item_to_sim_command, parse_change
+from planner.plan import plan as plan_fn
+from planner.plan import replan
 from schemas import InstructionCard, Plan, Scenario, Scoreboard, SimCommand
 from sim.engine import Simulator
 from sim.monitor import SeparationMonitor
@@ -198,11 +200,13 @@ def _simulate(scenario: Scenario, nominal: Scenario, plan0: Plan, arm: str, rng:
 
 def run(scenario: Scenario, n_runs: int = 20, seed: int = 0, arms: tuple[str, ...] = ARMS,
         error_rate: float = 0.02, density: float = 1.0, buffer_nm: float | None = None,
-        plan_budget_s: float = 0.3, replan_s: float = 60.0) -> dict:
+        plan_budget_s: float = 0.3, replan_s: float = 60.0,
+        on_run: Callable[[int, int], None] | None = None) -> dict:
     """Monte Carlo over `n_runs` disturbed copies of `scenario`. Returns a JSON-friendly dict.
 
     The planned arms replan every `replan_s` seconds of sim time from the live radar picture,
     so late flights and readback deviations get repaired the way the live app would.
+    `on_run(done, total)` is called after every run (all arms flown), for progress reporting.
     """
     sc = multiply(scenario, density) if density != 1.0 else scenario
     buf = sc.separation_buffer_nm if buffer_nm is None else buffer_nm
@@ -215,6 +219,8 @@ def run(scenario: Scenario, n_runs: int = 20, seed: int = 0, arms: tuple[str, ..
             rng = random.Random(base_seed)  # common random numbers across arms
             disturbed = _disturb(sc, rng, delays if arm != "fixed" else {})
             per_arm[arm].append(_simulate(disturbed, sc, plan, arm, random.Random(base_seed + 7), error_rate, buf, replan_s))
+        if on_run is not None:
+            on_run(k + 1, n_runs)
     fixed_miles = float(np.mean([s.miles for s in per_arm.get("fixed", [])])) if "fixed" in per_arm else None
     fixed_time = float(np.mean([s.time_s for s in per_arm.get("fixed", [])])) if "fixed" in per_arm else None
     out = {

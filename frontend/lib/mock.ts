@@ -13,6 +13,7 @@ import type {
   InstructionCard,
   Item,
   Lifecycle,
+  NextReadback,
   LonLatAlt,
   OpenClearance,
   PathSample,
@@ -31,6 +32,7 @@ import type {
   RiskPair,
   Zone,
 } from "./types";
+import type { CardDescriptor } from "./cards/types";
 
 export interface MockHandle {
   send(msg: ClientMessage): void;
@@ -106,6 +108,9 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
   // Same lifecycle as the backend: the mock loads "ready" and nothing moves until start.
   let lifecycle: Lifecycle = "ready";
   let speed = 1;
+  // Echoed back so the settings sheet reflects what was picked; the mock's pilots do not use them.
+  let speakReplies = true;
+  let nextReadback: NextReadback = "random";
   let scriptStarted = false;
   let towerEnabled = true;
   let autoSpeak = false;
@@ -195,6 +200,8 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
     watching: Array.from(watching),
     lifecycle,
     speed,
+    speak_replies: speakReplies,
+    next_readback: nextReadback,
     world_id: MOCK_WORLD_ID,
     scenarios: MOCK_SCENARIOS,
     live_regions: MOCK_LIVE_REGIONS,
@@ -339,6 +346,17 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
     card({ ...c, status, clearance_id: clearanceId ?? c.clearance_id });
   };
   const scoreboard = () => send({ type: "scoreboard", payload: score, t: simT });
+
+  // ---------------------------------------------------------------- the squack agent (TRD 08)
+  // squack speaks only when spoken to: every answer below is a reply to an `agent_text`.
+  let turnSeq = 0;
+  const step = (turn_id: string, n: number, tool: string, args: Record<string, unknown>, result_summary: string, elapsed_ms: number) =>
+    send({ type: "agent_step", payload: { turn_id, step: n, tool, args, result_summary, elapsed_ms }, t: simT });
+  const answer = (turn_id: string, text: string, cards: CardDescriptor[] = []) =>
+    send({ type: "answer", payload: { turn_id, text, cards, for: "message" }, t: simT });
+  const fl = (ft: number) => `FL${String(Math.round(ft / 100)).padStart(3, "0")}`;
+  const aircraftRows = (pred: (f: Flight) => boolean) =>
+    flights.filter((f) => !f.isIntruder && pred(f)).map((f) => [f.callsign, fl(f.alt), Math.round(f.hdg), Math.round(f.gs), f.route[f.route.length - 1] ?? ""] as (string | number)[]);
 
   // ---------------------------------------------------------------- predicted conflicts (TRD 07)
   /** One pair's risk report at probability p. The CPA is the midpoint of both flights 90 s ahead, so the wedges track them. */
@@ -495,6 +513,51 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
       };
       send({ type: "alert", payload: v, t: simT });
       setCard(`c${g}-3`, "error", `cl-c${g}-3`);
+      scoreboard();
+    });
+
+    // Omitted item: two-part clearance, pilot reads back only the turn. The alert must say what is
+    // missing, not lay a heading beside a speed as though they were a pair.
+    const turnAndSlow = [item("heading", 270, "deg", "turn_left"), item("speed", 250, "kt", "reduce")];
+    after(17200, () =>
+      card({
+        id: `c${g}-5`,
+        callsign: "FLE702",
+        items: turnAndSlow,
+        phrase: "Flyeast seven zero two, turn left heading two seven zero, reduce speed two five zero knots",
+        reason: "Spacing behind POE331 into SIMCO",
+        urgency_s: 60,
+        status: "pending",
+        clearance_id: null,
+        confidence: 0.84,
+        risk_after: 0.04,
+      }),
+    );
+    after(18400, () => {
+      setCard(`c${g}-5`, "spoken", `cl-c${g}-5`);
+      send({ type: "transcript", payload: transmission("controller", "flyeast seven zero two turn left heading two seven zero reduce speed two five zero knots", 0.95, undefined, "FLE702"), t: simT });
+      send({ type: "clearance_opened", payload: clearance(`cl-c${g}-5`, "FLE702", turnAndSlow, "open", `c${g}-5`), t: simT });
+    });
+    after(20200, () => {
+      send({ type: "transcript", payload: transmission("pilot", "left heading two seven zero flyeast seven zero two", 0.9, "left heading to seven zero fly east seven zero two", "FLE702"), t: simT });
+      send({ type: "clearance_updated", payload: clearance(`cl-c${g}-5`, "FLE702", turnAndSlow, "partial", `c${g}-5`), t: simT });
+      score = { ...score, errors_injected: score.errors_injected + 1, errors_caught: score.errors_caught + 1 };
+      const v: AlertPayload = {
+        clearance_id: `cl-c${g}-5`,
+        readback_transmission_id: `tx-${txCounter}`,
+        result: "partial",
+        error_type: "omitted_item",
+        expected: turnAndSlow,
+        heard: [item("heading", 270, "deg", "turn_left")],
+        confidence: 0.85,
+        reason: "Readback omitted 250 kt",
+        decided_by: "rules",
+        correction_phrase: "Flyeast seven zero two, read back speed two five zero knots",
+        audio_ref: `mock/tx-${txCounter}.wav`,
+        callsign: "FLE702",
+      };
+      send({ type: "alert", payload: v, t: simT });
+      setCard(`c${g}-5`, "error", `cl-c${g}-5`);
       scoreboard();
     });
 
@@ -657,8 +720,15 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
         send({ type: "state", payload: stateEvent(), t: simT });
         return;
       case "set_auto_voice":
-      case "set_next_readback":
       case "confirm_heard":
+        return;
+      case "set_next_readback":
+        nextReadback = msg.mode;
+        send({ type: "state", payload: stateEvent(), t: simT });
+        return;
+      case "set_speak_replies":
+        speakReplies = msg.enabled;
+        send({ type: "state", payload: stateEvent(), t: simT });
         return;
       case "set_voice":
         autoSpeak = !msg.enabled;
@@ -688,15 +758,81 @@ export function startMock(emit: Emit, scenarioName?: string, liveRegion?: string
       case "speak_card":
         if (cards.get(msg.id)?.status === "pending") happyPath(msg.id, 200);
         return;
-      case "agent_text":
-        after(900, () =>
-          send({
-            type: "agent_reply",
-            payload: { text: `Mock world builder: "${msg.text}". No backend connected, so nothing changed.`, actions: [] },
-            t: simT,
-          }),
-        );
+      case "agent_text": {
+        // Scripted answers, so the bar and the dock can be built without a backend. The real loop
+        // (backend/agent) answers with the same events.
+        turnSeq += 1;
+        const turn = `mock-t${turnSeq}`;
+        const q = msg.text.toLowerCase();
+        const csIn = flights.find((f) => q.includes(f.callsign.toLowerCase()))?.callsign;
+        if (/\b(who|which|list|flights?)\b/.test(q) && /\b(above|over|below|under)\b/.test(q)) {
+          const m = q.match(/(\d{3})/);
+          const level = m ? Number(m[1]) * 100 : 35000;
+          const above = !/\b(below|under)\b/.test(q);
+          const rows = aircraftRows((f) => (above ? f.alt >= level : f.alt < level));
+          after(500, () => step(turn, 1, "query.aircraft", { filter: { field: "alt_ft", op: above ? ">=" : "<", value: level } }, `${rows.length} of ${flights.filter((f) => !f.isIntruder).length} aircraft`, 12));
+          after(1100, () => answer(turn, `${rows.length} flight${rows.length === 1 ? " is" : "s are"} ${above ? "at or above" : "below"} ${Math.round(level / 1000)},000 feet.`, [
+            { kind: "table", title: `${above ? "At or above" : "Below"} ${fl(level)}`, columns: ["callsign", "level", "hdg", "kt", "to"], rows, focus_col: 0 },
+          ]));
+          return;
+        }
+        if (/\b(separation|closest|pairs?|over time|trend|history)\b/.test(q)) {
+          after(500, () => step(turn, 1, "query.pairs", { max_nm: 60 }, "9 pairs within 60 NM", 11));
+          after(1000, () => answer(turn, "The closest pair is Air Canada 123 and Delta 88, about 10 miles apart and 500 feet below.", [
+            { kind: "table", title: "Closest pairs", columns: ["pair", "miles apart", "feet apart"], rows: [["ACA123 / DAL88", 9.8, 500], ["WJA456 / DAL88", 14, 900], ["ACA123 / WJA456", 17, 1200]], focus_col: 0 },
+          ]));
+          return;
+        }
+        if (/\b(levels?|altitudes?|how high|distribution)\b/.test(q)) {
+          after(500, () => step(turn, 1, "query.aircraft", {}, "10 aircraft in 6 bands", 5));
+          after(1000, () => answer(turn, "Most of the traffic sits between 32,000 and 40,000 feet, with three flights sharing 32,000.", [
+            { kind: "table", title: "Aircraft by level", columns: ["level", "aircraft"], rows: [["FL200", 1], ["FL240", 2], ["FL280", 1], ["FL320", 3], ["FL360", 2], ["FL400", 1]] },
+          ]));
+          return;
+        }
+        if (/\bwhy\b/.test(q)) {
+          const cs = csIn ?? "ACA123";
+          after(600, () => step(turn, 1, "explain.card", { callsign: cs }, `descend FL240 · reason "Crossing traffic DAL88 at FL350 in 4 minutes" · confidence 0.91`, 9));
+          after(1500, () => step(turn, 2, "query.pairs", { max_nm: 10 }, `${cs}/DAL88 closest 4.1 NM before the card, 9.8 NM after`, 21));
+          after(2400, () => step(turn, 3, "explain.replan", { last: true }, "cost 61.2 vs runner-up 63.9 (climb FL370); +1.2 NM, +0.3 min", 7));
+          after(3100, () => answer(turn, `It was going to come within 4 miles of Delta 88, so I sent it down to 24,000 feet for about a mile extra.`, [
+            {
+              kind: "aircraft", title: "Why this card", callsign: cs, live: { aircraft: cs },
+              fields: [{ label: "reason", value: "Crossing traffic DAL88 at FL350 in 4 minutes" }, { label: "cause", value: "DAL88" }, { label: "cost · runner-up", value: "61.2 · 63.9" }, { label: "confidence", value: "0.91 (risk after 0.03, margin 1.0)" }, { label: "miles added", value: 1.2 }],
+              actions: [{ label: "Focus", command: "focus", args: { callsign: cs } }, { label: "Follow", command: "follow", args: { callsign: cs } }],
+            },
+          ]));
+          return;
+        }
+        if (/monte|carlo|simulat|\bsim\b|sweep|does it (still )?hold|how safe/.test(q)) {
+          after(600, () => answer(turn, "I cannot run a simulation; the Monte Carlo is the eval harness, not something I can start."));
+          return;
+        }
+        if (/\b(focus|follow|show me|where is)\b/.test(q) && csIn) {
+          const follow = /follow/.test(q);
+          after(300, () => send({ type: "ui_command", payload: { command: follow ? "follow" : "focus", args: { callsign: csIn } }, t: simT }));
+          after(500, () => answer(turn, `${follow ? "Following" : "Focused"} ${csIn}.`));
+          return;
+        }
+        if (/tilt|top down|top-down|flat|3d|exaggerat/.test(q)) {
+          const top = /top|flat/.test(q);
+          after(300, () => send({ type: "ui_command", payload: { command: "camera", args: top ? { top_down: true } : { pitch: 60, bearing: -20 } }, t: simT }));
+          after(500, () => answer(turn, top ? "Top down." : "Tilted."));
+          return;
+        }
+        if (/\b(only|show) (what )?changed\b|original|both lines/.test(q)) {
+          const view = /changed/.test(q) ? "changed" : /original/.test(q) ? "today" : "both";
+          after(300, () => send({ type: "ui_command", payload: { command: "line_view", args: { view } }, t: simT }));
+          after(500, () => answer(turn, `Lines: ${view}.`));
+          return;
+        }
+        if (/scoreboard|numbers so far|how are we doing/.test(q)) {
+          after(400, () => answer(turn, "Here are the numbers measured this session.", [{ kind: "text", title: "Scoreboard", text: "Only what was measured on this laptop.", live: { scoreboard: true } }]));
+          return;
+        }
+        after(900, () => answer(turn, `No backend is connected, so "${msg.text}" changed nothing; try "who is above 350", "why did you turn ACA123" or "run the monte carlo".`));
         return;
+      }
       case "radio_text":
         send({ type: "transcript", payload: transmission("controller", msg.text.toLowerCase(), 1.0), t: simT });
         return;

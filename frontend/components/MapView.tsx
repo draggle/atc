@@ -14,30 +14,17 @@ import { MapLibreOverlay, type MapLibreOverlayProps } from "@deck.gl/maplibre";
 import { IconLayer, LineLayer, PathLayer, PolygonLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
 import { PathStyleExtension } from "@deck.gl/extensions";
 import type { Layer, PickingInfo } from "@deck.gl/core";
-import type { StyleSpecification } from "maplibre-gl";
+import type { Map as MapLibreMap, StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
-import { alertFor, highlightMap, snapshotClock, useTowerDispatch, useTowerState, visibleRisk } from "@/lib/store";
+import { alertFor, highlightMap, useTowerDispatch, useTowerState, visibleRisk } from "@/lib/store";
 import { DEFAULT_FRAME, destinationPoint, latLonToNm, nmToLatLon, type FrameLike } from "@/lib/geo";
 import { latLonOf, shown, type Shown } from "@/lib/interp";
 import { describeIssue, flightLevel, type IssueFix } from "@/lib/issue";
-import type { Disruption, DisruptionKind, DisruptionKindInfo, PlannedPath, RiskPair, Zone } from "@/lib/types";
+import type { Disruption, PlannedPath, RiskPair, Zone } from "@/lib/types";
 import FlightStrip from "./FlightStrip";
 import { useClient } from "./TowerApp";
 
-type DropMode = "off" | DisruptionKind;
-
-/** Used until the backend sends its own menu in `state.disruption_kinds` (and by the mock). */
-const KINDS: DisruptionKindInfo[] = [
-  { kind: "fighter", label: "Fighter jet", blurb: "Fast, straight through, not talking to anyone.", shape: "point" },
-  { kind: "drone", label: "Drone", blurb: "Slow and small, loitering at cruise level.", shape: "point", menu: false },
-  { kind: "balloon", label: "Balloon", blurb: "Drifting with the wind.", shape: "point", menu: false },
-  { kind: "emergency", label: "Emergency aircraft", blurb: "One of our flights declares a mayday and descends.", shape: "point" },
-  { kind: "unknown", label: "Unknown target", blurb: "No height, no identity. Blocked at every level.", shape: "point", menu: false },
-  { kind: "storm", label: "Storm cell", blurb: "Drifts and swells.", shape: "circle" },
-  { kind: "closed", label: "Closed airspace", blurb: "A block of levels shut for a while.", shape: "circle", menu: false },
-  { kind: "rocket", label: "Rocket launch", blurb: "A tall column, gone in minutes.", shape: "circle" },
-];
 const ALL_LEVELS_FT = 90000;
 type RGBA = [number, number, number, number];
 
@@ -49,30 +36,44 @@ const FALLBACK_STYLE: StyleSpecification = {
   layers: [{ id: "ink", type: "background", paint: { "background-color": "#04060a" } }],
 };
 
+// The map keeps the night-operations-room colours: one cool signal colour for Tower's plan (cyan),
+// one warm one for anything that changed (amber), red only for something wrong, and each kind of
+// zone in its own hue. The panels around it went monochrome with the squack restyle; on the map
+// colour is information (whose line is whose, what kind of zone that is), so it stays.
+const RED = [255, 77, 94] as const;
+const AMBER = [255, 176, 46] as const;
+const GREEN = [52, 211, 153] as const;
+const MUTED = [160, 174, 190] as const;
 const C = {
   flown: [132, 146, 162, 150] as RGBA,
   flownDim: [132, 146, 162, 70] as RGBA,
   tower: [70, 200, 255, 215] as RGBA,
-  flash: [255, 176, 46, 255] as RGBA,
-  rerouted: [255, 176, 46, 150] as RGBA, // still going round something that is still there
+  flash: [...AMBER, 255] as RGBA,
+  rerouted: [...AMBER, 150] as RGBA, // still going round something that is still there
   aircraft: [224, 232, 242, 255] as RGBA,
-  intruder: [255, 77, 94, 255] as RGBA,
-  mayday: [255, 176, 46, 255] as RGBA,
-  alert: [255, 77, 94, 255] as RGBA,
-  resolving: [255, 176, 46, 255] as RGBA,
+  intruder: [...RED, 255] as RGBA,
+  mayday: [...AMBER, 255] as RGBA,
+  alert: [...RED, 255] as RGBA,
+  resolving: [...AMBER, 255] as RGBA,
   watching: [34, 211, 238, 255] as RGBA,
   stem: [224, 232, 242, 60] as RGBA,
   waypoint: [160, 174, 190, 190] as RGBA,
+  gate: [70, 200, 255, 220] as RGBA,
   sector: [70, 200, 255, 90] as RGBA,
   trail: [224, 232, 242, 90] as RGBA,
+  ghost: [226, 232, 240, 70] as RGBA,
   ink: [4, 6, 10, 255] as RGBA,
+  muted: [...MUTED, 255] as RGBA,
+  zoneFill: [168, 85, 247, 46] as RGBA,
+  zoneLine: [190, 130, 255, 150] as RGBA,
+  onAir: GREEN,
   // The issue drawn beside a selected aircraft with a standing alert: cyan is what was cleared,
   // red is what was read back or flown instead.
   cleared: [70, 200, 255, 255] as RGBA,
-  wrong: [255, 77, 94, 255] as RGBA,
-  warn: [255, 176, 46, 255] as RGBA,
+  wrong: [...RED, 255] as RGBA,
+  warn: [...AMBER, 255] as RGBA,
   pill: [6, 9, 14, 235] as RGBA,
-  risk: [255, 77, 94] as [number, number, number],
+  risk: [RED[0], RED[1], RED[2]] as [number, number, number],
 };
 
 const FT_TO_M = 0.3048;
@@ -170,6 +171,7 @@ const iconOf = (p: { is_intruder: boolean; threat?: string | null }): keyof type
 const tintOf = (p: { is_intruder: boolean; threat?: string | null }): RGBA =>
   p.threat === "emergency" ? C.mayday : C.intruder;
 
+// Each kind of zone in its own colour: a storm is purple, closed airspace red, a launch amber.
 const ZONE_LOOK: Record<string, { fill: RGBA; line: RGBA; top: number }> = {
   storm: { fill: [168, 85, 247, 46], line: [190, 130, 255, 150], top: 45000 },
   closed: { fill: [255, 77, 94, 40], line: [255, 77, 94, 160], top: 45000 },
@@ -195,7 +197,8 @@ function DeckOverlay(props: MapLibreOverlayProps) {
  * The basemap is context, not content. Dim its place names and roads so the traffic, which is the
  * only thing that matters, is the brightest thing on screen.
  */
-function quietBasemap(map: { getStyle(): { layers?: { id: string; type: string }[] } | undefined; setPaintProperty(id: string, prop: string, value: unknown): void }) {
+const DIM_LAYER = "squack-dim";
+function quietBasemap(map: MapLibreMap) {
   try {
     for (const layer of map.getStyle()?.layers ?? []) {
       if (layer.type === "symbol") {
@@ -207,6 +210,9 @@ function quietBasemap(map: { getStyle(): { layers?: { id: string; type: string }
         map.setPaintProperty(layer.id, "line-opacity", 0.25);
       }
     }
+    // No dimming sheet over the basemap: the land and the lakes read as they did before the
+    // restyle, and the coloured traffic is still the brightest thing on the screen.
+    if (map.getLayer(DIM_LAYER)) map.removeLayer(DIM_LAYER);
   } catch {
     /* a style without these layers is fine */
   }
@@ -235,17 +241,21 @@ export default function MapView() {
   const state = useTowerState();
   const dispatch = useTowerDispatch();
   const { send } = useClient();
-  const { sim, tracks, plan, planView, flashUntil, disruptions, watching, selected, follow, ghosts, simClock, onAir, acks } = state;
+  const { sim, tracks, plan, planView, view, flashUntil, disruptions, watching, selected, follow, ghosts, simClock, onAir, acks } = state;
   const talking = onAir?.callsign ?? null;
 
   const mapRef = useRef<MapRef | null>(null);
   const [mapStyle, setMapStyle] = useState<string | StyleSpecification>(BASEMAP);
   const [loaded, setLoaded] = useState(false);
   const [now, setNow] = useState(() => performance.now());
-  const [exaggeration, setExaggeration] = useState(6);
-  // What two fingers on the trackpad do. "orbit": swing round the scene and tilt it, like any 3D
-  // viewer (pinch still zooms). "zoom": the old behaviour, which is what a mouse wheel wants.
-  const [twoFingers, setTwoFingers] = useState<"orbit" | "zoom">("orbit");
+  // Altitude exaggeration and tilt / top down are set from the settings sheet (store.view).
+  const exaggeration = view.exaggeration;
+  const topDown = view.topDown;
+  const topDownRef = useRef(topDown);
+  topDownRef.current = topDown;
+  // What two fingers on the trackpad do (settings sheet, store.view). "orbit": swing round the scene
+  // and tilt it, like any 3D viewer (pinch still zooms). "zoom": the old behaviour, for a mouse wheel.
+  const twoFingers = view.twoFingers;
   const wrapRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const el = wrapRef.current;
@@ -264,9 +274,11 @@ export default function MapView() {
     el.addEventListener("wheel", onWheel, { capture: true, passive: false });
     return () => el.removeEventListener("wheel", onWheel, { capture: true });
   }, [twoFingers, loaded]);
-  const [dropMode, setDropMode] = useState<DropMode>("off");
-  const [menuOpen, setMenuOpen] = useState(false);
   const [fontReady, setFontReady] = useState(false);
+  // The Disrupt control lives in the top bar (components/DisruptMenu.tsx); the map only owns the
+  // placing click, so the armed kind is in the store where both can see it.
+  const dropMode = state.dropMode;
+  const disarm = useCallback(() => dispatch({ type: "set_drop_mode", kind: null }), [dispatch]);
   const trails = useRef(new Map<string, { at: number; pts: [number, number, number][] }>());
 
   const frame: FrameLike = sim?.geo ?? DEFAULT_FRAME;
@@ -317,8 +329,27 @@ export default function MapView() {
   // A new world: drop the old trails and frame the new sector.
   useEffect(() => {
     trails.current.clear();
-    if (loaded) fit();
+    if (loaded) fit(topDownRef.current ? 0 : 52, topDownRef.current ? 0 : -14);
   }, [sim?.world_id, loaded, fit]);
+
+  // Tilt or top down, chosen in the settings sheet: reframe the sector that way.
+  useEffect(() => {
+    if (loaded) fit(topDown ? 0 : 52, topDown ? 0 : -14);
+  }, [topDown]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // squack asked for a camera move (`ui_command camera`): apply it once, then tell the store.
+  const cameraReq = state.cameraRequest;
+  useEffect(() => {
+    if (!cameraReq || !loaded) return;
+    const map = mapRef.current;
+    if (cameraReq.exaggeration !== undefined) dispatch({ type: "set_view", view: { exaggeration: cameraReq.exaggeration } });
+    if (cameraReq.top_down) fit(0, 0);
+    else if (map && (cameraReq.pitch !== undefined || cameraReq.bearing !== undefined)) {
+      flyingUntil.current = performance.now() + 900;
+      map.easeTo({ pitch: cameraReq.pitch ?? map.getPitch(), bearing: cameraReq.bearing ?? map.getBearing(), duration: 800 });
+    }
+    dispatch({ type: "camera_consumed", seq: cameraReq.seq });
+  }, [cameraReq, loaded, fit, dispatch]);
 
   // No globe projection. With the deck.gl overlay it drops every aircraft icon, label and ring and
   // leaves only the lines, and at the scale of one sector the Earth looks flat anyway.
@@ -423,7 +454,7 @@ export default function MapView() {
     const busy = (plan?.paths.length ?? 0) > 40 && (lifecycle === "running" || lifecycle === "paused");
     const airborne = new Set(airborneKey ? airborneKey.split(",") : []);
     const show = (cs: string) => !busy || airborne.has(cs);
-    // "changed": only the flights Tower actually moved, so a reroute is not lost in eighty lines.
+    // "changed": only the flights squack actually moved, so a reroute is not lost in eighty lines.
     const moved = new Set((plan?.paths ?? []).filter((p) => p.changes.some((c) => !c.startsWith("direct"))).map((p) => p.callsign));
     const want = (cs: string) => show(cs) && (planView !== "changed" || moved.has(cs) || cs === selected);
     const flown = planView === "tower" ? [] : (plan?.baseline_paths ?? []).filter((p) => want(p.callsign)).map((p) => ({ callsign: p.callsign, path: pathCoords(p, frame, zOf) }));
@@ -491,6 +522,14 @@ export default function MapView() {
   // Busy sky: one line per aircraft, full data block only for the ones that matter right now.
   const dense = planes.length > 22;
   const important = (p: Shown) => p.callsign === selected || !!highlights[p.callsign] || watching.includes(p.callsign) || p.is_intruder;
+  const blockLines = (p: Shown): string[] =>
+    p.threat === "unknown"
+      ? [p.callsign, `no height ${Math.round(p.gs_kt)}`]
+      : p.threat === "emergency"
+        ? [`${p.callsign} MAYDAY`, `FL${String(Math.round(p.alt_ft / 100)).padStart(3, "0")} ↓ ${Math.round(p.gs_kt)}`]
+        : dense && !important(p)
+          ? [`${p.callsign} ${String(Math.round(p.alt_ft / 100)).padStart(3, "0")}`]
+          : [p.callsign, `FL${String(Math.round(p.alt_ft / 100)).padStart(3, "0")} ${Math.round(p.gs_kt)}`, ...(!p.is_intruder && clearedLine(p) ? [clearedLine(p)] : [])];
 
   // ---------------------------------------------------------------- the issue, as drawable pieces
   // At most a dozen objects, rebuilt from the interpolated aircraft each frame so they move with it.
@@ -521,7 +560,7 @@ export default function MapView() {
       // On the aircraft's own stem: where it was cleared to, where it said it was going, and the gap.
       const level = (ft: number, color: RGBA, word: string, into: IssueSeg[]) => {
         const top: [number, number, number] = [p.lon, p.lat, zOf(ft)];
-        into.push({ path: [at, top], color, width: 2.5 });
+        into.push({ path: [at, top], color, width: 2 });
         issueDraw.marks.push({ position: top, color, radius: 5 });
         issueDraw.tags.push({ position: top, text: `${word} ${flightLevel(ft)}`, color, offset: [-12, 0], anchor: "end" });
       };
@@ -533,7 +572,7 @@ export default function MapView() {
       const leg = (f: IssueFix, color: RGBA, word: string, into: IssueSeg[]) => {
         const end: [number, number, number] = [f.lon, f.lat, z];
         ends.push([f.lon, f.lat]);
-        into.push({ path: [at, end], color, width: 2.5 });
+        into.push({ path: [at, end], color, width: 2 });
         into.push({ path: [end, [f.lon, f.lat, 0]], color: faint(color), width: 1.2 }); // ties the line's end to the fix on the ground
         issueDraw.marks.push({ position: end, color, radius: 5 });
         issueDraw.tags.push(outward(f.lon, f.lat, `${word} ${f.name}`, color, end));
@@ -547,7 +586,7 @@ export default function MapView() {
         const [lat, lon] = destinationPoint(p.lat, p.lon, hdg, HDG_VECTOR_NM);
         const tip: [number, number, number] = [lon, lat, z];
         ends.push([lon, lat]);
-        into.push({ path: [at, tip], color, width: 2.5 });
+        into.push({ path: [at, tip], color, width: 2 });
         issueDraw.marks.push({ position: tip, color, radius: 3.5 });
         issueDraw.tags.push(outward(lon, lat, `${word} ${String(Math.round(hdg) % 360).padStart(3, "0")}`, color, tip));
       };
@@ -588,7 +627,7 @@ export default function MapView() {
       data: sectorRing,
       getPath: (d: { path: [number, number, number][] }) => d.path,
       getColor: C.sector,
-      getWidth: 1.5,
+      getWidth: 1,
       widthUnits: "pixels",
       extensions: [new PathStyleExtension({ dash: true })],
       getDashArray: [6, 5],
@@ -629,7 +668,7 @@ export default function MapView() {
       data: pathData.flown,
       getPath: (d: { path: [number, number, number][] }) => d.path,
       getColor: planView === "today" ? C.flown : C.flownDim,
-      getWidth: planView === "today" ? 2 : 1.2,
+      getWidth: planView === "today" ? 1.5 : 1,
       widthUnits: "pixels",
       extensions: [new PathStyleExtension({ dash: true })],
       getDashArray: [5, 4],
@@ -641,8 +680,8 @@ export default function MapView() {
       id: "tower-plan",
       data: pathData.tower,
       getPath: (d: { path: [number, number, number][] }) => d.path,
-      getColor: (d: { callsign: string }) => ((flashUntil[d.callsign] ?? 0) > wallNow ? C.flash : d.callsign === selected ? [255, 255, 255, 235] : avoiding.has(d.callsign) ? C.rerouted : C.tower),
-      getWidth: (d: { callsign: string }) => ((flashUntil[d.callsign] ?? 0) > wallNow ? 4 : d.callsign === selected ? 3 : 1.8),
+      getColor: (d: { callsign: string }) => ((flashUntil[d.callsign] ?? 0) > wallNow ? C.flash : d.callsign === selected ? ([255, 255, 255, 235] as RGBA) : avoiding.has(d.callsign) ? C.rerouted : C.tower),
+      getWidth: (d: { callsign: string }) => ((flashUntil[d.callsign] ?? 0) > wallNow ? 3 : d.callsign === selected ? 2.5 : 1.5),
       widthUnits: "pixels",
       capRounded: true,
       jointRounded: true,
@@ -657,7 +696,7 @@ export default function MapView() {
       filled: true,
       stroked: true,
       extruded: false,
-      getFillColor: (d) => [...C.risk, Math.round(255 * (0.1 + 0.35 * d.pair.p_max) * d.fade)] as RGBA,
+      getFillColor: (d) => [...C.risk, Math.round(255 * (0.08 + 0.3 * d.pair.p_max) * d.fade)] as RGBA,
       getLineColor: (d) => [...C.risk, Math.round(255 * Math.min(1, 0.35 + 0.6 * d.pair.p_max) * d.fade)] as RGBA,
       getLineWidth: 1,
       lineWidthUnits: "pixels",
@@ -689,7 +728,7 @@ export default function MapView() {
       data: ghostList,
       getPath: (g: { path: [number, number, number, number][] }) => g.path.map(([lon, lat, alt]) => [lon, lat, zOf(alt)] as [number, number, number]),
       getColor: (g: { born: number; until: number }) => [226, 232, 240, Math.round(150 * Math.max(0, (g.until - wall) / (g.until - g.born)))] as RGBA,
-      getWidth: 1.6,
+      getWidth: 1.5,
       widthUnits: "pixels",
       extensions: [new PathStyleExtension({ dash: true })],
       getDashArray: [2, 3],
@@ -715,8 +754,8 @@ export default function MapView() {
       id: "intruder-paths",
       data: Object.values(disruptions).filter((d) => (d.predicted_lonlat?.length ?? 0) > 1),
       getPath: (d: Disruption) => (d.predicted_lonlat ?? []).map(([lon, lat]) => [lon, lat, zOf(d.alt_ft ?? 30000)] as [number, number, number]),
-      getColor: (d: Disruption) => (d.kind === "emergency" ? [255, 176, 46, 170] : [255, 77, 94, 170]),
-      getWidth: 1.6,
+      getColor: (d: Disruption) => (d.kind === "emergency" ? [...AMBER, 180] : [...RED, 180]),
+      getWidth: 1.5,
       widthUnits: "pixels",
       extensions: [new PathStyleExtension({ dash: true })],
       getDashArray: [3, 3],
@@ -729,7 +768,7 @@ export default function MapView() {
       getPosition: (w: { x_nm: number; y_nm: number; lat?: number; lon?: number }) => { const [lat, lon] = latLonOf(w, frame); return [lon, lat, 0]; },
       getRadius: (w: { kind?: string }) => (w.kind === "gate" ? 3.6 : 2.4),
       radiusUnits: "pixels",
-      getFillColor: (w: { kind?: string }) => (w.kind === "gate" ? ([70, 200, 255, 220] as RGBA) : C.waypoint),
+      getFillColor: (w: { kind?: string }) => (w.kind === "gate" ? C.gate : C.waypoint),
       pickable: true,
     }),
     new TextLayer({
@@ -738,7 +777,7 @@ export default function MapView() {
       getPosition: (w: { x_nm: number; y_nm: number; lat?: number; lon?: number }) => { const [lat, lon] = latLonOf(w, frame); return [lon, lat, 0]; },
       getText: (w: { name: string }) => w.name,
       getSize: 10,
-      getColor: [150, 164, 180, 210],
+      getColor: C.muted,
       getPixelOffset: [0, -11],
       fontFamily: fontReady ? '"B612 Mono", ui-monospace, monospace' : "ui-monospace, monospace",
       fontSettings: { sdf: true },
@@ -752,7 +791,7 @@ export default function MapView() {
       data: Array.from(trails.current.entries()).filter(([, t]) => t.pts.length > 1).map(([callsign, t]) => ({ callsign, path: t.pts.map(([lon, lat, ft]) => [lon, lat, zOf(ft)] as [number, number, number]) })),
       getPath: (d: { path: [number, number, number][] }) => d.path,
       getColor: C.trail,
-      getWidth: 2.5,
+      getWidth: 2,
       widthUnits: "pixels",
       capRounded: true,
     }),
@@ -762,7 +801,7 @@ export default function MapView() {
       data: planes,
       getSourcePosition: (p: Shown) => [p.lon, p.lat, 0],
       getTargetPosition: (p: Shown) => [p.lon, p.lat, zOf(p.alt_ft)],
-      getColor: (p: Shown) => (p.callsign === wrongLevelCs ? ([255, 77, 94, 230] as RGBA) : p.is_intruder ? (p.threat === "emergency" ? [255, 176, 46, 110] : [255, 77, 94, 90]) : C.stem),
+      getColor: (p: Shown) => (p.callsign === wrongLevelCs ? ([...RED, 230] as RGBA) : p.is_intruder ? (p.threat === "emergency" ? [...AMBER, 110] : [...RED, 90]) : C.stem),
       getWidth: (p: Shown) => (p.callsign === wrongLevelCs ? 2 : 1),
       widthUnits: "pixels",
       updateTriggers: { getTargetPosition: exaggeration, getColor: wrongLevelCs, getWidth: wrongLevelCs },
@@ -773,7 +812,7 @@ export default function MapView() {
       getPosition: (p: Shown) => [p.lon, p.lat, 0],
       getRadius: 2,
       radiusUnits: "pixels",
-      getFillColor: (p: Shown) => (p.is_intruder ? [255, 77, 94, 140] : [224, 232, 242, 110]),
+      getFillColor: (p: Shown) => (p.is_intruder ? [...RED, 140] : [224, 232, 242, 110]),
     }),
 
     // The issue's geometry sits under the aircraft glyphs and over everything else. Empty unless
@@ -818,7 +857,7 @@ export default function MapView() {
     }),
 
     // Where an aircraft on an assigned heading is going to point: drawn the instant the heading is
-    // accepted, amber while it is still turning onto it, cyan once it is there. A turn at 1.5
+    // accepted, amber while it is still turning onto it, white once it is there. A turn at 1.5
     // degrees a second takes half a minute to see; this takes no time at all.
     new LineLayer({
       id: "cleared-vectors",
@@ -829,7 +868,7 @@ export default function MapView() {
         return [lon, lat, zOf(p.alt_ft)];
       },
       getColor: (p: Shown) => (angleBetween(p.hdg_deg, p.target_hdg_deg ?? p.hdg_deg) > 3 ? C.warn : ([70, 200, 255, 140] as RGBA)),
-      getWidth: (p: Shown) => (angleBetween(p.hdg_deg, p.target_hdg_deg ?? p.hdg_deg) > 3 ? 2.5 : 1.5),
+      getWidth: (p: Shown) => (angleBetween(p.hdg_deg, p.target_hdg_deg ?? p.hdg_deg) > 3 ? 2 : 1.5),
       widthUnits: "pixels",
       parameters: ALWAYS_ON_TOP,
       updateTriggers: { getSourcePosition: [now, exaggeration], getTargetPosition: [now, exaggeration], getColor: now, getWidth: now },
@@ -844,13 +883,13 @@ export default function MapView() {
       billboard: true,
       radiusUnits: "pixels",
       lineWidthUnits: "pixels",
-      getLineWidth: 2,
+      getLineWidth: 1.5,
       getRadius: (p: Shown) => (highlights[p.callsign] === "alert" ? 14 + pulse * 16 : highlights[p.callsign] === "resolving" ? 15 + pulse * 6 : p.callsign === talking ? 13 + pulse * 10 : 16),
       getLineColor: (p: Shown) => {
         const h = highlights[p.callsign];
-        if (h === "alert") return [255, 77, 94, Math.round(255 * (1 - pulse * 0.8))] as RGBA;
+        if (h === "alert") return [...RED, Math.round(255 * (1 - pulse * 0.8))] as RGBA;
         if (h === "resolving") return C.resolving;
-        if (p.callsign === talking) return [52, 211, 153, Math.round(255 * (1 - pulse * 0.6))] as RGBA; // on the air
+        if (p.callsign === talking) return [...C.onAir, Math.round(255 * (1 - pulse * 0.6))] as RGBA; // on the air
         if (watching.includes(p.callsign)) return C.watching;
         return [255, 255, 255, 200] as RGBA;
       },
@@ -874,24 +913,18 @@ export default function MapView() {
       parameters: ALWAYS_ON_TOP,
       updateTriggers: { getPosition: exaggeration, getSize: [selected, dense], getColor: [highlights] },
     }),
+    // The data block: the first line (who) in white, the lines under it (where, how fast, what it was
+    // told) muted. Two text layers, since a text object has one colour.
     new TextLayer({
       id: "data-blocks",
       data: planes,
       getPosition: (p: Shown) => [p.lon, p.lat, zOf(p.alt_ft)],
-      getText: (p: Shown) =>
-        p.threat === "unknown"
-          ? `${p.callsign}\nno height ${Math.round(p.gs_kt)}`
-          : p.threat === "emergency"
-            ? `${p.callsign} MAYDAY\nFL${String(Math.round(p.alt_ft / 100)).padStart(3, "0")} ↓ ${Math.round(p.gs_kt)}`
-            : dense && !important(p)
-              ? `${p.callsign} ${String(Math.round(p.alt_ft / 100)).padStart(3, "0")}`
-              : `${p.callsign}\nFL${String(Math.round(p.alt_ft / 100)).padStart(3, "0")} ${Math.round(p.gs_kt)}${!p.is_intruder && clearedLine(p) ? `\n${clearedLine(p)}` : ""}`,
+      getText: (p: Shown) => blockLines(p)[0],
       getSize: (p: Shown) => (dense && !important(p) ? 9.5 : 11),
       getColor: (p: Shown) => (p.is_intruder ? tintOf(p) : dense && !important(p) ? ([200, 210, 222, 190] as RGBA) : ([224, 232, 242, 245] as RGBA)),
-      getPixelOffset: [20, -4],
+      getPixelOffset: [20, -10],
       getTextAnchor: "start",
-      getAlignmentBaseline: "center",
-      lineHeight: 1.15,
+      getAlignmentBaseline: "top",
       fontFamily: fontReady ? '"B612 Mono", ui-monospace, monospace' : "ui-monospace, monospace",
       fontSettings: { sdf: true },
       outlineWidth: 4,
@@ -899,8 +932,26 @@ export default function MapView() {
       parameters: ALWAYS_ON_TOP,
       updateTriggers: { getPosition: exaggeration, getText: [dense, selected, highlights, watching, now], getSize: [dense, selected, highlights], getColor: [dense, selected, highlights] },
     }),
+    new TextLayer({
+      id: "data-blocks-2",
+      data: planes.filter((p) => blockLines(p).length > 1),
+      getPosition: (p: Shown) => [p.lon, p.lat, zOf(p.alt_ft)],
+      getText: (p: Shown) => blockLines(p).slice(1).join("\n"),
+      getSize: 11,
+      getColor: (p: Shown) => (p.is_intruder ? ([...tintOf(p).slice(0, 3), 200] as RGBA) : C.muted),
+      getPixelOffset: [20, 3],
+      getTextAnchor: "start",
+      getAlignmentBaseline: "top",
+      lineHeight: 1.15,
+      fontFamily: fontReady ? '"B612 Mono", ui-monospace, monospace' : "ui-monospace, monospace",
+      fontSettings: { sdf: true },
+      outlineWidth: 4,
+      outlineColor: C.ink,
+      parameters: ALWAYS_ON_TOP,
+      updateTriggers: { getPosition: exaggeration, getText: [dense, selected, highlights, watching, now], getColor: [dense, selected, highlights] },
+    }),
 
-    // What Tower just understood, on the aircraft itself, the moment the key is released. Green
+    // What squack just understood, on the aircraft itself, the moment the key is released. Green
     // pill, a few seconds, then it fades: the first answer to "did it hear me?".
     new TextLayer({
       id: "acks",
@@ -908,9 +959,9 @@ export default function MapView() {
       getPosition: (p: Shown) => [p.lon, p.lat, zOf(p.alt_ft)],
       getText: (p: Shown) => `✓ ${acks[p.callsign].text}`,
       getSize: 13,
-      getColor: (p: Shown) => [6, 9, 14, Math.round(255 * Math.min(1, (ACK_SHOWS_MS - (now - acks[p.callsign].at)) / ACK_FADES_MS))] as RGBA,
+      getColor: (p: Shown) => [10, 10, 11, Math.round(255 * Math.min(1, (ACK_SHOWS_MS - (now - acks[p.callsign].at)) / ACK_FADES_MS))] as RGBA,
       background: true,
-      getBackgroundColor: (p: Shown) => [52, 211, 153, Math.round(240 * Math.min(1, (ACK_SHOWS_MS - (now - acks[p.callsign].at)) / ACK_FADES_MS))] as RGBA,
+      getBackgroundColor: (p: Shown) => [...C.onAir, Math.round(240 * Math.min(1, (ACK_SHOWS_MS - (now - acks[p.callsign].at)) / ACK_FADES_MS))] as RGBA,
       backgroundPadding: [7, 4],
       getPixelOffset: [0, -30],
       getTextAnchor: "middle",
@@ -969,7 +1020,7 @@ export default function MapView() {
         dispatch({ type: "select", callsign: (info.object as Shown).callsign });
         return true;
       }
-      if (dropMode !== "off" && info.coordinate) {
+      if (dropMode && info.coordinate) {
         // Aircraft and their lines are drawn at height, exaggerated: FL350 at 6x is 64 km up, and
         // in the tilted view that is about 40 NM up the screen from the ground beneath it. A click
         // read as a point on the ground therefore put the zone 40 NM from the line that was
@@ -983,14 +1034,13 @@ export default function MapView() {
         }
         const [x, y] = latLonToNm(frame, lat, lon);
         send({ type: "add_disruption", kind: dropMode, x_nm: Math.round(x * 10) / 10, y_nm: Math.round(y * 10) / 10 });
-        setDropMode("off");
-        setMenuOpen(false);
+        disarm();
         return true;
       }
       if (selected) dispatch({ type: "select", callsign: null });
       return false;
     },
-    [dispatch, dropMode, frame, send, selected, zOf],
+    [disarm, dispatch, dropMode, frame, send, selected, zOf],
   );
 
   const tooltip = useCallback((info: PickingInfo) => {
@@ -1005,21 +1055,12 @@ export default function MapView() {
           ? riskTip((info.object as RiskCone).pair)
           : (o.name ?? "");
     return text
-      ? { text, style: { background: "rgba(8,11,17,0.92)", color: "#dbe3ec", border: "1px solid rgba(70,200,255,0.25)", borderRadius: "6px", fontFamily: "var(--font-mono)", fontSize: "11px", padding: "6px 8px", whiteSpace: "pre" } }
+      ? { text, style: { background: "var(--panel)", color: "var(--fg)", border: "1px solid var(--line)", borderRadius: "var(--radius)", fontFamily: "var(--font-mono)", fontSize: "11px", padding: "6px 8px", whiteSpace: "pre" } }
       : null;
   }, []);
 
-  const kinds = (sim?.disruption_kinds?.length ? sim.disruption_kinds : KINDS).filter((k) => k.menu !== false);
-  const conesNow = state.scoreboard?.cones_now ?? risks.length;
-  const active = Object.values(disruptions).filter((d) => d.active !== false);
-
-  const chip = (active: boolean, tone: "accent" | "bad" | "violet" = "accent") => {
-    const on = { accent: "bg-accent/20 text-accent border-accent/50", bad: "bg-bad/20 text-bad border-bad/50", violet: "bg-purple-500/20 text-purple-300 border-purple-400/50" }[tone];
-    return `px-2.5 py-1 rounded-md border text-xs font-medium transition-colors ${active ? on : "bg-panel-2/70 text-muted border-line hover:text-fg"}`;
-  };
-
   return (
-    <div ref={wrapRef} className={`absolute inset-0 ${dropMode !== "off" ? "cursor-crosshair" : ""}`}>
+    <div ref={wrapRef} className={`absolute inset-0 ${dropMode ? "cursor-crosshair" : ""}`}>
       <MapGL
         ref={mapRef}
         mapStyle={mapStyle}
@@ -1042,138 +1083,15 @@ export default function MapView() {
         }}
         style={{ width: "100%", height: "100%" }}
       >
-        <DeckOverlay layers={layers} onClick={onDeckClick} getTooltip={tooltip} getCursor={({ isHovering }) => (dropMode !== "off" ? "crosshair" : isHovering ? "pointer" : "grab")} />
+        <DeckOverlay layers={layers} onClick={onDeckClick} getTooltip={tooltip} getCursor={({ isHovering }) => (dropMode ? "crosshair" : isHovering ? "pointer" : "grab")} />
       </MapGL>
 
-      {/* Disrupt: one control. Random puts something where it will matter; Choose lets you place a kind. */}
       {/* z-10: the deck.gl overlay canvas paints above unstacked siblings, so traffic drew over these panels */}
-      <div className="pointer-events-none absolute z-10 left-2 top-[68px] bottom-[330px] w-[336px] flex flex-col gap-2 overflow-y-auto scroll-thin">
-      <div className="glass pointer-events-auto px-2.5 py-2">
-        <div className="flex items-center gap-2">
-          <span className="eyebrow">Disrupt</span>
-          <button
-            className="px-3 py-1 rounded-md border text-xs font-semibold transition-colors bg-warn/15 text-warn border-warn/50 hover:bg-warn/25 disabled:opacity-40"
-            disabled={!sim?.scenario}
-            title="A random kind, dropped on the path of a flight a few minutes ahead. Seeded: the same presses give the same result."
-            onClick={() => { setDropMode("off"); setMenuOpen(false); send({ type: "add_disruption", kind: "random" }); }}
-          >
-            Random
-          </button>
-          <button className={chip(menuOpen || dropMode !== "off")} onClick={() => { setMenuOpen((o) => !o); setDropMode("off"); }}>
-            Choose
-          </button>
-          <span className="ml-auto text-[11px] text-muted">{planes.filter((p) => !p.is_intruder).length} aircraft</span>
-        </div>
-
-        {menuOpen && (
-          <div className="mt-2 grid grid-cols-2 gap-1.5">
-            {kinds.map((k) => (
-              <button
-                key={k.kind}
-                title={k.blurb}
-                className={`${chip(dropMode === k.kind, k.shape === "circle" ? "violet" : "bad")} text-left`}
-                onClick={() => setDropMode(dropMode === k.kind ? "off" : k.kind)}
-              >
-                {k.label}
-              </button>
-            ))}
-          </div>
-        )}
-        {dropMode !== "off" && (
-          <p className="mt-2 text-[11px] text-warn">
-            {dropMode === "emergency" ? "Click near the flight that declares the emergency." : "Click the map to place it."}
-            <span className="text-muted"> {kinds.find((k) => k.kind === dropMode)?.blurb}</span>
-          </p>
-        )}
-
-        {active.length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1.5 border-t border-line pt-2">
-            {active.map((d) => (
-              <span key={d.id} className="inline-flex items-center gap-1.5 rounded-md border border-line bg-panel-2/70 px-2 py-0.5 text-[11px] font-mono">
-                <button className={d.kind === "emergency" ? "text-warn" : d.shape === "circle" ? "text-purple-300" : "text-bad"} title={d.label} onClick={() => d.shape === "point" && dispatch({ type: "select", callsign: d.id })}>
-                  {d.id}
-                </button>
-                <span className="text-muted">{minutesLeft(d.expires_t, sim?.t ?? 0).replace(" · ", "") || d.label}</span>
-                {d.kind !== "emergency" && (
-                  <button className="text-muted hover:text-fg" title="Remove it" onClick={() => send({ type: "remove_disruption", id: d.id })}>✕</button>
-                )}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-      {/* Everything Tower knows about the selected aircraft sits under the control, never over it. */}
+      <div className="pointer-events-none absolute z-10 left-2 top-[52px] bottom-[256px] w-[336px] flex flex-col gap-2 overflow-y-auto scroll-thin">
+      {/* Everything squack knows about the selected aircraft sits under the control, never over it. */}
       <FlightStrip />
       </div>
 
-      {/* view */}
-      <div className="glass absolute z-10 left-2 bottom-[196px] flex flex-col gap-2 px-2.5 py-2 w-[320px]">
-        <div className="flex items-center gap-2">
-          <span className="eyebrow">View</span>
-          <button className={chip(false)} onClick={() => fit(52, -14)}>Tilt</button>
-          <button className={chip(false)} onClick={() => fit(0, 0)}>Top down</button>
-        </div>
-        {/* Which lines to draw. Lives here, with the other view controls, so the top bar stays on one row. */}
-        <div className="flex items-center gap-2">
-          <span className="eyebrow">Lines</span>
-          {(["today", "tower", "both", "changed"] as const).map((v) => (
-            <button
-              key={v}
-              className={chip(planView === v)}
-              title={{ today: "Only the routes as filed, flown or projected", tower: "Only Tower's paths", both: "Original routes underneath, Tower's paths on top", changed: "Only the flights Tower has moved, with what they were going to fly" }[v]}
-              onClick={() => dispatch({ type: "set_plan_view", view: v })}
-            >
-              {{ today: "Original", tower: "Tower", both: "Both", changed: "Changed" }[v]}
-            </button>
-          ))}
-        </div>
-        <label className="flex items-center gap-2 text-[11px] text-muted">
-          <span className="eyebrow w-[70px]">Altitude</span>
-          <input type="range" min={1} max={14} step={1} value={exaggeration} onChange={(e) => setExaggeration(Number(e.target.value))} className="flex-1" />
-          <span className="font-mono w-7 text-right text-fg/80">{exaggeration}x</span>
-        </label>
-        <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-mono text-muted pt-0.5">
-          <span><span style={{ color: "rgb(132,146,162)" }}>╌╌</span> {sim?.source === "real" ? (sim.meta?.live ? "projected" : "flown") : "standard"}</span>
-          <span><span style={{ color: "rgb(70,200,255)" }}>──</span> Tower</span>
-          <span><span style={{ color: "rgb(255,176,46)" }}>──</span> rerouted round a disruption</span>
-          <span><span style={{ color: "rgb(226,232,240)" }}>┄┄</span> was going to fly</span>
-          <span><span style={{ color: "rgb(255,77,94)" }}>◯</span> alert</span>
-          <span><span style={{ color: "rgb(255,176,46)" }}>◯</span> checking</span>
-          <span><span style={{ color: "rgb(34,211,238)" }}>◯</span> watching</span>
-          <span>
-            <span style={{ color: "rgb(255,77,94)" }}>◢</span> red wedge = predicted conflict
-            {conesNow > 0 && <span className="ml-1.5 rounded border border-bad/50 bg-bad/10 px-1 py-px text-bad">{conesNow} predicted</span>}
-          </span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="eyebrow w-[70px]">2 fingers</span>
-          {(["orbit", "zoom"] as const).map((m) => (
-            <button key={m} className={chip(twoFingers === m)} onClick={() => setTwoFingers(m)}
-              title={m === "orbit" ? "Two fingers on the trackpad swing the view round and tilt it. Pinch to zoom." : "Two fingers (or a mouse wheel) zoom. Right-drag to rotate."}>
-              {m === "orbit" ? "Orbit" : "Zoom"}
-            </button>
-          ))}
-        </div>
-        <p className="text-[10px] text-muted/80">
-          {twoFingers === "orbit"
-            ? "Drag to pan. Two fingers: swing round and tilt. Pinch to zoom."
-            : "Drag to pan. Scroll to zoom. Right-drag to tilt and rotate."}
-        </p>
-        {sim?.source === "real" && sim.meta?.live && state.connection === "mock" ? (
-          <p className="text-[10px] text-muted/80 border-t border-line pt-1.5">
-            Mock snapshot: scripted traffic, not the real sky. Start the backend for a live one.
-          </p>
-        ) : sim?.source === "real" && sim.meta?.live ? (
-          <p className="text-[10px] text-muted/80 border-t border-line pt-1.5">
-            Real flights, one snapshot{snapshotClock(sim.meta.snapshot_utc) && ` taken ${snapshotClock(sim.meta.snapshot_utc)}`}, flown by the simulator from there.
-            {sim.meta.fallback === "saved_snapshot" && " The live feed was unavailable, so this is the saved snapshot from that time."} Dashed lines are each flight&apos;s track projected to the region boundary. Flight data: adsb.lol (ODbL, CC0).{sim.waypoints?.some((w) => w.kind === "gate") && " Gate names are ours."}
-          </p>
-        ) : sim?.source === "real" && (
-          <p className="text-[10px] text-muted/80 border-t border-line pt-1.5">
-            Real flights, {sim.meta?.date} {String(sim.meta?.hour_utc ?? 0).padStart(2, "0")}:00 UTC. Dashed lines are the tracks actually flown. Flight data: adsb.lol (ODbL, CC0). Gate names are ours.
-          </p>
-        )}
-      </div>
     </div>
   );
 }

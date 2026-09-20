@@ -12,7 +12,7 @@ Every message is one JSON object `{"type": ..., "payload": {...}, "t": <sim seco
 
 | type | payload | when |
 |---|---|---|
-| `state` | `{scenario, lifecycle, speed, world_id, scenarios: ScenarioInfo[], live_regions: {key, label}[], tower_enabled, auto_speak, t, waypoints: Waypoint[], zones: Zone[], sector_nm, buffer_nm, error_rate, noise, watching}` | on connect, on every lifecycle change, and whenever a setting changes |
+| `state` | `{scenario, lifecycle, speed, world_id, scenarios: ScenarioInfo[], live_regions: {key, label}[], tower_enabled, auto_speak, speak_replies, t, waypoints: Waypoint[], zones: Zone[], sector_nm, buffer_nm, error_rate, noise, watching}` | on connect, on every lifecycle change, and whenever a setting changes |
 | `radar` | `{aircraft: AircraftState[], zones?: Zone[], clock_speed}` | once per second, **and at once when an aircraft accepts a spoken instruction**, so the cleared heading and level show without waiting for the clock. `AircraftState.manoeuvre` is "360 left", "hold right" or null. `clock_speed` is the speed the clock is really running at: with voice on it drops to 1 while an exchange is in progress (at most 10 real seconds waiting for a readback) and for 8 real seconds when a new card turns up (routine cards at most once in 28 s), and is `state.speed` otherwise. `clock_why` says which (`"radio"`, `"card"` or empty) and `clock_hold_s` how many real seconds a card will still hold it. `set_speed` releases a card's hold at once. `zones` is present while any zone is drifting or swelling and replaces `state.zones`. An intruder's `AircraftState` carries `threat`: fighter, drone, balloon, emergency or unknown |
 | `plan` | `Plan` | after initial planning and every replan |
 | `plan_update` | `{changed: string[], reason, trigger}` | with every replan |
@@ -27,8 +27,12 @@ Every message is one JSON object `{"type": ..., "payload": {...}, "t": <sim seco
 | `scoreboard` | `Scoreboard` | every few seconds and after every verdict |
 | `risk` | `RiskReport` | at most once per sim second, only when some pair is at or above 0.05 or the previous report was not empty. See Predicted conflicts below |
 | `stats` | `{tier1_latency_s, transmissions, matches, alerts}` | rolling |
-| `agent_reply` | `{text, actions: string[]}` | after the world-builder agent handles a request |
+| `agent_reply` | `{text, actions: string[]}` | after the agent handles a request. Kept for the headset path; the bar reads `answer`. `actions` is `"tool: summary"` per call |
+| `agent_step` | `{turn_id, step, tool, args, result_summary, elapsed_ms, status: "done"\|"error"}` | one per tool call of the squack agent, as it happens. `tool` is `group.verb` (`ui.focus`, `query.pairs`). See The squack agent below |
+| `answer` | `{turn_id, text, cards: CardDescriptor[], for: "message", steps: [{n, tool, summary, ms, status}]}` | exactly once per agent turn, always, even on a cap or an error. **Only ever a reply to an `agent_text`**: squack speaks when spoken to and nothing in the world makes it talk. `text` is one sentence, two at most; the cards carry the content. `for` is always `"message"`, kept on the wire for compatibility |
+| `ui_command` | `{command, args}` | a `ui.*` tool ran. The backend does nothing; the screen applies it. `focus {callsign}`, `follow {callsign\|null}`, `camera {pitch?, bearing?, exaggeration?, top_down?}`, `line_view {view}`, `panel {panel}` |
 | `notice` | `{text, level: "info"\|"warn"\|"error"}` | an action was refused or something failed, for example the radio keyed before Start |
+| `dictation` | `{channel: "radio"\|"agent", text, final: bool, t_audio_s}` | what the mic is hearing while push-to-talk is held. A non-final partial about every 1.2 s of audio (one beam, the whole clip so far; each replaces the last; none past 20 s of audio). On `ptt_stop` exactly one `final: true` with the transcript that is about to go on air or to squack, sent **before** its `transcript` or `agent_reply`. The final is always the last dictation event for its channel: a partial that would land after it is dropped. The screen shows the partial in the command bar and holds the final for 1.5 s |
 
 ## Client to server, JSON
 
@@ -36,7 +40,7 @@ Every message is one JSON object `{"type": ..., "payload": {...}, "t": <sim seco
 |---|---|
 | `{"type":"ptt_start","channel":"radio"\|"agent"}` | start of push-to-talk. Binary PCM frames follow |
 | `{"type":"ptt_stop"}` | end of push-to-talk. The utterance is transcribed and routed to the channel |
-| `{"type":"agent_text","text"}` | typed request to the world-builder agent |
+| `{"type":"agent_text","text","ui_state"?}` | a request to the squack agent (the command bar, or the headset's text twin). `ui_state: {selected, planView, speed, voice}` lets "follow it" resolve. The connection keeps the last 10 turns as history |
 | `{"type":"radio_text","text"}` | typed controller transmission, fallback when there is no mic |
 | `{"type":"configure","source":"sim","scenario","density"}` | build a world and its plan. Lifecycle becomes `ready`. **The clock does not start.** `load_scenario` with `name` still works as an alias **`scenario: "custom"`** with `flights` (2 to 80), `pace` (`calm`, `normal`, `busy`: one entry every 120, 75 or 40 s on average) and `seed` generates the traffic on the demo route network. Three flights are already entering at Start. The loaded scenario is named `custom/<flights>/<pace>/<seed>`: the name is the whole recipe, so Reset rebuilds the same sky |
 | `{"type":"configure","source":"real","scenario":"real/<region>_<date>_<hhmm>","max_flights"}` | load recorded traffic, thinned evenly over the hour to at most `max_flights`. `state` then carries `source: "real"`, `meta` (region, label, date, hour_utc, gates, attribution, caveats), `geo.shape: "circle"`, and waypoints with `kind: "gate"`. Hidden track vertices are never sent |
@@ -47,6 +51,7 @@ Every message is one JSON object `{"type": ..., "payload": {...}, "t": <sim seco
 | `{"type":"set_speed","speed"}` | sim seconds per real second, clamped to 0.25 to 120. The screen offers 1, 5, 20, 60 |
 | `{"type":"set_tower","enabled"}` | Tower on or off. Off means readbacks are not checked and the plane flies what the pilot said |
 | `{"type":"set_auto_speak","enabled"}` | the agent speaks instruction cards itself |
+| `{"type":"set_speak_replies","enabled"}` | squack says its answers on the frequency as well as sending `agent_reply` (`state.speak_replies`, default on; env `SQUACK_SPEAK=0` starts it off). Voice: `SQUACK_VOICE_ID` on ElevenLabs, a fixed macOS voice otherwise |
 | `{"type":"add_disruption","kind","x_nm"?,"y_nm"?}` | drop a disruption. `kind` is fighter, drone, balloon, emergency, unknown, storm, closed, rocket, or `random`. With no position, or for `random`, Tower puts it on the path of a flight a few minutes ahead. `intruder` still works and means fighter. A position outside the sector is refused with a `notice` **`target`: a callsign ("disrupt this flight").** Tower then chooses the position itself: on that flight's planned path, ahead of it, far enough to be avoided and near enough to matter. `x_nm`/`y_nm` are ignored. For `emergency` the target is the flight that declares it |
 | `{"type":"remove_disruption","id"}` | take one out by hand. An emergency aircraft cannot be removed: it is a real flight |
 | `{"type":"speak_card","id"}` | speak one card by TTS now |
@@ -185,7 +190,7 @@ TRD 07. Every tick after `sim.step`, the backend rolls the whole sky forward 120
 
 | Event | Payload | When |
 |---|---|---|
-| `radio_audio` | `{speaker: "pilot"\|"controller", callsign, audio_ref, duration_s}` | a clip is on the air, sent before it is transcribed. Play `GET /audio/<audio_ref>`, one at a time, in order. The human's own mic recording is not sent back |
+| `radio_audio` | `{speaker: "pilot"\|"controller"\|"squack", callsign, audio_ref, duration_s}` | a clip is on the air, sent before it is transcribed. `squack` is its spoken answer to the user (after `agent_reply`; `callsign` is null; the first 240 characters, cut at a sentence end) Play `GET /audio/<audio_ref>`, one at a time, in order. The human's own mic recording is not sent back |
 | `said_check` | `{clearance_id, card_id, callsign, heard, expected, detail}` | what the controller said conflicts with the card. Nothing went to the pilot. The card carries `heard_instead` until it is resolved |
 | `alert_resolved` | `{clearance_id, callsign, by: "correction", seconds}` | the correction was read back right: close that alert |
 
@@ -196,3 +201,22 @@ TRD 07. Every tick after `sim.step`, the backend rolls the whole sky forward 120
 
 **The screen drops unknown event types.** `frontend/lib/ws.ts` has a whitelist. Add new events there, in `EventMap`, and in the reducer.
 
+
+## The squack agent
+
+`docs/trd/08-squack-agent-prd.md`, `backend/agent/`. One loop with a registry of tools named `group.verb`. This agent, and only this agent, runs on OpenAI: `tower.llm.get_agent_llm()` uses `OPENAI_API_KEY` with `SQUACK_MODEL` (default `gpt-4o-mini`), falls back to Baseten when only `BASETEN_API_KEY` is set, and without either key a keyword router reaches the same tools for the simple phrases and answers "I need a model for that." otherwise. Everything else stays on Baseten: the two fine-tuned models (the tuned Whisper in `tower/asr.py` and the readback checker in `tower/check.py`), the resolver, the interpreter and the extractor fallback. Caps: 4 tool calls, 8 s, 600 output tokens; every turn ends in one `answer`.
+
+Tools: `world.set_speed`, `world.set_voice`, `world.set_sliders`, `world.load`, `world.disrupt`, `world.remove_disruption`, `world.lifecycle`, `world.multiply_traffic`, `world.spawn_flight`; `ui.focus`, `ui.follow`, `ui.camera`, `ui.line_view`, `ui.panel`; `query.aircraft`, `query.pairs`, `query.cards`, `query.log`, `query.scoreboard`, `query.timeline`; `explain.card`, `explain.flight`, `explain.disruption`, `explain.replan`. No tool opens a clearance, reaches into the planner or starts a simulation: the Monte Carlo and the sweep are the eval harness (`backend/tools/simjobs.py`, `eval/`), which the agent cannot call.
+
+Card descriptors (`backend/agent/cards.py`, mirrored in `frontend/lib/cards/`): every card has `kind`, `title` and an optional `live` binding (`{aircraft: "DAL789"}` or `{scoreboard: true}`) so the screen keeps its numbers current from the store.
+
+| kind | fields |
+|---|---|
+| `text` | `text` |
+| `table` | `columns[], rows[][], focus_column?` (cells in that column are callsign buttons), `caption?` |
+| `list` | `items[{t, text, kind?}]` |
+| `aircraft` | `callsign, level_ft, hdg, gs_kt, card?{id, phrase, reason, cause, origin, status, confidence, risk_after, margin}, changes[], cost, runner_up_cost, extra_nm, issue?` |
+| `comparison` | `columns[], rows[][], highlight_row?` |
+| `steps` | `steps[{n, tool, summary, ms, status}]` |
+
+squack speaks only when spoken to. There is no wake policy, no `stage` event and no agent mode: every `answer` is the reply to an `agent_text` the controller sent. The screen is fixed; the agent changes it only through `ui_command`.

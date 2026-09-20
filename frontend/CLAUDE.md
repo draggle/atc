@@ -14,20 +14,30 @@ Calm and quiet. Tower says nothing unless it has something worth saying, and it 
 
 - **Map.** `components/MapView.tsx`: deck.gl layers over a MapLibre basemap, full screen, everything else floats over it. Draw from `lat`/`lon` and `lonlat`, never from `x_nm`. Altitude is real but exaggerated (slider). Aircraft on stems with trails and data blocks, standard routes dashed grey, Tower's plan cyan, replans flash amber, storms as 3D columns, intruders red with a predicted track, rings for alert / checking / watching. Click a plane for the flight strip, click the map to place a disruption (`latLonToNm` turns the click into sector NM). Camera: drag pans; two fingers on the trackpad swing the view round the scene and tilt it, like a 3D viewer, and pinch zooms (the View panel's "2 fingers: Orbit | Zoom" switch gives a mouse wheel its zoom back). It is a capture-phase `wheel` listener on the map's wrapper that acts only over a canvas, so panels still scroll, and lets ctrl+wheel (a pinch) through to MapLibre.
 - **Disrupt this flight.** On the flight strip of a selected aircraft: Storm ahead, Launch ahead, Fighter, Mayday. Sends `add_disruption` with `target`; the backend picks the spot on that flight's path. This is the reliable way to make something happen to a particular aircraft.
-- **Disrupt.** Four kinds on the menu (`menu !== false`). A placing click is read at the level the traffic is drawn at, not on the ground: with height exaggerated and the view tilted, the ground under the cursor is about 40 NM from the line under the cursor. One control, top left of the map. Random asks the backend to put something where it will matter; Choose lists the kinds from `state.disruption_kinds` and the next map click places one. Active disruptions are chips with minutes left and a remove button. A disruption event with `active: false` removes it. Zones are extruded between `floor_ft` and `ceiling_ft`, and the radar frame carries fresh `zones` while one is moving.
+- **Disrupt.** `components/DisruptMenu.tsx`: one round button in the top bar, right of the speed control, opening a popover. Four kinds on the menu (`menu !== false`). "Surprise me" asks the backend to put something where it will matter; picking a kind arms it (`state.dropMode`, in the store because the button and the map are in different trees) and the next map click places it, with a hint over the map and Escape to cancel. A placing click is read at the level the traffic is drawn at, not on the ground: with height exaggerated and the view tilted, the ground under the cursor is about 40 NM from the line under the cursor. Active disruptions are chips in the popover with minutes left and a remove button. squack opens the popover with `ui_command {command:"panel", args:{name:"disrupt"}}`. A disruption event with `active: false` removes it. Zones are extruded between `floor_ft` and `ceiling_ft`, and the radar frame carries fresh `zones` while one is moving.
 - **Flight strip.** `components/FlightStrip.tsx`: everything Tower knows about the selected aircraft, with follow-camera.
 - **Plan toggle.** Fixed routes versus Tower's plan, with a savings counter.
 - **The instruction panel has two jobs and two layouts.** Voice on: "Say these", a to-do list of cards for flights on frequency, most urgent first, the top one ringed. Voice off: "Sent by Tower", a log, newest first, because nothing there needs a human. In both, cards for flights that have not entered the sector collapse into one line, and every card carries a tag saying why it exists (Initial plan, Reroute · STORM1, Conflict · callsign, Emergency, Back on course, All clear), built from the card's `origin`, `cause` and `emergency`.
 - **Instruction cards.** One per instruction Tower wants issued: the phrase to say, a one-line reason, and urgency. States are pending, spoken, validated, verified, and error. Push-to-talk to speak a card.
 - **Alert.** A red card with expected versus heard, error type, confidence, a play button for the clip, and the correction to say. Click the card (or Enter on it; Space stays push-to-talk) to `focus` the aircraft: the camera flies in and follows, the flight strip opens with the same issue block on top, and the map draws the issue from `lib/issue.ts`: cyan is what was cleared, red is what was read back or is being flown. Level: rings on the stem. Fix: lines to each fix. Heading: two vectors. Anything else: the label alone.
 - **Agent trace.** Expandable steps the resolver took and what it found. This is the Rox demo.
-- **Transcript.** Speaker tag, callsign, text, and a confidence bar, with the stock versus tuned toggle.
-- **Scoreboard.** Miles and time saved, losses of separation, errors caught, response times. Only numbers we measured.
+- **Transcript.** Speaker tag, callsign, text, and a confidence bar. Always the tuned model; what stock Whisper heard is a hover tooltip, not a control.
+- **Analytics.** Miles and time saved, losses of separation, errors caught, response times. Only numbers we measured. Collapsed by default to one bar carrying losses and conflicts predicted; open, it ends in two example questions that ask squack.
 - **Sliders.** Separation buffer and chaos level: noise, pilot error rate, traffic density.
+
+## The bottom row
+
+Frequency, the chat bar and the instruction panel sit along the bottom edge as one row. The two side
+boxes are `BOTTOM_ROW_H` tall (`lib/layout.ts`) with scrolling interiors; the answer dock grows up
+from the bar to the same top edge and scrolls inside rather than growing past it. Anything that
+needs the row's geometry reads `lib/layout.ts`; nothing hard-codes it twice.
+
+Nothing floats in the middle of the screen. There is no ready/paused/ended banner, and only `error`
+notices are drawn, in the dock. squack never speaks unprompted: every answer is a reply.
 
 ## Look
 
-Night operations room. Near-black ink, one cool signal colour for Tower's plan (`--accent`), one warm annunciator colour for anything that changed (`--warn`), red only for something wrong. Type is B612 and B612 Mono, the faces Airbus designed for cockpit displays. Floating panels use `.panel` or `.glass`; do not put `position` in those classes, it overrides Tailwind's `absolute`. The basemap is context, not content: keep it dimmer than the traffic.
+squack in the boot screen sets the direction: one black ground (`--bg`), white ink, Plus Jakarta Sans for every label, hierarchy by weight and opacity rather than colour, hairline `1px` borders in `--line`, 8px radius, no blur, glow, gradients, corner ticks, uppercase eyebrows or cyan. Think Notion or Linear in dark mode: quiet, generous spacing, sentence case, the product is "squack." (lowercase, with the period) and never "Tower" in anything a judge reads. Colour only when it means something: `--ok` green for live, correct, on frequency; `--bad` red for wrong; `--warn` amber for "squack is asking". Reuse the shared classes at the end of `app/globals.css` (`.btn`, `.btn-primary`, `.seg`, `.pill`, `.chip`, `.dot`, `.stat`, `.card-pick`, `.scrim`, `.hint`) before inventing a look; floating panels use `.panel` or `.glass`, and do not put `position` in those classes, it overrides Tailwind's `absolute`. B612 Mono stays for data that has to line up: callsigns, levels, transcripts. The basemap is context, not content: keep it dimmer than the traffic.
 
 No globe projection: with the deck.gl overlay it drops every aircraft icon, label and ring and leaves only the lines. The toggle was removed after it blanked the traffic mid-test.
 
@@ -39,3 +49,15 @@ Pinned: `maplibre-gl@5`. Version 6 fails to load its worker under Next.js dev.
 - An alert must be impossible to miss and must never fire for a correct readback in the demo path.
 - Everything must work on one laptop in a loud room. Push-to-talk is required.
 - Cap the number of cards on screen. The exact cap is an open team decision.
+
+## The map keeps its colours
+
+The panels went monochrome with the squack restyle; the map did not. On the map colour is information: cyan is squack's plan, amber is anything that changed, red is something wrong, a storm is purple, closed airspace red, a launch amber. The colour table and `ZONE_LOOK` at the top of `components/MapView.tsx` are the single place for them, and the legend in `SettingsSheet.tsx` uses the same values. Do not flatten them to white again without asking: it was tried, and lines could no longer be told apart.
+
+## The right side is one column
+
+Top to bottom of the window: the alert (when there is one), the **Command Backlog** (`InstructionCards`, the tall part, scrolls inside itself), **Next readback** (`NextReadback.tsx`: By chance, Correct, Wrong value, Wrong plane, No reply; one shot, highlighted while armed, disabled in Autonomous), and **Analytics** resting on the bottom edge, opening upwards and taking its room from the list. Next readback is there and not only in Settings because it is pressed in the same breath as saying a card.
+
+## Merged with main, Sunday early
+
+`joey/command-bar` now holds everything from main. What had to be carried across by hand into the new layout: **two-finger orbit** (the `wheel` listener is in `MapView.tsx`, its Orbit | Zoom switch is "Two fingers" under Screen in `SettingsSheet.tsx`, state in `store.view.twoFingers`); **Custom** is the fourth entry of the Scenario dropdown in `SetupPanel.tsx`, and choosing it swaps Traffic density for How fast they arrive and shows the Aircraft slider and Shuffle; the top bar says why the clock is at 1x and for how long ("60x · 1x now, 60x in 6 s" or "on the radio") from `clock_why` and `clock_hold_s`, and shows a generated sky as "custom · 24 · busy". `PushToTalk.tsx` stays deleted: the radio key lives in `CommandBar.tsx`, with the held-Space fix.

@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from sim import live as LIVE  # noqa: E402
+from schemas import event  # noqa: E402
 from sim import scenarios as SC  # noqa: E402
 from tower.audio import pcm16_to_float  # noqa: E402
 from world import AUDIO_DIR, World  # noqa: E402
@@ -94,6 +96,87 @@ def _spawn(coro, what: str) -> None:
     task = asyncio.create_task(guarded())
     _background.add(task)
     task.add_done_callback(_background.discard)
+
+
+class Dictation:
+    """What the controller is saying, while the key is still down.
+
+    Frames pile up in `chunks`. Every PARTIAL_EVERY_S of new audio (and at least PARTIAL_GAP_S after
+    the last one was launched) the whole buffer so far is transcribed on the fast path (one beam, no
+    alternatives) in a thread and goes out as `dictation {final: false}`. One partial in flight at a
+    time: frames that land while it runs wait for the next. Buffers past MAX_S stop getting partials
+    (a decode that long would fall behind the speech). On release `finish` hands the audio to the
+    existing routing and the transcript that routing computes anyway goes out first as the final, so
+    nothing is decoded twice. A partial that returns after the release is dropped: the final is
+    always the last dictation event for its channel. A partial that fails is logged, never fatal.
+    """
+
+    PARTIAL_EVERY_S = 1.2
+    PARTIAL_GAP_S = 0.6
+    MAX_S = 20.0
+    BYTES_PER_S = 16000 * 2  # PCM16 mono 16 kHz
+
+    def __init__(self, channel: str) -> None:
+        self.channel = channel
+        self.chunks: list[bytes] = []
+        self.n_bytes = 0
+        self.launched_s = 0.0  # audio length when the last partial was launched
+        self.launched_at = 0.0  # wall clock of that launch
+        self.task: asyncio.Task[Any] | None = None
+        self.closed = False
+
+    @property
+    def seconds(self) -> float:
+        return self.n_bytes / self.BYTES_PER_S
+
+    def feed(self, frame: bytes) -> None:
+        self.chunks.append(frame)
+        self.n_bytes += len(frame)
+        s = self.seconds
+        if self.task is not None and not self.task.done():
+            return
+        if s > self.MAX_S or s - self.launched_s < self.PARTIAL_EVERY_S:
+            return
+        if time.monotonic() - self.launched_at < self.PARTIAL_GAP_S:
+            return
+        self.launched_s, self.launched_at = s, time.monotonic()
+        self.task = asyncio.create_task(self._partial(pcm16_to_float(b"".join(self.chunks)), s))
+        _background.add(self.task)
+        self.task.add_done_callback(_background.discard)
+
+    async def _partial(self, samples: np.ndarray, t_audio_s: float) -> None:
+        try:
+            text, *_ = await world._transcribe(samples, fast=True)
+        except Exception:  # noqa: BLE001 - a lost partial costs nothing; the final still comes
+            log.exception("dictation partial failed")
+            return
+        if self.closed:
+            return
+        self.emit(text, final=False, t_audio_s=t_audio_s)
+
+    def emit(self, text: str, *, final: bool, t_audio_s: float) -> None:
+        world.emit(event("dictation", {"channel": self.channel, "text": text, "final": final,
+                                       "t_audio_s": round(t_audio_s, 2)}, t=world.sim.t))
+
+    async def finish(self) -> None:
+        """The key came up: route the whole clip as before, with the final dictation ahead of it."""
+        self.closed = True
+        samples = pcm16_to_float(b"".join(self.chunks))
+        self.chunks = []
+        if len(samples) < 16000 * 0.4:
+            return
+        seconds = len(samples) / 16000
+
+        def final(text: str) -> None:
+            try:
+                self.emit(text, final=True, t_audio_s=seconds)
+            except Exception:  # noqa: BLE001 - never between the controller and the aircraft
+                log.exception("dictation final failed")
+
+        if self.channel == "agent":
+            await world.agent_audio(samples, on_text=final)
+        else:
+            await world.controller_audio(samples, on_text=final)
 
 
 def _configure_live(data: dict[str, Any]) -> None:
@@ -236,16 +319,16 @@ async def ws_endpoint(ws: WebSocket) -> None:
                                       default=_json_default))
         await ws.send_text(json.dumps({"type": "scoreboard", "t": world.sim.t,
                                        "payload": world.scoreboard().model_dump()}, default=_json_default))
-    ptt_channel: str | None = None
-    buf: list[bytes] = []
+    dictation: Dictation | None = None  # open while a push-to-talk channel is held
+    agent_history: list[dict[str, Any]] = []  # squack agent: this connection's last turns
     try:
         while True:
             msg = await ws.receive()
             if msg.get("type") == "websocket.disconnect":
                 break
             if msg.get("bytes") is not None:
-                if ptt_channel:
-                    buf.append(msg["bytes"])
+                if dictation is not None:
+                    dictation.feed(msg["bytes"])
                 continue
             if msg.get("text") is None:
                 continue
@@ -255,24 +338,22 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 continue
             typ = data.get("type")
             if typ == "ptt_start":
-                ptt_channel = data.get("channel", "radio")
-                buf = []
-                if ptt_channel == "radio":
+                if dictation is not None:
+                    dictation.closed = True  # a start without a stop: the old clip is dropped, as before
+                dictation = Dictation(str(data.get("channel", "radio")))
+                if dictation.channel == "radio":
                     world.set_ptt(True)  # in Auto, Tower keeps quiet while the human has the mic
             elif typ == "ptt_stop":
                 world.set_ptt(False)
-                channel, ptt_channel = ptt_channel, None
-                if channel and buf:
-                    samples = pcm16_to_float(b"".join(buf))
-                    buf = []
-                    if len(samples) < 16000 * 0.4:
-                        continue
-                    if channel == "agent":
-                        _spawn(world.agent_audio(samples), "headset request")
-                    else:
-                        _spawn(world.controller_audio(samples), "transmission")
+                held, dictation = dictation, None
+                if held is not None:
+                    _spawn(held.finish(), "headset request" if held.channel == "agent" else "transmission")
             elif typ == "agent_text":
-                _spawn(world.agent_request(str(data.get("text", ""))), "headset request")
+                # squack agent: ui_state {selected, planView, speed, voice} lets "follow it" resolve;
+                # agent_history is this connection's last 10 turns (backend/agent/loop.py)
+                _spawn(world.agent_request(str(data.get("text", "")), agent_history,
+                                           data.get("ui_state") if isinstance(data.get("ui_state"), dict) else None),
+                       "headset request")
             elif typ == "radio_text":
                 _spawn(world.controller_text(str(data.get("text", ""))), "transmission")
             elif typ == "configure" and data.get("source") == "live":
@@ -319,6 +400,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 world.confirm_heard(str(data.get("clearance_id", "")))
             elif typ == "set_auto_voice":  # Auto with Tower's voice (one exchange at a time) or silent and instant
                 world.set_auto_voice(bool(data.get("enabled", False)))
+            elif typ == "set_speak_replies":  # squack says its answers on the frequency (tower/voice.py)
+                world.set_speak_replies(bool(data.get("enabled", True)))
             elif typ == "set_mode":  # {"mode": "manual" | "auto"}: the same switch, by its real name
                 world.set_auto_speak(str(data.get("mode", "manual")) == "auto")
             elif typ == "add_disruption":

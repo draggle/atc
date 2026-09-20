@@ -1,8 +1,12 @@
 "use client";
 
-import { snapshotClock, useTowerDispatch, useTowerState } from "@/lib/store";
+import { useEffect, useRef, useState } from "react";
+import { snapshotClock, useTowerDispatch, useTowerState, type Connection } from "@/lib/store";
 import { useClient } from "./TowerApp";
-import LifecycleControls from "./LifecycleControls";
+import type { Lifecycle, SimState } from "@/lib/types";
+import DisruptMenu from "./DisruptMenu";
+
+const SPEEDS = [1, 5, 20, 60] as const;
 
 function fmtClock(t: number): string {
   const s = Math.max(0, Math.floor(t));
@@ -12,173 +16,179 @@ function fmtClock(t: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 }
 
-function Toggle({
-  on,
-  label,
-  onChange,
-  activeClass = "bg-ok/20 text-ok border-ok/40",
-  inactiveClass = "bg-panel-2 text-muted border-line hover:text-fg",
-  title,
-}: {
-  on: boolean;
-  label: string;
-  onChange: (v: boolean) => void;
-  activeClass?: string;
-  inactiveClass?: string;
-  title?: string;
-}) {
-  return (
-    <button
-      onClick={() => onChange(!on)}
-      title={title}
-      className={`px-3 py-1 rounded-md border text-xs font-medium transition-colors ${on ? activeClass : inactiveClass}`}
-    >
-      {label} <span className="font-mono">{on ? "ON" : "OFF"}</span>
-    </button>
-  );
-}
-
-export default function TopBar() {
-  const { sim, plan, connection, scoreboard } = useTowerState();
-  const dispatch = useTowerDispatch();
-  const { send } = useClient();
-
-  // The backend's figure is frozen at the first plan. After a replan the plan only holds what is
-  // left to fly, so comparing it with the full baseline would invent thousands of miles.
-  const milesSaved = scoreboard?.miles_saved ?? (plan ? Math.max(0, plan.baseline_distance_nm - plan.total_distance_nm) : 0);
-  const conflicts = plan?.conflicts ?? 0;
-
-  const connBadge: Record<typeof connection, { text: string; cls: string }> = {
-    live: { text: "LIVE", cls: "bg-ok/15 text-ok border-ok/40" },
-    mock: { text: "MOCK", cls: "bg-warn/15 text-warn border-warn/40" },
-    connecting: { text: "CONNECTING", cls: "bg-panel-2 text-muted border-line" },
-    closed: { text: "RECONNECTING", cls: "bg-bad/15 text-bad border-bad/40" },
-  };
-  const badge = connBadge[connection];
-
+/** "Live snapshot · Europe · 14:32 UTC", "Europe · 2025-09-18 14:00Z" or the scenario's name. */
+export function scenarioLabel(sim: SimState | null, connection: Connection): string {
   // A live snapshot is still source "real": the flights are real, only the moment differs.
   const place = (sim?.meta?.label ?? sim?.meta?.region ?? "Real traffic").split(" (")[0];
   const live = sim?.source === "real" && sim.meta?.live === true;
   const snapshotAt = snapshotClock(sim?.meta?.snapshot_utc);
   // The mock plays the same scripted flights whatever it is asked for: never call those live.
-  const snapshotTag = connection === "mock" ? "MOCK SNAPSHOT" : sim?.meta?.fallback === "saved_snapshot" ? "SAVED SNAPSHOT" : "LIVE SNAPSHOT";
+  const snapshotTag = connection === "mock" ? "Mock snapshot" : sim?.meta?.fallback === "saved_snapshot" ? "Saved snapshot" : "Live snapshot";
+  if (live) return `${snapshotTag} · ${place}${snapshotAt ? ` · ${snapshotAt}` : ""}`;
+  if (sim?.source === "real" && sim.meta) return `${place} · ${sim.meta.date} ${String(sim.meta.hour_utc ?? 0).padStart(2, "0")}:00Z`;
+  // "custom/24/busy/7" is the setup panel's generated sky: say it the way the panel did.
+  if (sim?.scenario?.startsWith("custom/")) return sim.scenario.split("/").slice(0, 3).join(" · ");
+  return sim?.scenario ?? "No scenario";
+}
+
+const Play = () => <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M4 2.5v11l9-5.5z" /></svg>;
+const Pause = () => <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden><path d="M3.5 2.5h3v11h-3zM9.5 2.5h3v11h-3z" /></svg>;
+/** A circular arrow, anticlockwise: restart. Drawn here, no icon library. */
+const Restart = () => (
+  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M3 12a9 9 0 1 0 2.64-6.36L3 8" />
+    <path d="M3 3v5h5" />
+  </svg>
+);
+const Menu = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+    <path d="M4 7h16M4 12h16M4 17h16" />
+  </svg>
+);
+
+/** Three groups over the map: the sky on the left, the clock in the middle, status and settings on the right. */
+export default function TopBar() {
+  const { sim, plan, connection, aircraft, alerts, settingsOpen } = useTowerState();
+  const dispatch = useTowerDispatch();
+  const { send } = useClient();
+
+  const lifecycle: Lifecycle = sim?.lifecycle ?? (sim?.scenario ? "running" : "idle");
+  const speed = sim?.speed ?? 1;
+  const canStart = lifecycle === "ready" || lifecycle === "paused";
+  const voiceOn = sim?.voice ?? !(sim?.auto_speak ?? false);
+  // Voice on at a fast clock: it slows itself to 1x while there is something to say.
+  const slowedForVoice = voiceOn && speed > 1 && lifecycle === "running" && (sim?.clock_speed ?? 1) <= 1;
+
+  const nAircraft = Object.values(aircraft).filter((a) => !a.is_intruder).length;
+  const conflicts = plan?.conflicts ?? 0;
+  const wrong = alerts.filter((a) => !a.resolved).length;
+  const live = sim?.source === "real" && sim.meta?.live === true;
   const liveTitle = connection === "mock"
     ? "Scripted mock traffic, not the real sky. Start the backend for a live snapshot."
-    : `One snapshot of the real sky${snapshotAt ? `, taken ${snapshotAt}` : ""}. The simulator flies it from there.${
-        sim?.meta?.fallback === "saved_snapshot" ? " The live feed was unavailable, so this is the saved snapshot from that time." : ""
-      }`;
+    : live
+      ? `One snapshot of the real sky. The simulator flies it from there.${sim?.meta?.fallback === "saved_snapshot" ? " The live feed was unavailable, so this is the saved snapshot from that time." : ""}`
+      : sim?.scenario ?? undefined;
+
+  // The speed menu: a muted "1x ▾" that opens a short list. Closes on a pick, a click elsewhere, or Escape.
+  const [speedOpen, setSpeedOpen] = useState(false);
+  const speedRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!speedOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!speedRef.current?.contains(e.target as Node)) setSpeedOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSpeedOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [speedOpen]);
 
   return (
-    <header className="panel min-h-12 shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1">
-      <div className="flex items-baseline gap-2 min-w-0">
-        <span className="text-lg font-semibold tracking-tight">Tower</span>
-        <span className="text-xs text-muted truncate max-w-[300px]" title={live ? liveTitle : (sim?.scenario ?? undefined)}>
-          {live ? (
-            <>
-              <span className="font-mono text-[10px] tracking-wider text-accent">{snapshotTag}</span>
-              {` · ${place}${snapshotAt ? ` · ${snapshotAt}` : ""}`}
-            </>
-          ) : sim?.source === "real" && sim.meta ? (
-            `${place} · ${sim.meta.date} ${String(sim.meta.hour_utc ?? 0).padStart(2, "0")}:00Z`
-          ) : (
-            // "custom/24/busy/7" is a generated sky: say it the way the setup panel did.
-            (sim?.scenario?.startsWith("custom/") ? sim.scenario.split("/").slice(0, 3).join(" · ") : (sim?.scenario ?? "No scenario"))
-          )}
-        </span>
-      </div>
-      <span className="font-mono text-sm text-fg/90 tabular-nums">{fmtClock(sim?.t ?? 0)}</span>
-
-      <LifecycleControls />
-
-      <div className="h-6 w-px bg-line" />
-
-      <Toggle
-        on={sim?.tower_enabled ?? true}
-        label="Tower"
-        inactiveClass="bg-zinc-600/60 text-zinc-200 border-zinc-400 hover:bg-zinc-500/60"
-        title={sim?.tower_enabled === false ? "Tower is off: readbacks are not being checked" : "Tower is checking every readback"}
-        onChange={(v) => {
-          dispatch({ type: "local_toggle", key: "tower_enabled", value: v });
-          send({ type: "set_tower", enabled: v });
-        }}
-      />
-      {/* A backend started before the current screen ignores its newer controls, which then look as if
-          they work and snap back. Say so where it cannot be missed, for as long as it is true. */}
-      {sim && sim.lifecycle !== undefined && sim.voice === undefined && (
-        <span
-          className="px-2 py-1 rounded-md border border-bad/60 bg-bad/15 text-bad text-[11px] font-semibold"
-          title="This backend process was started before the Voice switch and card tags were added. Stop it (Ctrl+C, or: lsof -ti:8000 | xargs kill) and start uvicorn again."
+    <header className="h-11 grid grid-cols-[1fr_auto_1fr] items-center gap-4 px-3">
+      {/* left: the sky */}
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="text-[15px] font-semibold tracking-tight leading-none">squack.</span>
+        <button
+          onClick={() => dispatch({ type: "set_setup_open", open: true })}
+          className="btn !border-transparent max-w-[320px]"
+          title={liveTitle ? `${liveTitle} Click to choose another sky.` : "Choose the data source and scenario"}
         >
-          BACKEND OUT OF DATE · restart it
-        </span>
-      )}
-
-      {/* The one switch, and it is the controller's at any moment.
-          Off: Tower sends every instruction by data link, instantly. The path demo.
-          On: the real loop. You say each card, the pilot reads it back, Tower checks both. */}
-      <div
-        className="flex items-center rounded-md border border-line overflow-hidden text-xs"
-        title="Voice off: Tower sends every instruction by data link the instant the plan changes. Voice on: you say each instruction, the pilot reads it back, and our Whisper model checks both. Voice runs at 1x."
-      >
-        <span className="px-2 py-1 text-muted bg-panel-2 border-r border-line">Voice</span>
-        {([["Off", false], ["On", true]] as const).map(([label, on]) => {
-          const active = (sim?.voice ?? !(sim?.auto_speak ?? false)) === on;
-          return (
-            <button
-              key={label}
-              onClick={() => {
-                dispatch({ type: "local_toggle", key: "auto_speak", value: !on });
-                send({ type: "set_voice", enabled: on });
-              }}
-              className={`px-3 py-1 font-medium transition-colors ${active ? (on ? "bg-ok/20 text-ok" : "bg-warn/20 text-warn") : "bg-panel-2 text-muted hover:text-fg"}`}
-            >
-              {label}
-            </button>
-          );
-        })}
+          <span className="truncate">{scenarioLabel(sim, connection)}</span>
+          <span className="opacity-60">▾</span>
+        </button>
       </div>
 
-      {/* Voice on at a fast clock: it slows itself to 1x while there is something to say. Show which. */}
-      {sim && (sim.voice ?? !sim.auto_speak) && (sim.speed ?? 1) > 1 && sim.lifecycle === "running" && (
-        <span
-          className={`px-2 py-1 rounded-md border text-[11px] font-medium ${(sim.clock_speed ?? 1) <= 1 ? "border-ok/50 bg-ok/10 text-ok" : "border-line bg-panel-2 text-muted"}`}
-          title="With voice on the clock runs at your chosen speed, drops to 1x while somebody is talking, and for a few seconds when a new card turns up. Press any speed button to go at once."
+      {/* centre: the clock */}
+      <div className="flex items-center gap-3">
+        <button
+          onClick={() => send({ type: "reset" })}
+          disabled={lifecycle === "idle"}
+          className="btn btn-round"
+          title="Restart the scenario"
+          aria-label="Restart"
         >
-          {(sim.clock_speed ?? 1) > 1
-            ? `${sim.speed}x`
-            : sim.clock_why === "radio"
-              ? "1x: on the radio"
-              : `1x: new card · ${sim.speed}x in ${Math.max(1, Math.ceil(sim.clock_hold_s ?? 0))} s (or press a speed)`}
-        </span>
-      )}
-
-      {/* Auto with Tower's own voice is paused while we get the human side right: Auto is silent
-          (data link) and the spoken loop is Manual. The backend still supports it: send
-          {type: "set_auto_voice", enabled: true} to bring it back, and restore this switch. */}
-
-      <div className="h-6 w-px bg-line" />
-
-
-      <div className="flex items-center gap-4 text-xs">
-        <div>
-          <span className="text-muted">miles saved </span>
-          {/* live snapshot: the standard line is the projected track, so there is nothing to save */}
-          <span className={`font-mono tabular-nums ${live ? "text-muted" : "text-ok"}`}>{live ? "n/a" : milesSaved.toFixed(1)}</span>
-        </div>
-        <div>
-          <span className="text-muted">conflicts </span>
-          <span className={`font-mono tabular-nums ${conflicts > 0 ? "text-bad" : "text-ok"}`}>{conflicts}</span>
-        </div>
-        {scoreboard && (
-          <div>
-            <span className="text-muted">LoS </span>
-            <span className={`font-mono tabular-nums ${scoreboard.losses_of_separation > 0 ? "text-bad" : "text-ok"}`}>{scoreboard.losses_of_separation}</span>
-          </div>
+          <Restart />
+        </button>
+        {lifecycle === "running" ? (
+          <button onClick={() => send({ type: "pause" })} className="btn btn-round" title="Pause the clock" aria-label="Pause">
+            <Pause />
+          </button>
+        ) : canStart ? (
+          // The one filled button on the screen once a world is loaded.
+          <button onClick={() => send({ type: "start" })} className="btn btn-primary" title="Start the clock">
+            <Play />
+            {lifecycle === "paused" ? "Resume" : "Start"}
+          </button>
+        ) : (
+          <button disabled className="btn btn-round" title={lifecycle === "ended" ? "Every flight has left. Press restart." : "Load a sky first"} aria-label="Start">
+            <Play />
+          </button>
         )}
+        <span className="text-sm font-mono tabular-nums text-fg/90">{fmtClock(sim?.t ?? 0)}</span>
+        <div className="relative" ref={speedRef}>
+          <button
+            onClick={() => setSpeedOpen((o) => !o)}
+            aria-expanded={speedOpen}
+            aria-haspopup="menu"
+            className="btn !border-transparent tabular-nums"
+            title={slowedForVoice ? "Manual: the clock is at 1x while there is something to say, and back to your speed between instructions." : "Clock speed. Manual only keeps up at 1x."}
+          >
+            {speed}x
+            {slowedForVoice && (
+              // Why, and for how long: an exchange runs in real time; a new card holds the clock for
+              // a few seconds and then the chosen speed is back. Pressing a speed always goes at once.
+              <span className="opacity-60">
+                · 1x now{sim?.clock_why === "card" && (sim.clock_hold_s ?? 0) > 0 ? `, ${speed}x in ${Math.ceil(sim.clock_hold_s ?? 0)} s` : sim?.clock_why === "radio" ? ", on the radio" : ""}
+              </span>
+            )}
+            <span className="opacity-60">▾</span>
+          </button>
+          {speedOpen && (
+            <div role="menu" className="panel absolute left-1/2 -translate-x-1/2 top-full mt-1 py-1 min-w-[72px] flex flex-col">
+              {SPEEDS.map((s) => (
+                <button
+                  key={s}
+                  role="menuitemradio"
+                  aria-checked={Math.abs(speed - s) < 0.01}
+                  onClick={() => { send({ type: "set_speed", speed: s }); setSpeedOpen(false); }}
+                  className={`px-3 h-7 text-left text-xs tabular-nums hover:bg-panel-2 ${Math.abs(speed - s) < 0.01 ? "text-fg font-semibold" : "text-muted"}`}
+                >
+                  {s}x
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <DisruptMenu />
       </div>
 
-      <div className="ml-auto flex items-center gap-2">
-        <span className={`px-2 py-0.5 rounded border text-[10px] font-mono tracking-wider ${badge.cls}`}>{badge.text}</span>
+      {/* right: one status line, then the menu */}
+      <div className="flex items-center justify-end gap-3 min-w-0">
+        <span className="text-xs text-muted whitespace-nowrap truncate">
+          <span className="text-fg font-semibold">{nAircraft}</span> aircraft
+          {" · "}
+          <span title="Pairs of flights the plan could not keep apart. Zero means every flight has a clear path.">
+            <span className={conflicts > 0 ? "text-bad font-semibold" : "text-fg font-semibold"}>{conflicts}</span>
+            <span className={conflicts > 0 ? "text-bad" : ""}> {conflicts === 1 ? "conflict" : "conflicts"}</span>
+          </span>
+          {wrong > 0 && <> · <span className="text-bad">{wrong} wrong {wrong === 1 ? "readback" : "readbacks"}</span></>}
+          {connection !== "live" && ` · ${connection === "closed" ? "reconnecting" : connection}`}
+        </span>
+        <button
+          onClick={() => dispatch({ type: "set_settings_open", open: true })}
+          aria-expanded={settingsOpen}
+          aria-controls="settings-sheet"
+          className="btn btn-round"
+          title="Settings"
+          aria-label="Settings"
+        >
+          <Menu />
+        </button>
       </div>
     </header>
   );

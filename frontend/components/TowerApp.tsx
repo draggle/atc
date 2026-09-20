@@ -3,8 +3,9 @@
 import { createContext, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
 import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
-import { TowerStoreProvider, useTowerDispatch, useTowerState } from "@/lib/store";
+import { DICTATION_HOLD_MS, TowerStoreProvider, useTowerDispatch, useTowerState } from "@/lib/store";
 import { connectTower, type TowerClient } from "@/lib/ws";
+import { BOTTOM_ROW_H, EDGE, SIDE_W } from "@/lib/layout";
 import { radio } from "@/lib/radio";
 import type { ClientMessage } from "@/lib/types";
 import TopBar from "./TopBar";
@@ -12,11 +13,13 @@ import InstructionCards from "./InstructionCards";
 import AlertCard from "./AlertCard";
 import Transcript from "./Transcript";
 import ScoreboardPanel from "./ScoreboardPanel";
-import SlidersPanel from "./SlidersPanel";
-import PushToTalk from "./PushToTalk";
+import SettingsSheet from "./SettingsSheet";
 import SetupPanel from "./SetupPanel";
 import Notices from "./Notices";
 import BootScreen from "./BootScreen";
+import CommandBar from "./CommandBar";
+import AnswerDock from "./AnswerDock";
+import NextReadback from "./NextReadback";
 
 // MapLibre and deck.gl need a browser: no server rendering for the map.
 const MapView = dynamic(() => import("./MapView"), {
@@ -41,7 +44,14 @@ function ClientProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const client = connectTower({
       forceMock,
-      onEvent: (event) => dispatch({ type: "event", event }),
+      onEvent: (event) => {
+        dispatch({ type: "event", event });
+        // A dictation final is held on the command bar for a beat, then the slice is cleared (the
+        // reducer checks the age, so a newer final is never cleared by an older timer).
+        if (event.type === "dictation" && event.payload.final) {
+          setTimeout(() => dispatch({ type: "dictation_clear" }), DICTATION_HOLD_MS + 20);
+        }
+      },
       onStatus: (connection) => dispatch({ type: "connection", connection }),
       onLive: () => dispatch({ type: "reset" }),
     });
@@ -67,37 +77,42 @@ function ClientProvider({ children }: { children: ReactNode }) {
 }
 
 function Screen() {
-  const { alerts, resolving, sim } = useTowerState();
-  const lifecycle = sim?.lifecycle ?? (sim?.scenario ? "running" : "idle");
+  const { alerts, resolving } = useTowerState();
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-bg text-fg">
       {/* The map is the screen. Everything else floats over it. */}
       <MapView />
 
-      <div className="absolute top-2 left-2 right-2 z-20">
+      {/* No panel behind the bar: only a soft fade so the words read over bright basemap. */}
+      <div className="pointer-events-none absolute top-0 left-0 right-0 h-16 z-20 bg-gradient-to-b from-bg/70 to-transparent" />
+      <div className="absolute top-0 left-0 right-0 z-20">
         <TopBar />
       </div>
 
-      <div className="absolute top-[68px] right-2 bottom-2 z-10 w-[400px] flex flex-col gap-2 overflow-y-auto scroll-thin pr-0.5">
-        {(alerts.length > 0 || resolving.length > 0) && <AlertCard />}
-        <InstructionCards />
-        <PushToTalk />
-        <ScoreboardPanel />
-        <SlidersPanel />
+      {/* The right side is one column, top to bottom of the window, and it is where the controller
+          works: the alert, then the instructions to say (the tall part, it scrolls inside itself),
+          the next-readback switch that goes with them, and Analytics resting on the bottom edge.
+          Analytics opens upwards and takes its room from the instruction list. */}
+      <div
+        className="absolute top-[52px] right-2 z-10 flex flex-col gap-2"
+        style={{ bottom: EDGE, width: SIDE_W }}
+      >
+        {(alerts.length > 0 || resolving.length > 0) && (
+          <div className="shrink-0 max-h-[42%] overflow-y-auto scroll-thin"><AlertCard /></div>
+        )}
+        <div className="flex-1 min-h-[150px]"><InstructionCards /></div>
+        <NextReadback />
+        <div className="shrink-0 max-h-[45%] overflow-y-auto scroll-thin"><ScoreboardPanel /></div>
       </div>
 
-      <div className="absolute left-2 bottom-2 z-10 h-[180px] w-[min(calc(100vw-432px),760px)]">
+      {/* The bottom row on the left: Frequency, then the chat bar and its dock in the middle. */}
+      <div className="absolute left-2 z-10" style={{ bottom: EDGE, height: BOTTOM_ROW_H, width: SIDE_W }}>
         <Transcript />
       </div>
 
-      {(lifecycle === "ready" || lifecycle === "paused" || lifecycle === "ended") && (
-        <div className="pointer-events-none absolute top-[72px] left-1/2 -translate-x-1/2 z-10 glass px-4 py-2 text-sm text-muted">
-          {lifecycle === "ready" && <>World loaded. Look over the plan, then press <span className="text-ok font-medium">Start</span>.</>}
-          {lifecycle === "paused" && <>Paused. Press <span className="text-ok font-medium">Resume</span> to continue.</>}
-          {lifecycle === "ended" && <>Every flight has left the sector. Press <span className="text-fg font-medium">Reset</span> to run it again.</>}
-        </div>
-      )}
-
+      <AnswerDock />
+      <CommandBar />
+      <SettingsSheet />
       <SetupPanel />
       <Notices />
       <BootScreen />

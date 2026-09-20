@@ -6,7 +6,9 @@ import type {
   AgentReply,
   AircraftState,
   AlertPayload,
+  Dictation,
   Disruption,
+  DisruptionKind,
   InstructionCard,
   Notice,
   OpenClearance,
@@ -21,6 +23,7 @@ import type {
   Transmission,
   LonLatAlt,
 } from "./types";
+import type { AgentStep, Answer, UiCommand } from "./cards/types";
 
 export type Connection = "connecting" | "live" | "mock" | "closed";
 
@@ -65,6 +68,22 @@ export interface Sliders {
   noise: number;
 }
 
+/** An `answer` as the dock shows it: the event plus when it landed and whether it was closed. */
+export interface StoredAnswer extends Answer {
+  at: number; // ms wall clock
+  dismissed?: boolean;
+}
+
+
+/** One camera move squack asked for. MapView applies it once, then reports it consumed. */
+export interface CameraRequest {
+  seq: number;
+  pitch?: number;
+  bearing?: number;
+  exaggeration?: number;
+  top_down?: boolean;
+}
+
 export interface TowerState {
   connection: Connection;
   sim: SimState | null;
@@ -88,10 +107,16 @@ export interface TowerState {
   scoreboard: Scoreboard | null;
   stats: Stats | null;
   disruptions: Record<string, Disruption>;
+  /** A kind armed for placement: the next map click drops it. null: the map behaves normally. */
+  dropMode: DisruptionKind | null;
   chat: ChatLine[];
   notices: ActiveNotice[];
   /** the setup panel is open */
   setupOpen: boolean;
+  /** the settings sheet (gear, top right) is open */
+  settingsOpen: boolean;
+  /** How the map is drawn. Which lines is `planView`. Shared by the settings sheet and the map. */
+  view: ViewSettings;
   /** callsign with its flight strip open */
   selected: string | null;
   /** the camera follows the selected aircraft */
@@ -108,14 +133,27 @@ export interface TowerState {
   /** card id -> the held clearance, when what you said conflicts with that card */
   held: Record<string, string>;
   /** Who is on the frequency right now (the clip being played), for the pulse on the map. */
-  onAir: { speaker: "pilot" | "controller"; callsign: string | null } | null;
+  onAir: { speaker: "pilot" | "controller" | "squack"; callsign: string | null } | null;
   /** callsign -> what Tower just understood for it ("H270 ↑FL360"), shown on the aircraft for a few seconds */
   acks: Record<string, { text: string; at: number }>;
-  showStock: boolean;
   /** The latest Monte Carlo report (TRD 07): every pair with p_max >= 0.05. */
   risk: RiskReport | null;
   /** "A|B" -> that pair's latest numbers and timing, so a cone fades in and outlasts a one-report dip. */
   riskPairs: Record<string, SeenRisk>;
+  /** What the mic is hearing right now (the command bar mirrors it); null DICTATION_HOLD_MS after the final. */
+  dictation: (Dictation & { at: number }) | null;
+  // ---- the squack agent (TRD 08). Everything below is additive to the screen above.
+  /** squack's last five answers, oldest first. The dock shows the newest that was not dismissed. */
+  answers: StoredAnswer[];
+  /** turn_id -> the tool calls of that agent turn, in order. (`steps` above is the resolver's.) */
+  agentSteps: Record<string, AgentStep[]>;
+  /** The agent turn in progress or just finished: steps stream for it, the answer closes it. */
+  turn: { id: string; at: number; done: boolean } | null;
+  /** job_id -> the background simulation, running or done */
+  /** A camera move asked for by a ui_command; MapView consumes it once. */
+  cameraRequest: CameraRequest | null;
+  /** Which floating panel squack asked to open ("disrupt", "view", "scoreboard", ...). null: none in particular. */
+  panel: string | null;
 }
 
 /** The short form of an instruction, as a radar data block would show it. */
@@ -151,9 +189,12 @@ export const initialState: TowerState = {
   scoreboard: null,
   stats: null,
   disruptions: {},
+  dropMode: null,
   chat: [],
   notices: [],
   setupOpen: false,
+  settingsOpen: false,
+  view: { topDown: false, exaggeration: 6, twoFingers: "orbit" },
   selected: null,
   follow: false,
   focusSeq: 0,
@@ -164,9 +205,14 @@ export const initialState: TowerState = {
   held: {},
   onAir: null,
   acks: {},
-  showStock: false,
   risk: null,
   riskPairs: {},
+  dictation: null,
+  answers: [],
+  agentSteps: {},
+  turn: null,
+  cameraRequest: null,
+  panel: null,
 };
 
 export type Action =
@@ -178,21 +224,43 @@ export type Action =
   | { type: "user_chat"; text: string }
   | { type: "set_sliders"; sliders: Sliders }
   | { type: "set_plan_view"; view: PlanView }
-  | { type: "on_air"; clip: { speaker: "pilot" | "controller"; callsign: string | null } | null }
-  | { type: "toggle_stock" }
+  | { type: "on_air"; clip: { speaker: "pilot" | "controller" | "squack"; callsign: string | null } | null }
   | { type: "local_toggle"; key: "tower_enabled" | "auto_speak"; value: boolean }
   | { type: "dismiss_notice"; id: number }
   | { type: "set_setup_open"; open: boolean }
+  | { type: "set_settings_open"; open: boolean }
+  /** arm (or disarm) a disruption kind for the next map click */
+  | { type: "set_drop_mode"; kind: DisruptionKind | null }
+  /** a partial patch: `{ topDown: true }` or `{ exaggeration: 8 }` */
+  | { type: "set_view"; view: Partial<ViewSettings> }
   | { type: "select"; callsign: string | null }
   /** "take me to it": select, follow, and fly the camera there. An alert card does this. */
   | { type: "focus"; callsign: string }
   | { type: "set_follow"; on: boolean }
-  | { type: "reset" };
+  /** the hold after a dictation final is over; a final younger than the hold is left alone */
+  | { type: "dictation_clear" }
+  | { type: "reset" }
+  // ---- the squack agent (TRD 08)
+  /** apply a ui.* command on the screen, whether it came as an event or from a card's button */
+  | { type: "ui_command"; command: UiCommand["command"]; args: Record<string, unknown> }
+  | { type: "dismiss_answer"; turn_id: string }
+  /** MapView applied the camera request with this seq */
+  | { type: "camera_consumed"; seq: number }
+  | { type: "set_panel"; panel: string | null };
 
 const TRANSCRIPT_CAP = 200;
 const GHOST_MS = 30000; // how long the old path stays on screen after a reroute
 
 export type PlanView = "today" | "tower" | "both" | "changed";
+
+export interface ViewSettings {
+  /** camera straight down (pitch 0) instead of the tilted default */
+  topDown: boolean;
+  /** altitude exaggeration, 1 to 14 */
+  exaggeration: number;
+  /** what two fingers on the trackpad do: swing round the scene and tilt it, or zoom (a mouse wheel wants zoom) */
+  twoFingers: "orbit" | "zoom";
+}
 
 export interface Ghost {
   callsign: string;
@@ -210,6 +278,8 @@ function differs(a: LonLatAlt[], b: LonLatAlt[]): boolean {
 }
 
 const FLASH_MS = 4000;
+/** A dictation final stays on the command bar this long, then the slice is cleared. */
+export const DICTATION_HOLD_MS = 1500;
 /** Cone hysteresis: shows at 0.05, kept while p_max stays above 0.02, and for this long after it leaves the report. */
 const RISK_SHOW_P = 0.05;
 const RISK_KEEP_P = 0.02;
@@ -248,6 +318,47 @@ function clearWorld(state: TowerState): TowerState {
     risk: null,
     riskPairs: {},
   };
+}
+
+const ANSWERS_CAP = 5;
+const PLAN_VIEWS = new Set<string>(["today", "tower", "both", "changed"]);
+
+/**
+ * A ui.* tool ran (or a card's button was pressed): change what the screen shows. Focus and follow
+ * are the existing actions; camera, line_view, panel and mode set state the map and panels read.
+ */
+export function applyUiCommand(state: TowerState, command: UiCommand["command"], args: Record<string, unknown>): TowerState {
+  const cs = typeof args.callsign === "string" ? args.callsign.toUpperCase() : null;
+  switch (command) {
+    case "focus":
+      return cs ? reducer(state, { type: "focus", callsign: cs }) : state;
+    case "follow": {
+      const on = typeof args.on === "boolean" ? args.on : true;
+      if (cs && on) return reducer(state, { type: "focus", callsign: cs });
+      return { ...state, follow: on && !!state.selected };
+    }
+    case "camera": {
+      const num = (k: string) => (typeof args[k] === "number" && Number.isFinite(args[k]) ? (args[k] as number) : undefined);
+      const req: CameraRequest = { seq: (state.cameraRequest?.seq ?? 0) + 1 };
+      if (args.top_down === true) req.top_down = true;
+      if (num("pitch") !== undefined) req.pitch = Math.max(0, Math.min(78, num("pitch")!));
+      if (num("bearing") !== undefined) req.bearing = num("bearing");
+      if (num("exaggeration") !== undefined) req.exaggeration = Math.max(1, Math.min(14, Math.round(num("exaggeration")!)));
+      return { ...state, cameraRequest: req };
+    }
+    case "line_view": {
+      const view = typeof args.view === "string" ? args.view : typeof args.mode === "string" ? args.mode : null;
+      return view && PLAN_VIEWS.has(view) ? { ...state, planView: view as PlanView } : state;
+    }
+    case "panel": {
+      const name = typeof args.name === "string" ? args.name : typeof args.panel === "string" ? args.panel : null;
+      const open = args.open !== false;
+      if (name === "setup") return { ...state, setupOpen: open };
+      return { ...state, panel: open ? name : null };
+    }
+    default:
+      return state;
+  }
 }
 
 export const riskKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
@@ -467,6 +578,37 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
       return { ...state, chat: [...state.chat, { role: "agent" as const, text: r.text, actions: r.actions, at: Date.now() }].slice(-30) };
     }
 
+    case "dictation": {
+      const d = ev.payload;
+      const now = Date.now();
+      // A partial that arrives after its final is stale (the backend drops them, but the order on the wire is the rule).
+      if (!d.final && state.dictation?.final && state.dictation.channel === d.channel) return state;
+      const next = { ...state, dictation: { ...d, at: now } };
+      // Spoken to squack: the line joins the chat exactly as if it had been typed. The backend sends the request.
+      if (d.final && d.channel === "agent" && d.text.trim()) {
+        next.chat = [...state.chat, { role: "user" as const, text: d.text, at: now }].slice(-30);
+      }
+      return next;
+    }
+
+    // ---- the squack agent (TRD 08)
+    case "agent_step": {
+      const id = ev.payload.turn_id;
+      const prev = state.agentSteps[id] ?? [];
+      const agentSteps = { ...state.agentSteps, [id]: [...prev.filter((s) => s.step !== ev.payload.step), ev.payload].sort((a, b) => a.step - b.step) };
+      const turn = state.turn?.id === id ? state.turn : { id, at: Date.now(), done: false };
+      return { ...state, agentSteps, turn };
+    }
+
+    case "answer": {
+      const a: StoredAnswer = { ...ev.payload, at: Date.now() };
+      const answers = [...state.answers.filter((x) => x.turn_id !== a.turn_id), a].slice(-ANSWERS_CAP);
+      return { ...state, answers, turn: { id: a.turn_id, at: state.turn?.id === a.turn_id ? state.turn.at : a.at, done: true } };
+    }
+
+    case "ui_command":
+      return applyUiCommand(state, ev.payload.command, ev.payload.args ?? {});
+
     default:
       return state;
   }
@@ -490,22 +632,36 @@ export function reducer(state: TowerState, action: Action): TowerState {
       return { ...state, onAir: action.clip };
     case "set_plan_view":
       return { ...state, planView: action.view };
-    case "toggle_stock":
-      return { ...state, showStock: !state.showStock };
     case "local_toggle":
       return state.sim ? { ...state, sim: { ...state.sim, [action.key]: action.value } } : state;
     case "dismiss_notice":
       return { ...state, notices: state.notices.filter((n) => n.id !== action.id) };
     case "set_setup_open":
       return { ...state, setupOpen: action.open };
+    case "set_settings_open":
+      return { ...state, settingsOpen: action.open };
+    case "set_drop_mode":
+      return { ...state, dropMode: action.kind };
+    case "set_view":
+      return { ...state, view: { ...state.view, ...action.view } };
     case "select":
       return { ...state, selected: action.callsign, follow: action.callsign ? state.follow : false };
     case "focus":
       return { ...state, selected: action.callsign, follow: true, focusSeq: state.focusSeq + 1 };
     case "set_follow":
       return { ...state, follow: action.on };
+    case "dictation_clear":
+      return state.dictation?.final && Date.now() - state.dictation.at >= DICTATION_HOLD_MS ? { ...state, dictation: null } : state;
     case "reset":
-      return { ...initialState, connection: state.connection };
+      return { ...initialState, connection: state.connection, view: state.view };
+    case "ui_command":
+      return applyUiCommand(state, action.command, action.args);
+    case "dismiss_answer":
+      return { ...state, answers: state.answers.map((a) => (a.turn_id === action.turn_id ? { ...a, dismissed: true } : a)) };
+    case "camera_consumed":
+      return state.cameraRequest?.seq === action.seq ? { ...state, cameraRequest: null } : state;
+    case "set_panel":
+      return { ...state, panel: action.panel };
   }
 }
 

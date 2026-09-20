@@ -1,19 +1,20 @@
 @import "tailwindcss";
 
 :root {
-  /* Night operations room: near-black ink, one cool signal colour for Tower's plan, one warm
-     annunciator colour for anything that changed, red only for something wrong. */
-  --bg: #04060a;
-  --panel: #0a0e14;
-  --panel-2: #10161f;
-  --line: #1c2633;
-  --fg: #dbe3ec;
-  --muted: #74808e;
-  --accent: #46c8ff;
-  --ok: #3ddc97;
-  --warn: #ffb02e;
-  --bad: #ff4d5e;
-  --glass: rgba(8, 11, 17, 0.82);
+  /* squack. One dark ground, white ink, opacity for hierarchy. Colour only when it means something:
+     green = live, correct, on frequency. red = wrong. amber = Tower is asking. Nothing else is coloured. */
+  --bg: #0a0a0b;
+  --panel: #111214;
+  --panel-2: #17181b;
+  --line: #232529;
+  --fg: #ececec;
+  --muted: #8a8f98;
+  --accent: #ececec;      /* Tower's own lines and chips are white, not cyan */
+  --ok: #3ddc84;
+  --warn: #f5b83d;
+  --bad: #ff5a6e;
+  --glass: rgba(17, 18, 20, 0.92);
+  --radius: 8px;
 }
 
 @theme inline {
@@ -27,7 +28,7 @@
   --color-ok: var(--ok);
   --color-warn: var(--warn);
   --color-bad: var(--bad);
-  --font-sans: var(--font-b612), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-jakarta), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-b612-mono), ui-monospace, "SF Mono", Menlo, monospace;
 }
 
@@ -40,44 +41,25 @@ html, body {
 }
 
 .panel {
-  background: var(--glass);
-  border: 1px solid rgba(70, 200, 255, 0.13);
-  border-radius: 8px;
-  backdrop-filter: blur(14px) saturate(1.2);
-  -webkit-backdrop-filter: blur(14px) saturate(1.2);
-  box-shadow: 0 18px 50px -24px rgba(0, 0, 0, 0.9);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
 }
 
-/* Panels that float over the map: translucent, blurred, with instrument-bezel corner ticks. */
+/* Panels that float over the map: flat, quiet, one hairline. No blur, no glow, no bezel ticks. */
 .glass {
-  /* no position here: it must not override Tailwind's absolute/relative on the same element.
-     The corner ticks still anchor, because every .glass in the app is positioned. */
   background: var(--glass);
-  border: 1px solid rgba(70, 200, 255, 0.14);
-  border-radius: 8px;
-  backdrop-filter: blur(14px) saturate(1.2);
-  -webkit-backdrop-filter: blur(14px) saturate(1.2);
-  box-shadow: 0 18px 50px -20px rgba(0, 0, 0, 0.9), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
 }
-.glass::before,
-.glass::after {
-  content: "";
-  position: absolute;
-  width: 9px;
-  height: 9px;
-  pointer-events: none;
-  border-color: rgba(70, 200, 255, 0.55);
-  border-style: solid;
-}
-.glass::before { top: -1px; left: -1px; border-width: 1px 0 0 1px; border-top-left-radius: 8px; }
-.glass::after { bottom: -1px; right: -1px; border-width: 0 1px 1px 0; border-bottom-right-radius: 8px; }
-.glass .panel { background: rgba(14, 19, 27, 0.72); }
+.glass .panel { background: var(--panel-2); }
 
 .eyebrow {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: none;
   color: var(--muted);
 }
 
@@ -91,8 +73,19 @@ html, body {
 .maplibregl-ctrl-attrib a { color: var(--muted) !important; }
 .maplibregl-canvas { outline: none; }
 
-.scroll-thin::-webkit-scrollbar { width: 6px; height: 6px; }
-.scroll-thin::-webkit-scrollbar-thumb { background: #2a3442; border-radius: 3px; }
+/* One quiet scrollbar everywhere something scrolls: a 4px pill inset from the edge. */
+.scroll-thin { scrollbar-width: thin; scrollbar-color: rgba(236, 236, 236, 0.18) transparent; }
+.scroll-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+.scroll-thin::-webkit-scrollbar-track { background: transparent; }
+.scroll-thin::-webkit-scrollbar-thumb {
+  background: rgba(236, 236, 236, 0.14);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+.scroll-thin::-webkit-scrollbar-thumb:hover { background: rgba(236, 236, 236, 0.28); background-clip: padding-box; }
+.scroll-thin::-webkit-scrollbar-button { display: none; }
+.scroll-thin::-webkit-scrollbar-corner { background: transparent; }
 
 @keyframes pulse-ring {
   0% { box-shadow: 0 0 0 0 rgba(255, 77, 94, 0.6); }
@@ -141,3 +134,72 @@ input[type="range"] { accent-color: var(--accent); }
 @keyframes boot-appear { to { opacity: 1; } }
 @keyframes boot-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) { .boot-radar i, .boot-word span { animation-duration: 0.01s !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; opacity: 1; transform: none; } }
+
+/* ---------------------------------------------------------------------------------------------
+   Shared controls. One dark ground, white ink, hairlines. Reuse these before inventing a look.
+   --------------------------------------------------------------------------------------------- */
+/* .btn: quiet text button with a hairline; 28px tall, sentence case. Add disabled to dim it. */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 500; line-height: 1; white-space: nowrap; transition: color 0.15s, background-color 0.15s, border-color 0.15s; }
+.btn:hover:not(:disabled) { color: var(--fg); border-color: #34373d; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+/* .btn-primary: the one filled button on a screen. White ground, dark ink. Combine with .btn. */
+.btn-primary { background: var(--fg); color: var(--bg); border-color: var(--fg); font-weight: 600; }
+.btn-primary:hover:not(:disabled) { background: #ffffff; color: var(--bg); border-color: #ffffff; }
+/* .btn-round: a 32px circle for one icon (play, pause, the gear). Combine with .btn. */
+.btn-round { width: 32px; height: 32px; padding: 0; border-radius: 50%; }
+.btn > svg { width: 12px; height: 12px; flex: none; }
+.btn-round svg { width: 14px; height: 14px; }
+/* .seg: segmented control; children are buttons, the chosen one carries .seg-on or aria-pressed="true". */
+.seg { display: inline-flex; align-items: stretch; height: 28px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: transparent; }
+.seg > button { padding: 0 10px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 500; line-height: 1; white-space: nowrap; transition: color 0.15s, background-color 0.15s; }
+.seg > button + button { border-left: 1px solid var(--line); }
+.seg > button:hover:not(:disabled) { color: var(--fg); }
+.seg > button:disabled { opacity: 0.4; cursor: not-allowed; }
+.seg > button.seg-on, .seg > button[aria-pressed="true"] { background: var(--fg); color: var(--bg); font-weight: 600; }
+.seg-sm { height: 24px; } .seg-sm > button { padding: 0 8px; font-size: 11px; }
+/* .pill: small on/off toggle. Outline when off, add .pill-on for filled white when on. */
+.pill { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 500; line-height: 1; white-space: nowrap; transition: color 0.15s, background-color 0.15s, border-color 0.15s; }
+.pill:hover:not(:disabled) { color: var(--fg); border-color: #34373d; }
+.pill-on, .pill-on:hover:not(:disabled) { background: var(--fg); color: var(--bg); border-color: var(--fg); font-weight: 600; }
+/* .chip: muted inline status label; .chip-ok / .chip-warn / .chip-bad tint the text and hairline only. */
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-size: 11px; font-weight: 500; line-height: 1; white-space: nowrap; }
+.chip-ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
+.chip-warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.chip-bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+/* .badge: a notification pill carrying one number. Tinted when the number matters, quiet when it does not. */
+.badge { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 8px; border-radius: 999px; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1; background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.badge-bad { background: rgba(255, 90, 110, 0.16); color: var(--bad); border-color: rgba(255, 90, 110, 0.35); }
+.badge-ok { background: rgba(61, 220, 132, 0.16); color: var(--ok); border-color: rgba(61, 220, 132, 0.35); }
+/* .dot: 6px status dot, muted by default; .dot-ok / .dot-warn / .dot-bad when the colour means something. */
+.dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot-ok { background: var(--ok); } .dot-warn { background: var(--warn); } .dot-bad { background: var(--bad); }
+/* .stat: muted label followed by a white tabular number in <b>. */
+.stat { display: inline-flex; align-items: baseline; gap: 5px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.stat b { font-weight: 600; color: var(--fg); font-variant-numeric: tabular-nums; }
+/* .card-pick: selectable card with a hairline; .card-pick-on turns the hairline white. */
+.card-pick { display: block; text-align: left; width: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel-2); transition: border-color 0.15s; }
+.card-pick:hover { border-color: #3a3d44; }
+.card-pick-on, .card-pick-on:hover { border-color: var(--fg); }
+/* .scrim: full-bleed dark backdrop behind a sheet. No blur. */
+.scrim { background: rgba(10, 10, 11, 0.8); }
+/* .hint: one small muted line that floats over the map, for example "World loaded, press Start". */
+.hint { display: inline-flex; align-items: center; gap: 4px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--glass); color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+/* Settings sheet: slides in from the right over a scrim. */
+.sheet { transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1); }
+.sheet-closed { transform: translateX(100%); }
+.scrim-fade { transition: opacity 0.2s ease; }
+@media (prefers-reduced-motion: reduce) { .sheet, .scrim-fade { transition: none; } }
+
+/* Command bar: the thin caret at the end of the typewriter placeholder, blinking only while a line is being typed. */
+@keyframes cb-caret { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+
+/* squack agent: a card entering the stage or the answer dock rises in over a quarter second. */
+@keyframes card-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.card-in { animation: card-in 0.25s cubic-bezier(0.22, 1, 0.36, 1) both; }
+@media (prefers-reduced-motion: reduce) { .card-in { animation-duration: 0.01s; } }
+
+/* A popover opening downward from a top-bar button (the Disrupt menu): it grows from its top edge. */
+.pop-down { transform-origin: top center; animation: pop-down 0.18s cubic-bezier(0.22, 1, 0.36, 1) both; }
+@keyframes pop-down { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .pop-down { animation-duration: 0.01s; } }
