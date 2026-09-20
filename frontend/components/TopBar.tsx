@@ -81,7 +81,8 @@ export default function TopBar() {
           ) : sim?.source === "real" && sim.meta ? (
             `${place} · ${sim.meta.date} ${String(sim.meta.hour_utc ?? 0).padStart(2, "0")}:00Z`
           ) : (
-            (sim?.scenario ?? "No scenario")
+            // "custom/24/busy/7" is a generated sky: say it the way the setup panel did.
+            (sim?.scenario?.startsWith("custom/") ? sim.scenario.split("/").slice(0, 3).join(" · ") : (sim?.scenario ?? "No scenario"))
           )}
         </span>
       </div>

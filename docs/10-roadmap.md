@@ -290,6 +290,8 @@ Measured Sunday 00:40 on the demo laptop: 2.3 ms and about 545,000 futures per s
 - **No extra churn.** One controller saying one card every 14 s after a storm: still one heading and one back-on-course card per flight, no loss of separation, nobody in the storm. Voice off stress run (six disruptions, four scenarios): same numbers as before the merge.
 - The whole test suite now takes about 2.5 minutes instead of 35 s, because every tick of every world in every test runs the prediction. `World.risk_predict` is injectable if that becomes a nuisance.
 
+**A custom sky in Setup.** Beside Demo, Dense and Intruder the simulated tab has **Custom**: aircraft (2 to 80), how fast they arrive (calm, normal, busy) and Shuffle for another draw. `sim/scenarios.py::custom` generates it on the demo route network, three already entering when Start is pressed so the screen is never empty, the upstream 3 minutes per entry fix still kept, so "busy" with many aircraft is a long queue and the description says how many share the sector at the peak. Its name is its recipe (`custom/24/busy/7`), so loading, Reset and repeatability need nothing stored.
+
 ### Phase 7. Scale and robustness. About 2 hours
 - [ ] Planner: initial plan for 150 flights in under 5 seconds, replans inside their budget. If not, cap the scenario and say so
 - [ ] The investigating agent runs off the clock's critical path so the map never freezes while it thinks
