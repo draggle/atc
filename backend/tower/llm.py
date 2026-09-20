@@ -271,8 +271,20 @@ class MockLLM:
             return call("raise_alert", reason=f"another aircraft read back a clearance issued to {callsign}")
 
         if "fix name was not understood" in (verdict.get("reason") or ""):
+            # With a searchable memory, fuzzy-match the garbled word against the sector's fixes
+            # first, so the trace shows what the pilot probably said before radar confirms it.
+            words = [w for w in (tx.get("text_norm") or "").split() if not w.isupper()]  # drop callsigns
+            cue = next((i for i, w in enumerate(words) if w in ("direct", "proceed", "proceeding")), None)
+            garbled = " ".join(w for w in words[cue + 1:] if w != "to") if cue is not None else ""
+            if ctx.get("memory") and garbled and "sanity_check" not in done and budget_left > 1:
+                return call("sanity_check", type="route", value=garbled)
+            guess = (done.get("sanity_check") or {}).get("closest_waypoint")
+            reason = None
+            if "sanity_check" in done:
+                reason = (f"fix heard as '{garbled}', closest known fix is {guess}; watching radar for the turn"
+                          if guess else f"fix heard as '{garbled}' matches no known fix; watching radar for the turn")
             if "watch" not in done:
-                return call("watch", callsign=callsign, seconds=60)
+                return call("watch", callsign=callsign, seconds=60, **({"reason": reason} if reason else {}))
             return call("mark_uncertain", reason="fix name unintelligible; radar will confirm the routing")
 
         if verdict.get("result") == "partial" or error in ("omitted_item", "ack_only"):

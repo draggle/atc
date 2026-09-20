@@ -324,6 +324,26 @@ def test_resolver_trace_names_elasticsearch_and_searches_radar(mem: ElasticMemor
     assert res.steps[-1].tool == "raise_alert" and "21000" in res.verdict.reason
 
 
+def test_garbled_fix_searches_waypoints_before_watching(mem: ElasticMemory):
+    active = ["ACA123", "ACA133"]
+    mem.index_waypoints([{"name": "ESTIR", "x_nm": 0, "y_nm": 0}, {"name": "PIKAR", "x_nm": 10, "y_nm": 0}])
+    core = TowerCore(llm=MockLLM(), memory=mem, waypoints={"ESTIR": (0, 0), "PIKAR": (10, 0)})
+    c_ext = parse(normalize("air canada one two three proceed direct estir"), active, "controller")
+    c = OpenClearance(id="c1", callsign=c_ext.callsign, items=c_ext.items, issued_at=0.0)
+    # Stock Whisper turns "ESTIR" into ordinary words; "estr" is one edit from a real fix name.
+    pilot = normalize("proceeding direct at estr air canada one two three")
+    tx = Transmission(id="t2", t_start=5, t_end=7, audio_ref="", text_raw=pilot, text_norm=pilot,
+                      asr_confidence=0.9, speaker="pilot")
+    v = check(c, parse(pilot, active, "pilot", "t2"), tx, active=active)
+    assert v.result == "ambiguous" and "fix name was not understood" in v.reason, v.reason
+    res = core.resolver.resolve(c, v, tx, extra_context={"memory": mem.label})
+    # BM25 over the radio log for the missing item, then a fuzzy fix search, then radar
+    assert [s.tool for s in res.steps] == ["frequency_history", "sanity_check", "watch"]
+    assert all(s.result_summary.startswith("[Elasticsearch]") for s in res.steps[:2])
+    assert res.steps[1].args == {"type": "route", "value": "at estr"}
+    assert "at estr" in res.verdict.reason and res.watch_request is not None
+
+
 def test_sanity_check_offers_the_closest_fix(mem: ElasticMemory):
     mem.index_waypoints([{"name": "ESTIR", "x_nm": 0, "y_nm": 0}])
     core = TowerCore(llm=MockLLM(), memory=mem, waypoints={"ESTIR": (0, 0)})
