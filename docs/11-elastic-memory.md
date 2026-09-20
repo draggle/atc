@@ -51,16 +51,16 @@ If the cluster is unreachable at start, the app logs one warning and runs withou
 | `backend/tower/resolver/tools.py` | Two new tools, `nearby_aircraft` and `aircraft_track`, a `source` label, and `summarize()` prefixes search steps with it |
 | `backend/tower/resolver/agent.py` | Passes the source into the step summary |
 | `backend/tower/pipeline.py` | `TowerCore(memory=...)`. Tool backends ask memory first and fall back to local state. Keeps the last 120 radar frames per aircraft for the local `aircraft_track`. `sanity_check` adds the closest fix for a garbled route. Puts `memory` into the resolver's context |
-| `backend/tower/llm.py` | `MockLLM` policy: with a memory, calls `aircraft_track` and `nearby_aircraft`, and decides from the radar trend when it settles the altitude |
+| `backend/tower/llm.py` | `MockLLM` policy: with a memory, calls `aircraft_track` and `nearby_aircraft`, decides from the radar trend when it settles the altitude, and for a garbled fix name runs `frequency_history` and `sanity_check` (fuzzy fix search) before watching radar |
 | `backend/world.py` | `World(memory=...)`. All events pass through `memory.observe` before the WebSocket. New session per load, waypoints indexed with lat/lon, `memory` in the `state` event |
 | `backend/app.py` | `/health` reports memory status |
 | `backend/tools/elastic_check.py` | New. Live check against the real cluster |
 | `backend/tools/elastic_demo.py` | New. Drives a running backend over the WebSocket and prints every resolver step |
-| `backend/tests/test_memory.py` | 13 tests on a fake Elasticsearch that evaluates the exact query shapes used: filters, geo distance, fuzzy match, collapse, sort. Run offline |
+| `backend/tests/test_memory.py` | 14 tests on a fake Elasticsearch that evaluates the exact query shapes used: filters, geo distance, fuzzy match, collapse, sort. Run offline |
 | `backend/pyproject.toml` | `elasticsearch>=8.15` |
 | `.env.example`, `README.md`, `CLAUDE.md` | The two variables, this doc in the map |
 
-Every existing test still passes: 286 in `backend/`.
+Every existing test still passes: 287 in `backend/` (273 before this branch).
 
 ## Merging notes
 
@@ -69,6 +69,13 @@ Every existing test still passes: 286 in `backend/`.
 - **Two new tool names in `TOOL_SCHEMAS`.** A real model on Baseten (`RESOLVER_MODEL`) will see them and may call them; both work with or without Elastic.
 - **The radar index grows.** One doc per aircraft per real second while running. An hour of the 159-flight Europe scenario is about 570,000 small docs, well inside a serverless project. Each `load` starts a new `session` id so searches never see a previous world. Delete old sessions from Kibana if it ever matters: `DELETE tower-radar/_query { "query": { "term": { "session": "<id>" } } }`.
 - **Verified live** Saturday evening against the Serverless project from a laptop: all four searches returned the right answers. One thing learned: new documents become searchable only after the cluster's refresh, a few seconds on Serverless. Background batches accept that lag (the resolver reads data that is seconds old anyway). `Memory.refresh()` forces one refresh; `flush()` calls it, and the waypoint index at load does too, so a script, a test, or the first resolver run after load sees what was just written. Do not use `refresh="wait_for"` per write on Serverless: it blocked for seconds per document. If `tools/elastic_check.py` ever prints `BAD`, look at the query in `memory.py` and the mapping in Kibana Dev Tools with `GET tower-*/_mapping`.
+
+## Status, Sunday morning Sept 20
+
+- Live on a laptop against the Serverless project: backend log shows `Elasticsearch memory on ...`, `_bulk` writes return 200 every second, `elastic_check.py` passes all four searches.
+- `elastic_demo.py` drives the app with pilot error rate and radio noise at maximum; pilot readbacks through ElevenLabs voices and Whisper come back at confidence 0.4 to 0.8, which is the range that wakes the resolver. First full run was in progress when this was written; the count of `[Elasticsearch]` steps it printed is the number to quote.
+- **When the agent wakes, and when it does not.** Tier 1 alerts on its own for a plainly wrong readback (wrong value, "wilco" only, wrong aircraft) and stays silent for a right one. The resolver, and so the Elastic trace, runs only on an *unclear* one: speech confidence under 0.6, the expected value in another hypothesis, similar callsigns both expecting a readback, or a routing whose fix name was not understood. On stage, raise radio noise to make the first case common. Typed radio text is always the controller, so a judge cannot type a bad readback; the AI pilots must produce it by voice.
+- If a rehearsal never produces an amber card, the fallback is a demo switch that routes every non-matching readback through the resolver. Not built; about 20 lines in `tower/pipeline.py` `_on_pilot`, behind an env var, and it must be off for the Monte Carlo numbers.
 
 ## What would make it stronger, in order
 
