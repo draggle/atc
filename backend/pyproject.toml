@@ -20,6 +20,7 @@ dependencies = [
   "silero-vad>=6.0",
   "onnxruntime>=1.20",
   "matplotlib>=3.8",
+  "elasticsearch>=8.15",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,106 @@
+# 11. Elastic memory: the resolver's searchable context layer
+
+Written Saturday Sept 19, 2026, for the Elastic "Find the Signal" sponsor prize. Built on branch `kavir/elastic-memory`, **merged into `main` Sunday Sept 20** as a fast-forward with all 368 tests passing. This page is the reference: what was built, why, how to turn it on, and how to show it.
+
+## The one-paragraph version
+
+Tower's resolver agent already investigates messy readbacks with tools: re-listen, who is on frequency, what was this aircraft told, what is it doing on radar. Before this change those tools read Python lists inside the process. Now every transmission, clearance, verdict, resolver step and radar frame is streamed into Elasticsearch as it happens, and the tools *search* it: BM25 text search over the radio log, a geo query for nearby aircraft, a time-series query for what the plane did, and a fuzzy match for misheard fix names. The agent's trace on screen names the source, for example `[Elasticsearch] descending over 20 s: 25000 to 24200 ft`. Without `ELASTIC_URL` nothing changes: the app runs exactly as before on the in-memory path.
+
+## What works, verified Sunday morning Sept 20 on a laptop
+
+- [x] Backend connects to the Serverless project at startup and logs `Elasticsearch memory on ...`
+- [x] Every radar frame, radio message, clearance, verdict and resolver step is written live (`_bulk` returns 200 about once a second while the sim runs)
+- [x] `tools/elastic_check.py`: all four searches answer correctly on the real cluster (BM25 ranking, geo distance, altitude trend over time, fuzzy fix name)
+- [x] `tools/elastic_demo.py`: 19 resolver steps, 3 of them Elasticsearch searches, 9 alerts, with the real Baseten resolver and ElevenLabs pilot voices through Whisper
+- [x] The real model chose the searches itself, for example `aircraft_track(DAL789, 30 s)` on a 0.44-confidence readback
+- [x] Kibana Discover shows the same steps in `tower-resolver_steps` and the radio log in `tower-transmissions`
+- [x] With `ELASTIC_URL` unset the app is unchanged: 368 tests pass either way
+- [ ] Not yet seen in a browser: an amber card with a `[Elasticsearch]` line in its expanded trace. The data is there (the demo script reads the same events the screen does), but nobody has watched it on `localhost:3000` yet
+- [ ] Not built: a top-bar badge saying Elastic is connected, and a Kibana dashboard
+
+## What you are looking at, in plain words
+
+Elastic is a notebook the app writes in constantly. Three places show it.
+
+- **`http://127.0.0.1:8000/health`**, the backend's status line. The `memory` part is ours: `enabled: true` means it is connected, `session` is the name of this run (new on every Load so runs never mix), `docs_indexed` is how many entries it has written since Start (about one per aircraft per second, so it climbs on every refresh), `errors: 0` means every write was accepted.
+- **The app at `localhost:3000`.** Every line in the Frequency panel is one entry in the notebook. Every second the map redraws is about eight more. When a pilot's reply is too garbled to judge, the agent investigates, and the lines in its trace that start with `[Elasticsearch]` are the agent reading the notebook: "what was this plane told", "where has it been for 30 seconds", "who is near it", "which real fix name is closest to what I heard".
+- **Kibana Discover**, the notebook opened from Elastic's own site. The query box takes ES|QL. `FROM tower-transmissions | WHERE session LIKE "demo*" | KEEP t, speaker, callsign, text_norm, asr_confidence | SORT t DESC` is the radio log, one row per thing said: `speaker` is controller, pilot, or datalink (an instruction Tower sent as text), `asr_confidence` is how clearly it was heard, 1 for typed, lower for garbled. `FROM tower-resolver_steps | WHERE result_summary LIKE "[Elasticsearch]*" | KEEP t, clearance_id, tool, result_summary | SORT t DESC` is every search the agent ran. `FROM tower-verdicts | STATS n = COUNT(*) BY result, error_type` counts the alerts by type, and the chart button turns it into a bar chart.
+
+## What the prize asks for, and where each thing is
+
+| Elastic asked for | Where it is |
+|---|---|
+| Messy real-world data in | Whisper transcripts of noisy radio, radar frames, verdicts. `World._emit` pushes every WebSocket event into `Memory.observe` on its way out |
+| An agent that decides what to retrieve and calls tools | The resolver in `backend/tower/resolver/`, a hand-rolled tool loop capped at 4 calls. It chooses among `frequency_history`, `nearby_aircraft`, `aircraft_track`, `sanity_check`, `relisten`, `active_aircraft`, `aircraft_state` |
+| Elasticsearch as the context layer | `backend/tower/memory.py`. Five indices, `tower-transmissions`, `tower-clearances`, `tower-verdicts`, `tower-resolver_steps`, `tower-radar`, plus `tower-waypoints` |
+| BM25 | `history(callsign, n, query)`: `multi_match` on `text_norm` and `n_best` with `fuzziness: AUTO`, so the exchange the garbled readback best matches ranks first |
+| Geo query | `nearby(callsign, radius_nm)`: `geo_distance` on a `geo_point` around the aircraft's latest position, `collapse` by callsign for the newest frame each |
+| Time series | `track(callsign, seconds)`: range on `t`, sorted, reduced to altitude and heading trend |
+| Fuzzy matching | `closest_waypoint(word)`: fuzzy `match` plus prefix on fix names. Stock Whisper hears "ESTIR" as "estor" or "at better"; this finds ESTIR |
+| Closing the loop with an action | The resolver ends every run in exactly one of alert, dismiss, uncertain or watch. With Elastic on, the keyless mock policy also reads the radar track and alerts or dismisses from it (`tower/llm.py`, section 2a) |
+
+Not done, and honest about it: no dense vectors or reranking (the radio log is short phraseology where BM25 plus fuzziness does the job; vectors would add a model call to the hot path). No Elastic Agent Builder or Workflows: the agent loop is ours and runs on Baseten, per hard rule 5. No Kibana dashboard yet, though every index is there for one.
+
+## Turn it on
+
+1. Elastic Cloud, Serverless Elasticsearch project. Copy the Elasticsearch endpoint (not the Kibana one) and create an API key.
+2. In `.env` at the repo root:
+   ```
+   ELASTIC_URL=https://<project>.es.<region>.gcp.elastic.cloud:443
+   ELASTIC_API_KEY=<key>
+   ```
+3. `cd backend && uv pip install -e ".[dev]"` (adds the `elasticsearch` client), then prove it:
+   ```
+   .venv/bin/python tools/elastic_check.py
+   ```
+   It writes a tiny scripted session and runs all four searches. Every line should say `OK`.
+4. Start the backend. The log says `Elasticsearch memory on https://...`, `/health` shows `memory.docs_indexed` climbing, and the `state` event carries `"memory": "Elasticsearch"`.
+5. To see it in the trace: drag the pilot error rate and radio noise up, send altitude instructions, wait for an amber "Checking" card, expand the agent trace. Steps that searched are prefixed `[Elasticsearch]`. Or let a script drive it and print every step:
+   ```
+   .venv/bin/python tools/elastic_demo.py
+   ```
+   It talks to the running backend over the WebSocket like the screen does. The agent only wakes on *unclear* readbacks (low speech confidence, a similar callsign, a garbled fix name), never on plainly right or plainly wrong ones, so a run can end with zero steps; run it again or pass `--rounds 6`.
+
+If the cluster is unreachable at start, the app logs one warning and runs without memory. If it dies mid-session, each search fails within 2 s, returns None, and the tool falls back to the in-memory answer, so the resolver slows but the sim never stalls.
+
+## Files changed
+
+| File | Change |
+|---|---|
+| `backend/tower/memory.py` | New. `Memory` interface, `NullMemory`, `ElasticMemory`, `memory_from_env()`. Writes batch on a background thread; reads have a 2 s timeout |
+| `backend/tower/resolver/tools.py` | Two new tools, `nearby_aircraft` and `aircraft_track`, a `source` label, and `summarize()` prefixes search steps with it |
+| `backend/tower/resolver/agent.py` | Passes the source into the step summary |
+| `backend/tower/pipeline.py` | `TowerCore(memory=...)`. Tool backends ask memory first and fall back to local state. Keeps the last 120 radar frames per aircraft for the local `aircraft_track`. `sanity_check` adds the closest fix for a garbled route. Puts `memory` into the resolver's context |
+| `backend/tower/llm.py` | `MockLLM` policy: with a memory, calls `aircraft_track` and `nearby_aircraft`, decides from the radar trend when it settles the altitude, and for a garbled fix name runs `frequency_history` and `sanity_check` (fuzzy fix search) before watching radar |
+| `backend/world.py` | `World(memory=...)`. All events pass through `memory.observe` before the WebSocket. New session per load, waypoints indexed with lat/lon, `memory` in the `state` event |
+| `backend/app.py` | `/health` reports memory status |
+| `backend/tools/elastic_check.py` | New. Live check against the real cluster |
+| `backend/tools/elastic_demo.py` | New. Drives a running backend over the WebSocket and prints every resolver step |
+| `backend/tests/test_memory.py` | 14 tests on a fake Elasticsearch that evaluates the exact query shapes used: filters, geo distance, fuzzy match, collapse, sort. Run offline |
+| `backend/pyproject.toml` | `elasticsearch>=8.15` |
+| `.env.example`, `README.md`, `CLAUDE.md` | The two variables, this doc in the map |
+
+Every existing test still passes: 368 in `backend/` after merging main on Sunday morning (354 on main, 14 new here).
+
+## Merging notes
+
+- **No behaviour change without the env vars.** `NullMemory` answers None to everything and every caller falls back to the code that was there before. Tier 1 never touches memory.
+- **Schema additions only.** `state` gains an optional `memory` string. `ResolverStep.result_summary` may now start with `[Elasticsearch]`. The frontend ignores unknown fields; `frontend/lib/types.ts` does not need to change, though a small badge in the TopBar reading `state.memory` would be a nice two-line addition.
+- **Two new tool names in `TOOL_SCHEMAS`.** A real model on Baseten (`RESOLVER_MODEL`) will see them and may call them; both work with or without Elastic.
+- **The radar index grows.** One doc per aircraft per real second while running. An hour of the 159-flight Europe scenario is about 570,000 small docs, well inside a serverless project. Each `load` starts a new `session` id so searches never see a previous world. Delete old sessions from Kibana if it ever matters: `DELETE tower-radar/_query { "query": { "term": { "session": "<id>" } } }`.
+- **Verified live** Saturday evening against the Serverless project from a laptop: all four searches returned the right answers. One thing learned: new documents become searchable only after the cluster's refresh, a few seconds on Serverless. Background batches accept that lag (the resolver reads data that is seconds old anyway). `Memory.refresh()` forces one refresh; `flush()` calls it, and the waypoint index at load does too, so a script, a test, or the first resolver run after load sees what was just written. Do not use `refresh="wait_for"` per write on Serverless: it blocked for seconds per document. If `tools/elastic_check.py` ever prints `BAD`, look at the query in `memory.py` and the mapping in Kibana Dev Tools with `GET tower-*/_mapping`.
+
+## Status, Sunday morning Sept 20
+
+- Live on a laptop against the Serverless project: backend log shows `Elasticsearch memory on ...`, `_bulk` writes return 200 every second, `elastic_check.py` passes all four searches.
+- `elastic_demo.py`, one run of three rounds with pilot error rate and radio noise at maximum, ElevenLabs voices, local Whisper, and the real Baseten resolver (`RESOLVER_MODEL=zai-org/GLM-5.3-Fast`): **19 resolver steps, 3 searched Elasticsearch, 9 alerts.** Pilot readbacks came back at confidence 0.34 to 0.8, which is the range that wakes the resolver. Example step, chosen by the model: `aircraft_track(DAL789, 30 s)` returned `[Elasticsearch] climbing over 30.0 s: 35025 to 35775 ft, hdg 071 to 110`. The same steps are visible in Kibana Discover under `tower-resolver_steps`.
+- **Seen in that run:** with the real model, each step costs one to two seconds, and one case hit "resolver ran out of time" after three steps and ended `uncertain`, which is the correct failure. If that happens in rehearsal, consider `BUDGET_S` in `tower/resolver/agent.py` at about 8 s for a real model. The 5 s figure is hard rule 4 in `CLAUDE.md`, so that is the team's call, not this branch's.
+- **When the agent wakes, and when it does not.** Tier 1 alerts on its own for a plainly wrong readback (wrong value, "wilco" only, wrong aircraft) and stays silent for a right one. The resolver, and so the Elastic trace, runs only on an *unclear* one: speech confidence under 0.6, the expected value in another hypothesis, similar callsigns both expecting a readback, or a routing whose fix name was not understood. On stage, raise radio noise to make the first case common. Typed radio text is always the controller, so a judge cannot type a bad readback; the AI pilots must produce it by voice.
+- If a rehearsal never produces an amber card, the fallback is a demo switch that routes every non-matching readback through the resolver. Not built; about 20 lines in `tower/pipeline.py` `_on_pilot`, behind an env var, and it must be off for the Monte Carlo numbers.
+
+## What would make it stronger, in order
+
+1. A `frontend` badge and a per-step icon for `[Elasticsearch]` steps in `AlertCard.tsx`, so the judge sees the search without reading text.
+2. A Kibana dashboard on `tower-verdicts` and `tower-resolver_steps`: readback errors by type and airline, resolver decisions, seconds to alert. This is the "insights" idea from `docs/00-full-context.md` Part 11 with no new code.
+3. Dense vectors on `text_norm` via an Elastic inference endpoint, and a hybrid `rrf` query in `history()`. Only if a paraphrased readback ("down to two four zero") measurably beats BM25 with fuzziness on the held-out synthetic pairs.
+4. Resolver verdicts read back out of `tower-verdicts` as checker training rows (TRD 02 mentions this loop).
