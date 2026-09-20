@@ -8,6 +8,15 @@ import Select, { type SelectOption } from "./Select";
 import type { ScenarioInfo } from "@/lib/types";
 
 const DENSITIES = [1, 1.5, 2, 2.5] as const;
+/** The setup panel's own scenario: the backend generates it from these three numbers, and its name
+ *  ("custom/24/busy/7") is the whole recipe, so Restart rebuilds the same sky. */
+const CUSTOM = "custom";
+const PACES = [
+  { key: "calm", label: "Calm", every: "one every 2 min" },
+  { key: "normal", label: "Normal", every: "one every 75 s" },
+  { key: "busy", label: "Busy", every: "one every 40 s" },
+] as const;
+type Pace = (typeof PACES)[number]["key"];
 const CAPS = [40, 80, 120, 0] as const; // 0 = every flight
 const LIVE_WAIT_MS = 15000; // a live snapshot is one network fetch on the backend, about 8 s at worst
 
@@ -105,6 +114,9 @@ export default function SetupPanel() {
   const [source, setSource] = useState<Source>("sim");
   const [scenario, setScenario] = useState("");
   const [density, setDensity] = useState<number>(1);
+  const [flights, setFlights] = useState<number>(12);
+  const [pace, setPace] = useState<Pace>("normal");
+  const [seed, setSeed] = useState<number>(1);
   const [region, setRegion] = useState("");
   const [realName, setRealName] = useState("");
   const [liveRegion, setLiveRegion] = useState("");
@@ -226,7 +238,7 @@ export default function SetupPanel() {
   const chosenReal = reals.find((s) => s.name === realName);
   const willLoad =
     source === "sim"
-      ? chosenSim ? Math.round(chosenSim.flights * density) : 0
+      ? scenario === CUSTOM ? flights : chosenSim ? Math.round(chosenSim.flights * density) : 0
       : source === "real" && chosenReal ? (cap > 0 ? Math.min(cap, chosenReal.flights) : chosenReal.flights) : 0;
   // Nobody knows how many flights are up there until the snapshot comes back.
   const canLoad = source === "live" ? liveRegions.some((r) => r.key === liveRegion) : willLoad > 0;
@@ -242,7 +254,8 @@ export default function SetupPanel() {
   const load = () => {
     setStalled(false);
     setLoading(source);
-    if (source === "sim" && scenario) send({ type: "configure", source: "sim", scenario, density });
+    if (source === "sim" && scenario === CUSTOM) send({ type: "configure", source: "sim", scenario: CUSTOM, flights, pace, seed });
+    else if (source === "sim" && scenario) send({ type: "configure", source: "sim", scenario, density });
     else if (source === "real" && realName) send({ type: "configure", source: "real", scenario: realName, max_flights: cap > 0 ? cap : undefined });
     else if (source === "live" && canLoad) send({ type: "configure", source: "live", region: liveRegion, max_flights: cap > 0 ? cap : undefined });
     else setLoading(null);
@@ -278,11 +291,15 @@ export default function SetupPanel() {
     )),
   );
 
-  const scenarioOptions: SelectOption[] = sims.map((s) => ({
-    value: s.name,
-    label: s.name.charAt(0).toUpperCase() + s.name.slice(1),
-    detail: s.description || `${s.flights} flights`,
-  }));
+  const scenarioOptions: SelectOption[] = [
+    ...sims.map((s) => ({
+      value: s.name,
+      label: s.name.charAt(0).toUpperCase() + s.name.slice(1),
+      detail: s.description || `${s.flights} flights`,
+    })),
+    // Beside the presets: your own sky.
+    { value: CUSTOM, label: "Custom", detail: "How many aircraft, and how fast they arrive" },
+  ];
   const regionOptions: SelectOption[] = regions.map((r) => ({
     value: r.key,
     label: shortName(r.label),
@@ -339,11 +356,33 @@ export default function SetupPanel() {
                   <>
                     <div className="grid grid-cols-2 gap-3 items-end">
                       <Select label="Scenario" options={scenarioOptions} value={scenario} onChange={setScenario} />
-                      {seg("Traffic density", DENSITIES.map((d) => (
-                        <button key={d} onClick={() => setDensity(d)} aria-pressed={density === d}>{d}x</button>
-                      )))}
+                      {scenario === CUSTOM
+                        ? seg("How fast they arrive", PACES.map((p) => (
+                            <button key={p.key} onClick={() => setPace(p.key)} aria-pressed={pace === p.key} title={p.every}>{p.label}</button>
+                          )))
+                        : seg("Traffic density", DENSITIES.map((d) => (
+                            <button key={d} onClick={() => setDensity(d)} aria-pressed={density === d}>{d}x</button>
+                          )))}
                     </div>
-                    {chosenSim?.description && <p className="text-xs text-muted leading-snug">{chosenSim.description}</p>}
+                    {scenario === CUSTOM ? (
+                      <>
+                        <label className="flex flex-col gap-1.5">
+                          <span className="flex items-baseline justify-between text-xs text-muted">
+                            <span>Aircraft</span>
+                            <span className="font-mono tabular-nums text-fg">{flights}</span>
+                          </span>
+                          <input type="range" min={2} max={80} step={1} value={flights} onChange={(e) => setFlights(Number(e.target.value))} />
+                        </label>
+                        <div className="flex items-center gap-3">
+                          <button type="button" onClick={() => setSeed((n) => n + 1)} className="btn">Shuffle</button>
+                          <p className="text-xs text-muted leading-snug">
+                            Draw <span className="font-mono text-fg">{seed}</span>, {PACES.find((p) => p.key === pace)?.every}, three already entering at Start. The same settings always give the same sky.
+                          </p>
+                        </div>
+                      </>
+                    ) : (
+                      chosenSim?.description && <p className="text-xs text-muted leading-snug">{chosenSim.description}</p>
+                    )}
                   </>
                 )
               ) : shown === "live" ? (

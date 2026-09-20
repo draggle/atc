@@ -364,7 +364,13 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 density = float(data.get("density") or 1.0)
                 cap = data.get("max_flights")
                 try:
-                    if name not in SC.list_scenarios():
+                    if name == "custom":
+                        # {scenario: "custom", flights, pace: calm|normal|busy, seed}. The scenario is
+                        # generated, and its name carries all three, so Reset rebuilds the same one.
+                        name = SC.custom_name(int(data.get("flights") or 12), str(data.get("pace") or "normal"),
+                                              int(data.get("seed") or 1))
+                        density = 1.0
+                    if not SC.is_known(name):
                         raise ValueError(f"unknown scenario {name}")
                     world.load(name, max_flights=int(cap) if cap else None)
                     if abs(density - 1.0) > 1e-6 and not name.startswith("real/"):

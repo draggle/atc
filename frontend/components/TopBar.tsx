@@ -26,6 +26,8 @@ export function scenarioLabel(sim: SimState | null, connection: Connection): str
   const snapshotTag = connection === "mock" ? "Mock snapshot" : sim?.meta?.fallback === "saved_snapshot" ? "Saved snapshot" : "Live snapshot";
   if (live) return `${snapshotTag} · ${place}${snapshotAt ? ` · ${snapshotAt}` : ""}`;
   if (sim?.source === "real" && sim.meta) return `${place} · ${sim.meta.date} ${String(sim.meta.hour_utc ?? 0).padStart(2, "0")}:00Z`;
+  // "custom/24/busy/7" is the setup panel's generated sky: say it the way the panel did.
+  if (sim?.scenario?.startsWith("custom/")) return sim.scenario.split("/").slice(0, 3).join(" · ");
   return sim?.scenario ?? "No scenario";
 }
 
@@ -136,7 +138,14 @@ export default function TopBar() {
             className="btn !border-transparent tabular-nums"
             title={slowedForVoice ? "Manual: the clock is at 1x while there is something to say, and back to your speed between instructions." : "Clock speed. Manual only keeps up at 1x."}
           >
-            {speed}x{slowedForVoice && <span className="opacity-60">· 1x now</span>}
+            {speed}x
+            {slowedForVoice && (
+              // Why, and for how long: an exchange runs in real time; a new card holds the clock for
+              // a few seconds and then the chosen speed is back. Pressing a speed always goes at once.
+              <span className="opacity-60">
+                · 1x now{sim?.clock_why === "card" && (sim.clock_hold_s ?? 0) > 0 ? `, ${speed}x in ${Math.ceil(sim.clock_hold_s ?? 0)} s` : sim?.clock_why === "radio" ? ", on the radio" : ""}
+              </span>
+            )}
             <span className="opacity-60">▾</span>
           </button>
           {speedOpen && (
