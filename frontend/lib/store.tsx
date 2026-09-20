@@ -82,6 +82,8 @@ export interface TowerState {
   selected: string | null;
   /** the camera follows the selected aircraft */
   follow: boolean;
+  /** bumps on every "focus": the map flies to the selected aircraft when it changes */
+  focusSeq: number;
   sliders: Sliders;
   /** Which lines the map draws: the original routes, Tower's, both, or only flights Tower moved. */
   planView: PlanView;
@@ -115,6 +117,7 @@ export const initialState: TowerState = {
   setupOpen: false,
   selected: null,
   follow: false,
+  focusSeq: 0,
   sliders: { buffer_nm: 3, error_rate: 0.1, noise: 0.2 },
   planView: "both",
   ghosts: {},
@@ -126,6 +129,8 @@ export type Action =
   | { type: "event"; event: TowerEvent }
   | { type: "connection"; connection: Connection }
   | { type: "dismiss_alert"; clearance_id: string }
+  /** a radar watch ran its course with nothing to report: take its card down */
+  | { type: "stop_resolving"; clearance_id: string }
   | { type: "user_chat"; text: string }
   | { type: "set_sliders"; sliders: Sliders }
   | { type: "set_plan_view"; view: PlanView }
@@ -134,6 +139,8 @@ export type Action =
   | { type: "dismiss_notice"; id: number }
   | { type: "set_setup_open"; open: boolean }
   | { type: "select"; callsign: string | null }
+  /** "take me to it": select, follow, and fly the camera there. An alert card does this. */
+  | { type: "focus"; callsign: string }
   | { type: "set_follow"; on: boolean }
   | { type: "reset" };
 
@@ -273,8 +280,29 @@ function applyEvent(state: TowerState, ev: TowerEvent): TowerState {
     }
 
     case "clearance_opened":
-    case "clearance_updated":
-      return upsertClearance(state, ev.payload);
+    case "clearance_updated": {
+      // The resolver is done with a clearance once it leaves "open". Without an alert (it dismissed
+      // the doubt, or the readback matched after all) nothing else ends the CHECKING card, and it
+      // span for ever. A radar watch is the exception: that card counts itself down.
+      let next = upsertClearance(state, ev.payload);
+      const id = ev.payload.id;
+      // The controller said the correction and the pilot read it back right: that settles every
+      // standing alert about the same instruction to the same aircraft. It used to stay until
+      // dismissed by hand, which read as "Tower did not hear my correction".
+      if (ev.payload.status === "matched" && next.alerts.length > 0) {
+        const settled = new Set((ev.payload.items ?? []).map((i) => `${i.type}:${String(i.value).toUpperCase()}`));
+        const alerts = next.alerts.filter((a) => {
+          if (a.clearance_id === id) return false;
+          const cs = a.callsign ?? callsignForClearance(next, a.clearance_id);
+          if (cs !== ev.payload.callsign || a.expected.length === 0) return true;
+          return !a.expected.every((i) => settled.has(`${i.type}:${String(i.value).toUpperCase()}`));
+        });
+        if (alerts.length !== next.alerts.length) next = { ...next, alerts };
+      }
+      const watching = (state.steps[id] ?? []).at(-1)?.tool === "watch";
+      if (ev.payload.status === "open" || watching || !next.resolving.includes(id)) return next;
+      return { ...next, resolving: next.resolving.filter((r) => r !== id) };
+    }
 
     case "transcript": {
       const transcript = [...state.transcript, ev.payload].slice(-TRANSCRIPT_CAP);
@@ -331,6 +359,8 @@ export function reducer(state: TowerState, action: Action): TowerState {
       return applyEvent(state, action.event);
     case "connection":
       return { ...state, connection: action.connection };
+    case "stop_resolving":
+      return { ...state, resolving: state.resolving.filter((r) => r !== action.clearance_id) };
     case "dismiss_alert":
       return { ...state, alerts: state.alerts.filter((a) => a.clearance_id !== action.clearance_id) };
     case "user_chat":
@@ -349,6 +379,8 @@ export function reducer(state: TowerState, action: Action): TowerState {
       return { ...state, setupOpen: action.open };
     case "select":
       return { ...state, selected: action.callsign, follow: action.callsign ? state.follow : false };
+    case "focus":
+      return { ...state, selected: action.callsign, follow: true, focusSeq: state.focusSeq + 1 };
     case "set_follow":
       return { ...state, follow: action.on };
     case "reset":
@@ -372,6 +404,12 @@ export function highlightMap(state: TowerState): Record<string, "alert" | "resol
     if (cs) out[cs] = "alert";
   }
   return out;
+}
+
+/** The newest alert standing against this aircraft, if any. `alerts` is newest first. */
+export function alertFor(state: TowerState, callsign: string | null): ActiveAlert | undefined {
+  if (!callsign) return undefined;
+  return state.alerts.find((a) => (a.callsign ?? callsignForClearance(state, a.clearance_id)) === callsign);
 }
 
 export function callsignForClearance(state: TowerState, clearanceId: string): string | null {

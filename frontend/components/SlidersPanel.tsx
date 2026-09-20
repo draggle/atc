@@ -15,7 +15,9 @@ function Slider({ label, value, min, max, step, fmt, onChange }: { label: string
 }
 
 export default function SlidersPanel() {
-  const { sliders } = useTowerState();
+  const { sliders, sim } = useTowerState();
+  // A pilot can only get a readback wrong when there is one: spoken, at a speed speech can keep up with.
+  const noReadbacks = (sim?.speed ?? 1) > 1.5;
   const dispatch = useTowerDispatch();
   const { send } = useClient();
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -39,6 +41,11 @@ export default function SlidersPanel() {
         <Slider label="Pilot error rate" value={sliders.error_rate} min={0} max={0.5} step={0.05} fmt={(v) => `${Math.round(v * 100)}%`} onChange={(v) => set({ error_rate: v })} />
         <Slider label="Radio noise" value={sliders.noise} min={0} max={1} step={0.05} fmt={(v) => v.toFixed(2)} onChange={(v) => set({ noise: v })} />
       </div>
+      <p className={`mt-2 text-[10px] leading-snug ${noReadbacks && sliders.error_rate > 0 ? "text-warn" : "text-muted"}`}>
+        {noReadbacks
+          ? "Above 1.5x every instruction goes by data link: nothing is spoken, so no readback can go wrong. Drop to 1x to hear pilots."
+          : "Pilot errors happen in spoken readbacks. Say a card, or switch to Auto, and some will come back wrong."}
+      </p>
     </section>
   );
 }
