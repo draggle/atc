@@ -13,6 +13,19 @@ import type { Connection } from "./store";
 export const WS_URL = process.env.NEXT_PUBLIC_TOWER_WS ?? "ws://127.0.0.1:8000/ws";
 export const HTTP_URL = process.env.NEXT_PUBLIC_TOWER_HTTP ?? "http://127.0.0.1:8000";
 
+/**
+ * A hosted copy of the screen (Vercel, a domain) with no backend configured has nothing to knock
+ * on: the default address is 127.0.0.1, which there is the VISITOR'S machine, not ours. Knocking on
+ * it every three seconds is wrong, and browsers answer it with a "wants to access your local
+ * network" prompt. So a page that is not served from this machine opens on the scripted demo.
+ * `?live=1` opts back in, for running the hosted screen against a backend on your own laptop.
+ * Setting NEXT_PUBLIC_TOWER_WS (a hosted backend) turns this off: then there is something to reach.
+ */
+export function hostedWithoutBackend(hostname: string): boolean {
+  if (process.env.NEXT_PUBLIC_TOWER_WS) return false;
+  return !["localhost", "127.0.0.1", "::1", "[::1]", ""].includes(hostname);
+}
+
 const CONNECT_TIMEOUT_MS = 4000;
 const RECONNECT_MS = 3000;
 

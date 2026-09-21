@@ -48,8 +48,9 @@ def main() -> None:
     res = run(sc, args.runs, args.seed, tuple(args.arms.split(",")), args.error_rate, args.density, args.buffer)
     res["wall_s"] = round(time.perf_counter() - t0, 2)
     print_table(res)
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    # Real-traffic scenarios are named real/<region>_<date>_<hour>: keep the slash as a folder.
     out = OUT_DIR / f"{args.scenario}_r{args.runs}_s{args.seed}_e{args.error_rate}_d{args.density}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(res, indent=2))
     print(f"\nwrote {out} in {res['wall_s']} s")
 

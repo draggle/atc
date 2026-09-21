@@ -4,55 +4,64 @@ An AI co-pilot for air traffic controllers, built in one weekend at [Hack the No
 
 **🏆 Winner, ElevenLabs track · Finalist, Baseten track**
 
-squack plans the best path for every flight, adapts the moment anything changes, and makes sure every instruction is heard and flown correctly. It plans and replans conflict-free paths in a simulator we built, transcribes noisy radio with a Whisper model we fine-tuned on Baseten, checks every pilot readback against its instruction, verifies on radar that each plane complies, and hands the messy cases to an investigating agent. AI pilots answer by voice (ElevenLabs) and sometimes get it wrong. The plane flies what the pilot said, not what the controller meant, so a missed readback shows up on radar. The controller stays in charge.
+squack plans the best path for every flight, adapts the moment anything changes, and makes sure every instruction is heard and flown correctly. It plans and replans conflict-free paths in a simulator we built, transcribes noisy radio with a Whisper model we fine-tuned on Baseten, checks every pilot readback against its instruction, verifies on radar that each plane complies, and hands the messy cases to an investigating agent. AI pilots answer by voice (ElevenLabs) and sometimes get it wrong on purpose. The plane flies what the pilot said, not what the controller meant, so a missed readback shows up on radar. The controller stays in charge.
 
 The project was called Tower while it was being built, and the code, the docs and the commit history still use that name in places: Tower and squack are the same thing.
 
 ![squack: live traffic over Western Europe, a storm, and the reroutes to say](docs/img/squack-live.png)
 
-## What works right now
+## What is in it
 
-Built overnight Sept 19 to 20 on branch `joey/overnight-build`. Everything below runs on one laptop with no API keys. See `docs/trd/01-pre-ship.md` for what is missing.
+Everything runs on one laptop with no API keys, on local models and deterministic mocks. Keys turn on the fine-tuned models, the real voices and the real agents.
 
-| Piece | Status | Evidence |
+| Piece | Where | Without keys | With keys |
+|---|---|---|---|
+| Simulator: flat-plane kinematics, flyable 1.5 deg/s turns, seeded scenarios, zones, intruders | `backend/sim` | Full | Same |
+| Traffic: recorded real days from adsb.lol (4 regions, 8 hours), one-shot live snapshots, three built scenarios, a custom sky of 2 to 80 aircraft | `backend/sim/live.py`, `backend/scenarios` | Full; live falls back to a saved snapshot | Same |
+| Planner: prioritized planning with local repair, never below 5 NM and 1,000 ft, instruction cards, back-on-course cards | `backend/planner` | Full | Same |
+| Monte Carlo risk: 32 to 256 rollouts 120 s ahead every tick, conflict cones, confidence on every card, risk-triggered replan | `backend/planner/risk.py` | Full | Same |
+| Disruptions: storm, closed airspace, fighter, drone, balloon, emergency, unknown, rocket; "Disrupt this flight" | `backend/disruptions.py` | Full | Same |
+| Hearing: Whisper, callsign snapping, fix-name snapping, n-best hypotheses | `backend/tower/asr.py`, `callsign.py` | Local faster-whisper base.en | Our fine-tuned whisper-small on Baseten, local fallback per transmission |
+| Understanding: plain-English patterns, phraseology grammar, interpreter agent | `backend/tower/freeform.py`, `parse.py`, `interpreter.py` | Patterns and grammar | Plus the interpreter agent on Baseten |
+| Checking: normalizer, six-state clearance machine, rule checker, 8 error types, never alert if the value is in the top-5 hypotheses | `backend/tower/state.py`, `check.py` | Full | Plus the trained cross-encoder when `CHECKER_MODEL_URL` is set |
+| Verifying: radar conformance against what was read back | `backend/tower/conform.py` | Full | Same |
+| Resolver agent: 4 tool calls, about 5 s, ends in alert, dismiss or uncertain, trace on screen | `backend/tower/resolver` | Deterministic mock | Baseten model, Elasticsearch memory if configured |
+| squack chat agent: the command bar, scoped tools over the world and the screen, no tool opens a clearance | `backend/agent` | Keyword router | OpenAI (`SQUACK_MODEL`), else Baseten |
+| AI pilots: template readbacks, injected errors with ground truth logged, radio effect | `backend/pilots` | macOS `say` | ElevenLabs voices |
+| Screen: 3D map, command bar, flight strip, command backlog, alerts with the correction to say, analytics, Manual and Autonomous | `frontend/` | Mock mode with a scripted demo | Live over WebSocket |
+| Evaluation: three-arm Monte Carlo, density sweep, closest approach, miles versus fixed routes | `backend/eval` | Full | Same |
+| Training: Whisper fine-tune, WER evaluation, checker data and cross-encoder, Baseten job and serving configs | `training/` | Laptop runs | Baseten H100 jobs, T4 serving |
+
+## Numbers we measured
+
+All measured by us. Real-traffic runs use adsb.lol snapshots from 2026-09-18. Say which is which on stage, and never blend a simulated figure with a real-traffic one.
+
+Every Monte Carlo run has three arms with common random numbers: **fixed** (aircraft fly their filed routes), **plan only** (squack issues instructions, a wrong readback is flown uncorrected) and **squack** (the same, plus the wrong readback is caught and corrected).
+
+| Run | Fixed routes | Plan only | squack |
+|---|---|---|---|
+| Density sweep, 1x to 3x traffic, 5% readback errors, 40 runs, 826 flight hours | 1,016 losses of separation, 1.14 per flight hour | 9 losses | **1 loss, 0.0012 per flight hour**, 7.1% fewer miles |
+| Dense scenario, 15% readback errors, 20 runs | 150 losses, closest approach 0.01 NM | 4 losses, 0 of 142 errors caught | **0 losses, closest 7.23 NM, 121 of 121 caught** |
+| Real Europe, 159 flights, 20 runs, 1,314 flight hours | 258 losses, 0.196 per flight hour | 47 losses | **36 losses, 0.027 per flight hour (86% fewer)**, 75 conflicts predicted, 40 resolved |
+| Real US northeast, 44 flights, 20 runs | 5 losses, closest 1.56 NM | 0 losses | **0 losses, closest 9.06 NM** |
+
+Miles saved is about 7% on the built scenarios at every density, and only 0.2 to 0.6% on real traffic, because real en-route tracks are already close to direct. Live snapshots show none by construction (routes are straight projections). Do not put a savings claim over the live sky.
+
+| Model | Result | How |
 |---|---|---|
-| Shared schemas and WebSocket protocol | Done | `backend/schemas.py`, `docs/08-ws-protocol.md` |
-| Simulator: flat-plane kinematics, seeded scenarios, intruders, storms | Done | `backend/sim`, 7 tests |
-| Planner: prioritized planning, conflict test, replan, emergency layer, instruction cards | Done | `backend/planner`, 6 tests. Demo scenario plans in 14 ms with 0 conflicts |
-| Tower core: normalizer, callsign snap, grammar parser, six-state machine, rule checker, n-best rule, radar conformance | Done | `backend/tower`, 85 tests |
-| Resolver agent: hand-rolled tool loop, 4-call cap, always terminates | Done, mock LLM without a key | `backend/tower/resolver`, trace emitted as events |
-| AI pilots: template readbacks, all 8 error types, voice via macOS `say`, radio effect | Done, ElevenLabs client written but untested | `backend/pilots`, 37 tests |
-| Speech: local faster-whisper base.en for both sides of the radio, n-best re-listen, Baseten client written | Done locally | `backend/tower/asr.py` |
-| World-builder agent: voice or text, loads scenarios, spawns flights, drops intruders, multiplies traffic | Done, keyword parser without a key, tool loop with one | `backend/world_agent.py` |
-| FastAPI app, WebSocket hub, 1 Hz clock, audio serving | Done | `backend/app.py`, `backend/world.py`, 8 end-to-end tests |
-| Next.js screen: radar, plan toggle, cards, alerts, agent trace, transcript, scoreboard, sliders, push-to-talk, mock mode | Done | `frontend/`, builds clean |
-| Monte Carlo evaluation: three arms, LoS per flight hour, closest approach, miles saved | Done | `backend/eval`, numbers below |
-| Training: data prep on the real public dataset, Whisper fine-tune, WER eval, checker data generation, cross-encoder train and serve, Baseten job configs | Scripts done and smoke-tested; laptop runs only | `training/`, `training/RUNS.md` |
-| Whisper fine-tuned | Laptop run done: tuned tiny beats stock small on real clips. Baseten H100 run not started, no key | `training/RUNS.md`, `docs/trd/02-models-and-baseten.md` |
-| Real ADS-B traffic, replay comparison | Not started | `docs/trd/03-planner-data-eval.md` |
-| Monte Carlo risk prediction: cones before a conflict, risk-triggered replan, confidence on cards | Done: risk event, cones, confidence on cards, scoreboard tiles | `backend/planner/risk.py`, `docs/trd/07-monte-carlo-spec.md` |
-| ElevenLabs voices, demo script, backup video, Devpost | Not started | `docs/trd/04-screen-pilots-demo.md` |
+| **Fine-tuned Whisper, 1,000 held-out real ATC clips** | **word error rate 0.708 stock to 0.155 tuned**, 78% fewer errors | whisper-small, one Baseten H100, 71 min, 21,269 clips (11,268 real, 7,601 ATCOSIM, 2,400 of our own simulator audio). `training/RUNS.md`, `docs/12-baseten-stats.md` |
+| Same model on our own demo audio | 0.202 stock to 0.035 tuned; made-up fix names exactly right 81 of 126 (was 1 of 126); on the ElevenLabs demo voices 13 of 20 (was 0 of 20) | 299 simulator clips in a voice no run trained on; 20 ElevenLabs clips |
+| Serving | 0.3 s at beam 1, 0.8 s at beam 3, 1.7 s at beam 5, n-best returned | Baseten T4 |
+| Readback checker cross-encoder | accuracy 0.894, detection 0.908, false alarm rate 0.085, 7 ms per pair | distilroberta-base, 12k synthetic pairs, 10 min on the laptop GPU, evaluated on 5,000 held-out synthetic pairs |
+| Laptop baseline | tuned whisper-tiny 0.217 beats stock tiny 1.18, base 1.11, small 0.69 on 300 real clips | One hour on a 16 GB MacBook |
 
-**The voice loop is real.** Tower speaks a card through macOS speech, passes it through a radio filter, and hears it with Whisper. The AI pilot answers through its own voice and radio filter, and Whisper hears that too. Tower never reads the pilot's text. Round trip on this laptop is about 4 seconds.
-
-## Numbers measured so far
-
-All measured by us on this laptop. Say which is which on stage.
-
-| Metric | Value | How |
-|---|---|---|
-| Losses of separation, fixed routes | 0.34 per flight hour, closest 0.04 NM | Monte Carlo, demo scenario, 20 runs, 2 percent readback errors |
-| Losses of separation, Tower plan, validation on or off | 0 per flight hour, closest 9.4 NM | Same runs |
-| Miles vs fixed routes | 7.8 to 8.3 percent fewer | Same runs. Winds and aircraft performance excluded |
-| Readback errors caught, Tower on | 4 of 4 injected | Same runs; simulated at the command level, no audio |
-| Density sweep, dense scenario 1x to 2.5x traffic | Fixed routes 0.63 to 1.60 LoS per flight hour; Tower with validation 0 to 0.011; 6 to 8 percent fewer miles at every density | `python -m eval.sweep`, chart in `docs/img/density-sweep.png`, 4 runs per point |
-| Dense scenario at 5 percent errors, 20 runs | fixed 154 LoS, Tower without validation 1 LoS, Tower with validation 0 | `python -m eval.run_eval --scenario dense --runs 20 --error-rate 0.05` |
-| Checker cross-encoder, synthetic held-out 5,000 pairs | accuracy 0.894, false alarm rate 0.085, detection 0.908, 7 ms per pair | distilroberta-base, 12k pairs, 10 min on the laptop GPU |
-| Stock Whisper word error rate on 300 real held-out ATC clips | tiny 1.18, base 1.11, small 0.69 | jacktol/atc-dataset test split, greedy, both sides normalized. Matches the published 63 percent for small |
-| **Fine-tuned Whisper, same 300 real held-out clips** | **tuned tiny 0.217** vs stock tiny 1.18, stock base 1.11, stock small 0.69 | whisper-tiny, 11k real clips, 1,200 steps, 62 min on the laptop GPU. `training/results/wer_comparison.json`, `training/RUNS.md`. Beats all three stock sizes on real radio and is the fastest |
-| Fine-tuned Whisper on the synthetic pilot voices | Worse than stock base.en ("air china" for "air canada") | Domain shift: the dataset is European radio, the demo voices are macOS `say`. Tier 1 stays on stock base.en locally; the tuned model is the real-clip comparison. Fix is TRD 02 task 4, mixing simulator audio into training |
-| Tier 1 latency | about 0.8 s after speech recognition, 1.2 to 1.5 s for local Whisper per clip | Live session |
-| Conflict prediction, futures simulated per second | about 545,000 with 5 aircraft, about 273,000 with 65, 256 rollouts, 120 s horizon; live scoreboard 200k to 450k | `backend/planner/risk.py`, TRD 07, measured on the laptop |
+| Speed | Result |
+|---|---|
+| Conflict prediction | about 440,000 futures per second, 5.3 ms for 256 rollouts with 9 aircraft; the rollout count adapts to the tick budget |
+| Replan | 15 to 170 ms, 0.6 s worst case with 107 aircraft; first turn about 2 s after a disruption |
+| Key release to aircraft turning | about 1 s; the plane acts before the voice is synthesized |
+| Interpreter agent | 0.5 to 3.4 s, capped at 6 s, off the clock |
+| Backend tests | 513 |
 
 ## Run it
 
@@ -62,13 +71,13 @@ Three terminals. Python 3.11 or newer, Node 20 or newer, `uv`, `ffmpeg`.
 # 1. backend
 cd backend
 uv venv .venv && uv pip install -e ".[dev]"
-.venv/bin/pytest -q                      # 509 tests
+.venv/bin/pytest -q                      # 513 tests
 .venv/bin/uvicorn app:app --port 8000    # first start downloads whisper base.en, about 150 MB
 
 # 2. frontend
 cd frontend
 npm install
-npm run dev                              # http://localhost:3000, falls back to mock mode if no backend
+npm run dev                              # http://localhost:3000, mock mode if no backend
 
 # 3. optional: training
 cd training
@@ -77,47 +86,59 @@ uv venv .venv && uv pip install -r requirements.txt
 .venv/bin/pytest tests -q
 ```
 
-Then in the browser: the setup panel opens. Pick a scenario and press Load, look over the plan, then press **Start**. Nothing moves and the radio is closed until you do. Speed is 1x, 5x, 20x, or 60x, and voice only keeps up at 1x. Then click "Say it" on a card, or hold Space and read the card into the mic, or type in the radio box. The pilot answers in a few seconds. Drag the pilot error rate slider up to see red cards. Type "put a fighter jet through the middle" in the headset box to see a replan. Toggle Tower off and repeat a wrong readback to watch the plane fly it.
+On the screen: the setup dialog opens. Pick a source (a live region, a recorded real hour, a built scenario, or a custom sky), load it, and press **Start**. Nothing moves until you do. Then:
+
+- **Manual** (the default): a card appears in the Command Backlog. Hold **Space** and read it into the mic, or press **Let squack say it**. The pilot reads it back by voice a couple of seconds later. Set **Next readback** to Wrong value first to see the red alert and the correction to say.
+- **Autonomous**: the same planner, but every card goes by data link instantly and nobody speaks. The switch is in the menu at the top right.
+- **Disrupt**: the round button in the top bar drops a storm, a closed airspace, a fighter or a mayday where you click, or **Disrupt this flight** on a selected aircraft's strip puts one on its path. Watch the replan and the cones.
+- **Talk to squack**: hold **⌘⇧** (Ctrl+Shift off Mac) or press ⌘K and ask: "which two flights are closest", "put a storm on Delta 789", "why did you turn United", "double the traffic".
+- **Plain English on the radio works too**: "turn around", "make a left three sixty", "climb another two thousand", "disregard". An impossible request gets "unable" from the pilot.
 
 Environment variables, all optional, in `.env` (copy `.env.example`):
 
 | Variable | Effect |
 |---|---|
-| `BASETEN_API_KEY`, `EXTRACTOR_MODEL`, `RESOLVER_MODEL` | Real LLM for the resolver, extractor fallback, and world builder. Without it, deterministic mocks |
-| `OPENAI_API_KEY`, `SQUACK_MODEL` | The conversational agent (squack, the command bar) only, default `gpt-4o-mini`. Without them it uses Baseten, and without a Baseten key the keyword router |
-| `ASR_MODEL_URL`, `ASR_STOCK_MODEL_URL` | Baseten Whisper endpoints. Without them, local faster-whisper |
-| `ASR_LOCAL_MODEL` | faster-whisper size or a CTranslate2 directory, default `base.en`. Also what the app falls back to, per transmission, when the Baseten model cannot be reached. Deployment: `training/BASETEN.md` |
-| `CHECKER_MODEL_URL` | Cross-encoder endpoint, see `training/serve_checker.py`. Without it, rules only |
-| `ELEVENLABS_API_KEY` | Pilot voices. Without it, macOS `say` |
-| `ELASTIC_URL`, `ELASTIC_API_KEY` | Elasticsearch as the resolver's searchable memory: every transmission, clearance, verdict and radar frame is indexed live and the agent's tools search it (BM25, geo, time series, fuzzy fix names). Without them, in-memory lists. See `docs/11-elastic-memory.md`; prove it with `python tools/elastic_check.py` |
-| `TOWER_SCENARIO`, `TOWER_AUTOSTART=1`, `TOWER_SIM_SPEED`, `TOWER_SYNTHESIZE=0` | Preload a scenario to ready, also start it (headless runs), initial clock speed, disable audio entirely |
+| `BASETEN_API_KEY`, `EXTRACTOR_MODEL`, `RESOLVER_MODEL`, `LLM_TIMEOUT_S` | Real model for the resolver, the interpreter, the extractor fallback and the world builder. Without a key, deterministic mocks |
+| `OPENAI_API_KEY`, `SQUACK_MODEL` | The squack chat agent only, default `gpt-4o-mini`. Without them it uses Baseten, and without a Baseten key the keyword router. Everything else stays on Baseten |
+| `ASR_MODEL_URL`, `ASR_STOCK_MODEL_URL`, `ASR_BEAM_SIZE`, `ASR_CONTROLLER_BEAM`, `ASR_CONTROLLER_TIMEOUT_S`, `ASR_KEEP_WARM_S`, `ASR_STOCK_LOCAL` | The fine-tuned Whisper on Baseten and the stock model beside it for the on-screen comparison. Without them, local faster-whisper. Deployment: `training/BASETEN.md` |
+| `ASR_LOCAL_MODEL` | faster-whisper size or a CTranslate2 directory, default `base.en`. Also the per-transmission fallback when Baseten cannot be reached |
+| `CHECKER_MODEL_URL` | The cross-encoder endpoint, see `training/serve_checker.py`. Without it, rules only |
+| `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_IDS`, `ELEVENLABS_CONTROLLER_VOICE_ID`, `ELEVENLABS_MODEL_ID`, `TTS_BACKEND` | Pilot and controller voices. Without a key, macOS `say` |
+| `SQUACK_SPEAK`, `SQUACK_VOICE_ID` | Whether squack's answers are spoken, and in which voice |
+| `ELASTIC_URL`, `ELASTIC_API_KEY` | Elasticsearch as the resolver's searchable memory: every transmission, clearance, verdict and radar frame is indexed live and the agent's tools search it. Without them, in-memory lists. `docs/11-elastic-memory.md`; prove it with `python tools/elastic_check.py` |
+| `TOWER_SCENARIO`, `TOWER_AUTOSTART=1`, `TOWER_SIM_SPEED`, `TOWER_VOICE`, `TOWER_SYNTHESIZE=0`, `TOWER_DATA_DIR`, `TOWER_LOG` | Headless and demo switches: preload a scenario, start it, clock speed, voice on, audio off, data directory, log level |
 
 Other commands:
 
 ```bash
-# live sky needs no setup: pick Live and a region on the screen (one request to adsb.lol, see backend/sim/live.py)
 # real traffic: put an adsb.lol daily archive (three tar parts) in data/real/raw, then
 cd backend && .venv/bin/python tools/real_extract.py --date 2026-09-18   # one pass, about a minute
 cd backend && .venv/bin/python tools/real_build.py                        # writes backend/scenarios/real/*.json
-cd backend && .venv/bin/python -m eval.run_eval --scenario demo --runs 20   # Monte Carlo table
-cd backend && .venv/bin/python -m pilots.demo_voice wrong_value 0.3         # hear one wrong readback
+# Monte Carlo
+cd backend && .venv/bin/python -m eval.run_eval --scenario dense --runs 20 --error-rate 0.15
+cd backend && .venv/bin/python -m eval.run_eval --scenario real/europe-core_2026-09-18_1600 --runs 20
+cd backend && .venv/bin/python -m eval.sweep                              # density curve, docs/img/density-sweep.png
+# hear one wrong readback
+cd backend && .venv/bin/python -m pilots.demo_voice wrong_value 0.3
+# word error rate
 cd training && .venv/bin/python eval_wer.py --stock openai/whisper-small --limit 100
 ```
 
+## Deploy
+
+The screen is a plain Next.js app and deploys to Vercel as is (`frontend/vercel.json`). A hosted copy with no backend configured opens on the scripted demo instead of knocking on the visitor's own 127.0.0.1; add `?live=1` to point it at a backend on your laptop, or set `NEXT_PUBLIC_TOWER_WS` and `NEXT_PUBLIC_TOWER_HTTP` to a hosted backend.
+
+The backend is one uvicorn process that needs `ffmpeg` and enough memory for local Whisper `base.en`. Set `TOWER_SYNTHESIZE=0` on a box with no audio. It binds IPv4 only.
+
+Never run a plain `npm run build` while `npm run dev` is up: it overwrites `.next` and the dev page loses its CSS. Use `NEXT_DIST_DIR=.next-verify npm run build` to check a production build.
+
 ## For teammates
 
-Start with [CLAUDE.md](CLAUDE.md), then [docs/01-project.md](docs/01-project.md), then the TRD for your stream. Claude Code loads `CLAUDE.md` automatically.
-
-| Stream | TRD | Owns |
-|---|---|---|
-| Models and Baseten | [docs/trd/02-models-and-baseten.md](docs/trd/02-models-and-baseten.md) | Whisper fine-tune on H100, checker on Baseten, serving, measured word error rate |
-| Planner, real data, evaluation | [docs/trd/03-planner-data-eval.md](docs/trd/03-planner-data-eval.md) | ADS-B starting traffic, replay comparison, density curve, planner gaps |
-| Screen, pilots, demo | [docs/trd/04-screen-pilots-demo.md](docs/trd/04-screen-pilots-demo.md) | ElevenLabs, UI polish, demo script, backup video, Devpost |
-| Everything pre-ship | [docs/trd/01-pre-ship.md](docs/trd/01-pre-ship.md) | The full gap list, ordered |
+Start with [CLAUDE.md](CLAUDE.md), then [docs/01-project.md](docs/01-project.md). Claude Code loads `CLAUDE.md` automatically.
 
 | Doc | What is in it |
 |---|---|
-| [docs/01-project.md](docs/01-project.md) | The idea, prize targets, judging criteria, demo script |
+| [docs/01-project.md](docs/01-project.md) | The idea, prize targets, judging criteria |
 | [docs/02-domain.md](docs/02-domain.md) | How ATC radio works, phraseology, the error taxonomy |
 | [docs/03-architecture.md](docs/03-architecture.md) | Pipeline, schemas, resolver agent, base WebSocket events |
 | [docs/04-training.md](docs/04-training.md) | Datasets, recipes, evaluation, Baseten setup |
@@ -126,6 +147,11 @@ Start with [CLAUDE.md](CLAUDE.md), then [docs/01-project.md](docs/01-project.md)
 | [docs/07-build-spec.md](docs/07-build-spec.md) | The researched build spec. Wins over 03 and 04 |
 | [docs/08-ws-protocol.md](docs/08-ws-protocol.md) | Client and server messages |
 | [docs/09-overnight-findings.md](docs/09-overnight-findings.md) | What the overnight build learned that the spec did not know |
+| [docs/10-roadmap.md](docs/10-roadmap.md) | The working roadmap: Start button, real map, real traffic, disruptions, Manual and Autonomous. Wins over 06 and the TRDs |
+| [docs/11-elastic-memory.md](docs/11-elastic-memory.md) | The resolver's searchable memory on Elasticsearch |
+| [docs/12-baseten-stats.md](docs/12-baseten-stats.md) | One page of Baseten numbers for the sponsor track |
+| [docs/13-ui-inventory.md](docs/13-ui-inventory.md) | Every piece of the screen and what a user can do with it |
+| [docs/trd/](docs/trd/) | The build TRDs: pre-ship gaps, models, planner and data, screen and demo, the Monte Carlo spec, the squack agent PRD |
 | [joey-notes.md](joey-notes.md) | Joey's positioning proposal: density thesis, supervisor mode, real data |
 
 ## Third-party models, datasets, and libraries
@@ -133,13 +159,13 @@ Start with [CLAUDE.md](CLAUDE.md), then [docs/01-project.md](docs/01-project.md)
 Hack the North requires attribution. Keep this current.
 
 - Flight data: [adsb.lol globe_history](https://github.com/adsblol/globe_history_2026), open under ODbL 1.0 and CC0. The built scenarios in `backend/scenarios/real/` are derived from the 2026-09-18 archive. Gate names in those scenarios are ours. Live mode (`backend/sim/live.py`) takes one snapshot per load from the [adsb.lol API](https://api.adsb.lol) under the same licence, and falls back to a saved snapshot or a recorded hour if the feed is down
-- Map: [MapLibre GL](https://maplibre.org), [deck.gl](https://deck.gl), basemap by [CARTO](https://carto.com/attributions) on OpenStreetMap data. Type: B612 and B612 Mono (Airbus, OFL)
-- Datasets: [jacktol/atc-dataset](https://huggingface.co/datasets/jacktol/atc-dataset) (ATCO2 one-hour subset plus UWB-ATCC, MIT per the card), [jlvdoorn/atco2-asr-atcosim](https://huggingface.co/datasets/jlvdoorn/atco2-asr-atcosim) (referenced, not yet used)
-- Base models: OpenAI Whisper (tiny, base, small), distilroberta-base and roberta-base
+- Map: [MapLibre GL](https://maplibre.org), [deck.gl](https://deck.gl), basemap by [CARTO](https://carto.com/attributions) on OpenStreetMap data. Type: Plus Jakarta Sans, B612 and B612 Mono (Airbus, OFL)
+- Datasets: [jacktol/atc-dataset](https://huggingface.co/datasets/jacktol/atc-dataset) (ATCO2 one-hour subset plus UWB-ATCC, MIT per the card), [jlvdoorn/atco2-asr-atcosim](https://huggingface.co/datasets/jlvdoorn/atco2-asr-atcosim) (ATCOSIM, used in the deployed run). No LiveATC audio anywhere: their terms forbid it
+- Base models: OpenAI Whisper (tiny, base, small), distilroberta-base
 - Speech tooling: faster-whisper and CTranslate2, silero-vad, Hugging Face transformers and datasets, jiwer
-- Voices: macOS `say`; ElevenLabs client written
-- Infrastructure: Baseten training and inference (job configs written; nothing submitted yet)
-- Backend: FastAPI, Pydantic, numpy, scipy, rapidfuzz, OpenAI Python SDK, Elasticsearch Python client
+- Voices: [ElevenLabs](https://elevenlabs.io) for the pilots, the controller and squack; macOS `say` without a key
+- Inference and training: [Baseten](https://www.baseten.co) for the Whisper fine-tune (H100), Whisper serving (T4) and the resolver and interpreter models; [OpenAI](https://openai.com) for the squack chat agent only
 - Search: [Elastic Cloud Serverless](https://www.elastic.co/) holds the resolver's searchable memory when configured
+- Backend: FastAPI, Pydantic, numpy, scipy, rapidfuzz, OpenAI Python SDK, Elasticsearch Python client
 - Frontend: Next.js, React, Tailwind CSS
 - Research this design follows: HAAWAII readback error detection (DLR, NATS, Isavia), SCOPE, the Idiap virtual simulation pilot. Links in `docs/07-build-spec.md`

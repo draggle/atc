@@ -16,22 +16,22 @@ Why the pieces belong together: a tightly optimized plan only works if every ins
 
 ## Status
 
-As of Sunday morning Sept 20: steps 0 to 4 work end to end on one laptop with no keys, plus most of 6, 7, 8, 9, 10 in local or mock form. `README.md` has the full table and numbers. `docs/trd/01-pre-ship.md` has what is missing, ordered. Items follow the build order in section 12 of `docs/07-build-spec.md`.
+As of Monday Sept 21, after judging: everything below is on `main` and runs on one laptop with no keys; keys turn on the fine-tuned models, ElevenLabs and the real agents. `README.md` has the full table, the measured numbers and the run and deploy instructions. `docs/10-roadmap.md` is the working plan.
 
-- [x] 0. Shared schemas and WebSocket events agreed and mocked (`backend/schemas.py`, `docs/08-ws-protocol.md`)
-- [x] 1. Simulator stepping aircraft on routes, radar view drawing them
-- [x] 2. Mic to stock Whisper to transcript on screen (local faster-whisper; Baseten client written)
-- [x] 3. Spoken clearance moves a plane: normalizer, parser, callsign snapping, state machine, rule checker
-- [x] 4. One AI pilot reads back by voice with injected errors, first alert fires (macOS `say`; ElevenLabs client written)
-- [x] 5. Fine-tuned Whisper: trained on a Baseten H100, **WER 0.708 stock to 0.159 tuned on 1,000 held-out clips** (`training/RUNS.md`), deployed on Baseten (`training/serve_asr`, `training/BASETEN.md`) and used by the app when `ASR_MODEL_URL` is set. Known gap: it mishears our made-up fix names
-- [x] 6. Planner: conflict-free plan, fixed-route baseline, instruction cards
-- [x] 7. Radar verification and the watch tool (backend done; no radar visual yet)
-- [~] 8. Checker cross-encoder trained (laptop, 0.89 accuracy on synthetic pairs) and served; not wired live without `CHECKER_MODEL_URL`
-- [~] 9. Resolver agent with its trace on screen (runs on a deterministic mock without `BASETEN_API_KEY`)
-- [x] 10. Replanning around intruders, then Monte Carlo safety evaluation (three arms, LoS per flight hour, closest approach)
-- [~] 11. Sliders and world-builder agent done; absurd scenarios and data engine not started
-
-Steps 0 to 4 are a complete demo alone and they work.
+- [x] 0. Shared schemas and WebSocket events (`backend/schemas.py`, `docs/08-ws-protocol.md`)
+- [x] 1. Simulator stepping aircraft on routes, 3D map drawing them
+- [x] 2. Mic to Whisper to transcript (local faster-whisper; fine-tuned whisper-small on Baseten when `ASR_MODEL_URL` is set)
+- [x] 3. Spoken clearance moves a plane: normalizer, parser, callsign and fix snapping, state machine, rule checker, plain English, interpreter agent
+- [x] 4. AI pilots read back by voice with injected errors (ElevenLabs, macOS `say` without a key); alerts carry the correction to say
+- [x] 5. Fine-tuned Whisper: **WER 0.708 stock to 0.155 tuned on 1,000 held-out clips**, 0.035 on our own audio (`training/RUNS.md`, `docs/12-baseten-stats.md`), deployed on Baseten
+- [x] 6. Planner: conflict-free plan, fixed-route baseline, instruction cards, back-on-course cards
+- [x] 7. Radar verification and the watch tool
+- [~] 8. Checker cross-encoder trained (0.894 on synthetic pairs) and servable; used live only with `CHECKER_MODEL_URL`
+- [x] 9. Resolver agent with its trace on screen (deterministic mock without `BASETEN_API_KEY`); Elasticsearch memory when configured
+- [x] 10. Replanning around disruptions, Monte Carlo risk cones, three-arm evaluation and density sweep
+- [x] 11. Real traffic: recorded adsb.lol days, one-shot live snapshots, custom sky
+- [x] 12. squack chat agent behind the command bar (OpenAI when `OPENAI_API_KEY` is set, else Baseten, else a keyword router)
+- [ ] Not done: the checker served on Baseten, absurd scenarios, the data engine
 
 ## Doc map
 
@@ -50,6 +50,8 @@ Read `docs/01-project.md` first, whatever you are working on. Then:
 | What is missing before judging, and the three teammate TRDs | `docs/trd/` |
 | **The working roadmap: Start button, real map, real traffic, disruptions, Manual and Auto. Wins over `06-plan.md` and the TRDs** | `docs/10-roadmap.md` |
 | The resolver's searchable memory on Elasticsearch: what is indexed, the four searches, how to turn it on, merge notes | `docs/11-elastic-memory.md` |
+| The Baseten numbers on one page, for the sponsor track | `docs/12-baseten-stats.md` |
+| Every piece of the screen and what a user can do with it | `docs/13-ui-inventory.md` |
 
 Each of `backend/`, `training/`, and `frontend/` has its own short `CLAUDE.md` with that component's contract.
 
@@ -125,7 +127,7 @@ These are proposals. If the team decides otherwise, change them here so every Cl
 
 ```bash
 cd backend && uv venv .venv && uv pip install -e ".[dev]"   # once
-cd backend && .venv/bin/pytest -q                              # 509 tests
+cd backend && .venv/bin/pytest -q                              # 513 tests
 cd backend && .venv/bin/uvicorn app:app --port 8000            # backend, starts idle: load and Start from the screen
 cd frontend && npm install && npm run dev                      # screen at http://localhost:3000, mock mode if no backend
 cd frontend && NEXT_DIST_DIR=.next-verify npm run build        # production build. NEVER plain `npm run build` while `npm run dev` is running: it overwrites .next and the dev page loses its CSS
