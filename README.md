@@ -126,9 +126,14 @@ cd training && .venv/bin/python eval_wer.py --stock openai/whisper-small --limit
 
 ## Deploy
 
-The screen is a plain Next.js app and deploys to Vercel as is (`frontend/vercel.json`). A hosted copy with no backend configured opens on the scripted demo instead of knocking on the visitor's own 127.0.0.1; add `?live=1` to point it at a backend on your laptop, or set `NEXT_PUBLIC_TOWER_WS` and `NEXT_PUBLIC_TOWER_HTTP` to a hosted backend.
+The screen is a plain Next.js app in `frontend/` and deploys to Vercel from this repo as is. Connect it like this:
 
-The backend is one uvicorn process that needs `ffmpeg` and enough memory for local Whisper `base.en`. Set `TOWER_SYNTHESIZE=0` on a box with no audio. It binds IPv4 only.
+1. Vercel, Add New Project, import `draggle/squawk`.
+2. Set **Root Directory** to `frontend`. That is the one setting that matters: the app is not at the repo root. Framework is detected as Next.js from `frontend/vercel.json`, and install and build are the defaults (`npm install`, `next build`).
+3. No environment variables are needed. A hosted copy with no backend configured opens on the scripted demo instead of knocking on the visitor's own 127.0.0.1. Add `?live=1` to the URL to point it at a backend on your own laptop, or set `NEXT_PUBLIC_TOWER_WS` and `NEXT_PUBLIC_TOWER_HTTP` (a `wss://` address, since the page is HTTPS) to a hosted backend.
+4. Attach the domain to the project.
+
+The backend is one uvicorn process that needs `ffmpeg` and enough memory for local Whisper `base.en`. Set `TOWER_SYNTHESIZE=0` on a box with no audio. It binds plain HTTP on IPv4 only, so a hosted backend needs a TLS proxy in front, and it holds one shared world with no auth, so host it only for a demo you are driving yourself.
 
 Never run a plain `npm run build` while `npm run dev` is up: it overwrites `.next` and the dev page loses its CSS. Use `NEXT_DIST_DIR=.next-verify npm run build` to check a production build.
 
