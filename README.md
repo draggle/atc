@@ -154,7 +154,6 @@ Start with [CLAUDE.md](CLAUDE.md), then [docs/01-project.md](docs/01-project.md)
 | [docs/13-ui-inventory.md](docs/13-ui-inventory.md) | Every piece of the screen and what a user can do with it |
 | [docs/14-deploy-handoff.md](docs/14-deploy-handoff.md) | Deploying the screen to Vercel and the backend to Fly.io, step by step with checks |
 | [docs/trd/](docs/trd/) | The build TRDs: pre-ship gaps, models, planner and data, screen and demo, the Monte Carlo spec, the squack agent PRD |
-| [joey-notes.md](joey-notes.md) | Joey's positioning proposal: density thesis, supervisor mode, real data |
 
 ## Third-party models, datasets, and libraries
 
