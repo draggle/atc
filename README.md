@@ -1,8 +1,12 @@
-# Tower
+# squack.
 
-An AI system for air traffic control, built at Hack the North 2026.
+An AI co-pilot for air traffic controllers, built in one weekend at [Hack the North 2026](https://hackthenorth.com) (Sept 18 to 20, University of Waterloo).
 
-Tower plans the best path for every flight, adapts the moment anything changes, and makes sure every instruction is heard and flown correctly. It plans and replans conflict-free paths in a simulator we built, transcribes noisy radio with Whisper, checks every pilot readback against its instruction, verifies on radar that each plane complies, and hands the messy cases to an investigating agent. AI pilots answer by voice and sometimes get it wrong. The plane flies what the pilot said, not what the controller meant, so a missed readback shows up on radar.
+**🏆 Winner, ElevenLabs track · Finalist, Baseten track**
+
+squack plans the best path for every flight, adapts the moment anything changes, and makes sure every instruction is heard and flown correctly. It plans and replans conflict-free paths in a simulator we built, transcribes noisy radio with a Whisper model we fine-tuned on Baseten, checks every pilot readback against its instruction, verifies on radar that each plane complies, and hands the messy cases to an investigating agent. AI pilots answer by voice (ElevenLabs) and sometimes get it wrong. The plane flies what the pilot said, not what the controller meant, so a missed readback shows up on radar. The controller stays in charge.
+
+The project was called Tower while it was being built, and the code, the docs and the commit history still use that name in places: Tower and squack are the same thing.
 
 ![Live screen](docs/img/live-screen.png)
 
