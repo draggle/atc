@@ -8,7 +8,7 @@ squack plans the best path for every flight, adapts the moment anything changes,
 
 The project was called Tower while it was being built, and the code, the docs and the commit history still use that name in places: Tower and squack are the same thing.
 
-![Live screen](docs/img/live-screen.png)
+![squack: live traffic over Western Europe, a storm, and the reroutes to say](docs/img/squack-live.png)
 
 ## What works right now
 
