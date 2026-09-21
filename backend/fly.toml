@@ -1,0 +1,30 @@
+# Fly.io app for the squack backend. `fly launch --copy-config --no-deploy` in this directory
+# creates the app from this file; `fly deploy` builds the Dockerfile and ships it.
+# The world lives in the process, so the machine never auto-stops and there is exactly one.
+app = "squack-backend"
+primary_region = "yyz"
+
+[build]
+
+[env]
+  TOWER_DATA_DIR = "/app/data"
+  TOWER_LOG = "INFO"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "90s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  memory = "2gb"
+  cpu_kind = "shared"
+  cpus = 2

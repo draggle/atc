@@ -12,6 +12,14 @@ import type { Connection } from "./store";
 // which costs about 600 ms per connection and used to push the first attempt past the timeout.
 export const WS_URL = process.env.NEXT_PUBLIC_TOWER_WS ?? "ws://127.0.0.1:8000/ws";
 export const HTTP_URL = process.env.NEXT_PUBLIC_TOWER_HTTP ?? "http://127.0.0.1:8000";
+/** Shared secret a hosted backend asks for (its TOWER_TOKEN). Inlined at build time, like every NEXT_PUBLIC_ value. */
+export const WS_TOKEN = process.env.NEXT_PUBLIC_TOWER_TOKEN;
+
+/** The address to open: WS_URL, plus ?token= when the backend wants one. */
+export function wsUrl(): string {
+  if (!WS_TOKEN) return WS_URL;
+  return `${WS_URL}${WS_URL.includes("?") ? "&" : "?"}token=${encodeURIComponent(WS_TOKEN)}`;
+}
 
 /**
  * A hosted copy of the screen (Vercel, a domain) with no backend configured has nothing to knock
@@ -83,7 +91,7 @@ export function connectTower(opts: {
     if (!mock) opts.onStatus("connecting");
     let sock: WebSocket;
     try {
-      sock = new WebSocket(WS_URL);
+      sock = new WebSocket(wsUrl());
     } catch {
       startMockMode();
       return;

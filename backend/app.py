@@ -274,7 +274,9 @@ async def keep_warm() -> None:
 
 
 app = FastAPI(title="Tower", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# Hosted: TOWER_ALLOWED_ORIGINS="https://squack.example,https://www.squack.example". Unset = any origin (a laptop).
+_ORIGINS = [o.strip() for o in os.environ.get("TOWER_ALLOWED_ORIGINS", "*").split(",") if o.strip()] or ["*"]
+app.add_middleware(CORSMiddleware, allow_origins=_ORIGINS, allow_methods=["*"], allow_headers=["*"])
 
 
 @app.get("/health")
@@ -305,6 +307,13 @@ async def audio(ref: str):
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket) -> None:
+    # A hosted backend holds one shared world and real API keys behind it. TOWER_TOKEN, when set,
+    # is a shared secret the screen sends as ?token= (NEXT_PUBLIC_TOWER_TOKEN); anyone without it is
+    # closed before accept. Unset on a laptop, where the only visitor is you.
+    expected = os.environ.get("TOWER_TOKEN")
+    if expected and ws.query_params.get("token") != expected:
+        await ws.close(code=1008, reason="token")
+        return
     await ws.accept()
     hub.clients.add(ws)
     if hub.last_state:

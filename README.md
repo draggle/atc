@@ -126,14 +126,10 @@ cd training && .venv/bin/python eval_wer.py --stock openai/whisper-small --limit
 
 ## Deploy
 
-The screen is a plain Next.js app in `frontend/` and deploys to Vercel from this repo as is. Connect it like this:
+Two pieces: the screen on Vercel, the backend in a container on Fly.io, wired by two environment variables. **`docs/14-deploy-handoff.md` is the step-by-step, written to be followed by a person or their Claude session, with a check after every step.** The short version:
 
-1. Vercel, Add New Project, import `draggle/squawk`.
-2. Set **Root Directory** to `frontend`. That is the one setting that matters: the app is not at the repo root. Framework is detected as Next.js from `frontend/vercel.json`, and install and build are the defaults (`npm install`, `next build`).
-3. No environment variables are needed. A hosted copy with no backend configured opens on the scripted demo instead of knocking on the visitor's own 127.0.0.1. Add `?live=1` to the URL to point it at a backend on your own laptop, or set `NEXT_PUBLIC_TOWER_WS` and `NEXT_PUBLIC_TOWER_HTTP` (a `wss://` address, since the page is HTTPS) to a hosted backend.
-4. Attach the domain to the project.
-
-The backend is one uvicorn process that needs `ffmpeg` and enough memory for local Whisper `base.en`. Set `TOWER_SYNTHESIZE=0` on a box with no audio. It binds plain HTTP on IPv4 only, so a hosted backend needs a TLS proxy in front, and it holds one shared world with no auth, so host it only for a demo you are driving yourself.
+- **Screen.** `cd frontend && vercel link && vercel --prod`. Through the dashboard instead, import the repo and set Root Directory to `frontend`. With no backend configured, a hosted copy opens on the scripted demo. To attach a backend, set `NEXT_PUBLIC_TOWER_WS` (a `wss://` address), `NEXT_PUBLIC_TOWER_HTTP` and `NEXT_PUBLIC_TOWER_TOKEN` before the production build.
+- **Backend.** `cd backend && fly launch --copy-config --no-deploy && fly secrets set TOWER_TOKEN=... && fly deploy`. `backend/Dockerfile` bakes in ffmpeg and the local Whisper model; `backend/fly.toml` keeps one 2 GB machine running with a health check. Set `TOWER_TOKEN`: it is the only thing between the internet and your API keys, and it holds one shared world, so host it for a demo you drive, not as a public playground.
 
 Never run a plain `npm run build` while `npm run dev` is up: it overwrites `.next` and the dev page loses its CSS. Use `NEXT_DIST_DIR=.next-verify npm run build` to check a production build.
 
@@ -156,6 +152,7 @@ Start with [CLAUDE.md](CLAUDE.md), then [docs/01-project.md](docs/01-project.md)
 | [docs/11-elastic-memory.md](docs/11-elastic-memory.md) | The resolver's searchable memory on Elasticsearch |
 | [docs/12-baseten-stats.md](docs/12-baseten-stats.md) | One page of Baseten numbers for the sponsor track |
 | [docs/13-ui-inventory.md](docs/13-ui-inventory.md) | Every piece of the screen and what a user can do with it |
+| [docs/14-deploy-handoff.md](docs/14-deploy-handoff.md) | Deploying the screen to Vercel and the backend to Fly.io, step by step with checks |
 | [docs/trd/](docs/trd/) | The build TRDs: pre-ship gaps, models, planner and data, screen and demo, the Monte Carlo spec, the squack agent PRD |
 | [joey-notes.md](joey-notes.md) | Joey's positioning proposal: density thesis, supervisor mode, real data |
 

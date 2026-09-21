@@ -52,6 +52,7 @@ Read `docs/01-project.md` first, whatever you are working on. Then:
 | The resolver's searchable memory on Elasticsearch: what is indexed, the four searches, how to turn it on, merge notes | `docs/11-elastic-memory.md` |
 | The Baseten numbers on one page, for the sponsor track | `docs/12-baseten-stats.md` |
 | Every piece of the screen and what a user can do with it | `docs/13-ui-inventory.md` |
+| Deploying: the screen on Vercel, the backend on Fly.io, the token that ties them, checks after each step | `docs/14-deploy-handoff.md` |
 
 Each of `backend/`, `training/`, and `frontend/` has its own short `CLAUDE.md` with that component's contract.
 

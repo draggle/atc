@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+eval/out/
+tests/
+*.wav
+*.mp3
+.env
+Dockerfile
+fly.toml
